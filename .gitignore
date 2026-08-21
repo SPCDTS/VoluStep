@@ -1,0 +1,25 @@
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+
+# 本机工具链与下载缓存
+.toolchains/
+.wrapper-bootstrap/
+
+# 签名材料绝不进入版本库
+keystore/
+*.jks
+*.keystore
+signing.properties
+
+# 测试与诊断输出
+artifacts/
+captures/
+*.hprof
+
+# 系统文件
+.DS_Store
+Thumbs.db
