@@ -72,7 +72,7 @@
 .\scripts\emulator-smoke-test.ps1 -Serial emulator-5554
 ```
 
-该 smoke 脚本只构建、安装、启用模拟器无障碍服务并打开应用，最后的按键与音频断言仍需人工或运行 instrumentation 测试完成。仓库中存在 AVD、脚本或测试源码，不代表 API 28、API 37 或任何真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)。
+该 smoke 脚本只构建、安装、启用模拟器无障碍服务并打开应用，最后的按键与音频断言仍需人工或运行 instrumentation 测试完成。仓库中存在 AVD、脚本或测试源码，不代表 API 28、API 37 或任何真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)，本次实际执行结果见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
 ## 小米真机使用
 
