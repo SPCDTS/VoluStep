@@ -12,6 +12,7 @@ if (-not (Test-Path $avdManager)) {
 
 $definitions = @(
     @{ Name = 'VolumeMapper_API_28'; Package = 'system-images;android-28;google_apis;x86_64'; Device = 'pixel_2' },
+    @{ Name = 'VolumeMapper_API_36'; Package = 'system-images;android-36;google_apis;x86_64'; Device = 'pixel_7' },
     @{ Name = 'VolumeMapper_API_37'; Package = 'system-images;android-37.0;google_apis;x86_64'; Device = 'pixel_7' }
 )
 

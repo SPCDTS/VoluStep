@@ -2,7 +2,7 @@
 
 ## 结果记录原则
 
-仓库包含测试源码、AVD 定义和辅助脚本，但“可以编译”“存在测试”“AVD 已创建”都不等于设备测试已经执行通过。提交测试结论时必须记录 commit/工作区状态、日期、API、镜像或 ROM build、设备/耳机、执行命令以及 pass/fail/skip；本文只描述覆盖和运行方法，不声明 API 28、API 37 或任何真机的当前通过状态。2026-08-21 的本机执行结果单独记录在 [VERIFICATION.md](VERIFICATION.md)。
+仓库包含测试源码、AVD 定义和辅助脚本，但“可以编译”“存在测试”“AVD 已创建”都不等于设备测试已经执行通过。提交测试结论时必须记录 commit/工作区状态、日期、API、镜像或 ROM build、设备/耳机、执行命令以及 pass/fail/skip；本文只描述覆盖和运行方法，不声明任何 API 或真机的当前通过状态。2026-08-22 和历史本机执行结果单独记录在 [VERIFICATION.md](VERIFICATION.md)。
 
 ## 自动测试层次
 
@@ -36,12 +36,13 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 
 ### Android instrumentation
 
-仓库包含两项设备侧测试：
+仓库包含三项设备侧测试：
 
 - `MainActivityTest`：验证主导航、曲线编辑器、Slider 与预设控件可达；
 - `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造完整 DOWN/UP，并验证真实 `STREAM_MUSIC` index 改变和最终清理。
+- `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并从通知 action 停止映射；宿主 E2E 会先执行 `pm clear`，再复用它准备确定性的 40% 线性曲线。
 
-第二项测试不会启动真实 AccessibilityService，也不会验证系统是否把物理按键分派给服务；它同样不能替代 Android 17 后台 hardening、通知、系统授权页或蓝牙耳机真机测试。编译测试 APK 与实际执行应区分：
+第二项测试不会启动真实 AccessibilityService，也不会验证系统是否把物理按键分派给服务。第三项的 instrumentation 阶段不能独自证明按键分派，因为 UiAutomation 注入会绕过 Accessibility input filter；实体按键链路由下述宿主 E2E 使用内核 evdev 事件验证。模拟器结果仍不能替代 OEM、蓝牙耳机和真实系统授权页测试。编译测试 APK 与实际执行应区分：
 
 ```powershell
 .\gradlew.bat :app:compileDebugAndroidTestKotlin
@@ -50,21 +51,26 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 
 第一条只证明 androidTest 源码可编译，第二条才会在当前连接设备上执行。使用定向测试时也要记录完整 runner 输出和 skip/assumption；被 assumption 跳过不能记为通过。
 
-### API 28 / 37 模拟器
+### API 28 / 36 / 37 模拟器
 
 ```powershell
 .\scripts\create-avds.ps1
 .\scripts\start-emulator.ps1 -Api 37
-.\scripts\emulator-smoke-test.ps1 -Serial emulator-5554
+.\gradlew.bat :app:connectedDebugAndroidTest
+.\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild
 ```
 
-`emulator-smoke-test.ps1` 只允许 `emulator-*`，因为它会修改 secure accessibility settings。它不会自动修改真机无障碍配置，也不会自动同意披露、启动控制器、发送按键或断言音量；脚本结束后的验证清单是人工步骤。
+`emulator-e2e-test.ps1` 只允许 `emulator-*`。它从空白应用数据开始，完成真实披露 UI，绑定目标无障碍服务，从可见 Activity 启动控制器，验证前台通知，退到后台后从 Linux evdev 注入音量加/减键，并从 SystemUI 通知停止服务后验证 fail-open。脚本会临时把可调试模拟器的 adbd 切到 root，并在 `finally` 中恢复原无障碍配置、媒体/铃声音量和 adbd 身份，同时收起通知面板；任何清理失败都会使脚本失败。应用数据会在测试开始和结束时被清空，不能恢复测试前内容。
+
+普通 `connectedDebugAndroidTest` 重复运行时会保留 Debug 应用数据，因此已接受披露的 AVD 可能跳过披露页面。需要确定性验证首次披露时，应运行宿主 E2E；它会在安装测试 APK 后清空应用数据，再执行定向 instrumentation。
+
+不能用 `adb shell input keyevent 24/25`、`UiDevice.pressKeyCode()` 或 `UiAutomation.injectInputEvent()` 代替上述按键阶段；这些注入路径会跳过 Accessibility input filter，无法证明 `VolumeKeyAccessibilityService.onKeyEvent()` 收到了系统按键。宿主脚本会动态查找声明 `KEY_VOLUMEUP` 的 `/dev/input/event*`，再使用 `sendevent` 产生 DOWN/SYN/UP/SYN。
 
 模拟器上至少验证：
 
 1. 显著披露必须主动勾选后才能同意；
 2. 未启动 FGS 时音量键由系统处理；
-3. 启动 FGS 且无障碍连接后，`input keyevent 24/25` 按曲线变化；
+3. 启动 FGS 且无障碍连接后，evdev `KEY_VOLUMEUP/KEY_VOLUMEDOWN` 按曲线变化；
 4. 快速 tap 与长按不会因 repeat 频率改变数学结果；
 5. 路由/服务停止后新手势 fail-open；
 6. API 37 上前台服务通知可见，停止 action 立即释放按键；
@@ -79,7 +85,9 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 | 33–36 | `getAudioDevicesForAttributes()` 的 confirmed/ambiguous 分支、通知权限与 modern FGS 行为 | 可能取得可信单一路由和 dB 表，也可能多设备降级 heuristic |
 | 37 | target 37 的 Android 17 后台音量 hardening、visible Activity → `specialUse` FGS、静默拒绝后的回读/fail-open | 这是目标平台新增约束，低版本结果不能外推 |
 
-仓库的两个 AVD 只覆盖 API 28 与 37 两端；API 31/32 和 33–36 的分支仍应通过额外模拟器或对应真机验证。
+仓库的三个 AVD 覆盖 API 28、36 与 37，API 36 代表性覆盖公开媒体路由与通知权限分支；API 31/32、API 33–35 以及 OEM ROM 仍应通过额外模拟器或对应真机验证。
+
+当前持续开发门禁以 API 36/37 和后续小米/蓝牙真机为优先。API 28 因项目仍声明 `minSdk=28` 而保留基础安装、启动和关键链路检查，但不为旧系统增加与产品目标无关的专用行为；若以后提高 minSdk，应同步删除对应分支和 AVD，而不是继续累积兼容代码。
 
 Android 17 还应使用系统支持的音频 hardening 调试命令（若该镜像提供），观察 `AudioHardening` 日志，并分别验证允许、静默拒绝和抛错模式。
 

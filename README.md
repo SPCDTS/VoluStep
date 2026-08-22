@@ -13,7 +13,7 @@
 - 音量写入后的单周期两阶段回读、control/route epoch 失效、路由切换重置和连续失败自动放行；
 - A2DP、LE Audio、USB、HDMI、有线与扬声器的运行时能力探测，并区分 `CONFIRMED` 与 `HEURISTIC` 路由；
 - 显著披露、持续通知停止开关、小米/HyperOS 诊断提示；
-- JVM 单元测试、Android instrumentation 测试源码、API 28/37 模拟器辅助脚本、真机诊断采集和 Release/AAB 流程。
+- JVM 单元测试、Android instrumentation 测试、API 28/36/37 模拟器 E2E、真机诊断采集和 Release/AAB 流程。
 
 ## 本机环境
 
@@ -59,7 +59,7 @@
 - Lint：`app/build/reports/lint-results-*.html`
 - 单元测试：`app/build/reports/tests/testDebugUnitTest/`
 
-创建两个隔离 AVD：
+创建三个隔离 AVD：
 
 ```powershell
 .\scripts\create-avds.ps1
@@ -69,10 +69,11 @@
 模拟器启动后：
 
 ```powershell
-.\scripts\emulator-smoke-test.ps1 -Serial emulator-5554
+.\gradlew.bat :app:connectedDebugAndroidTest
+.\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild
 ```
 
-该 smoke 脚本只构建、安装、启用模拟器无障碍服务并打开应用，最后的按键与音频断言仍需人工或运行 instrumentation 测试完成。仓库中存在 AVD、脚本或测试源码，不代表 API 28、API 37 或任何真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)，本次实际执行结果见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
+完整 E2E 脚本只允许 `emulator-*`：它会清空测试应用数据、临时修改 secure accessibility settings、把可调试模拟器的 adbd 切到 root，并从 evdev 注入真正经过 Accessibility input filter 的音量键事件；结束时会恢复原无障碍配置、媒体/铃声音量和 adbd 身份。仓库中存在 AVD、脚本或测试源码，不代表任何 API 或真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)，本次实际执行结果见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
 ## 小米真机使用
 
@@ -96,7 +97,7 @@
 - 耳机自身按键若直接发绝对音量通知，可能完全不经过 Accessibility `KeyEvent`；
 - 检测到系统通话音频模式时会放行；公开 API 无法可靠识别所有闹钟、相机和 OEM 前台场景，使用这些功能前应从通知或应用内停止映射；
 - 消费实体音量键可能影响截图或厂商组合键，持续通知中的“停止映射”是立即恢复开关；
-- Android 同一时刻只能有一个无障碍服务获得按键过滤权；与其他 key-filter 服务冲突时，本应用可能收不到音量键，而不是获得更高优先级。
+- 系统可同时把按键分发给多个请求过滤的无障碍服务；任一服务处理事件都可能阻止默认系统行为，共存结果与顺序不能保证，本应用也没有更高优先级。
 
 应用不使用隐藏 API、不反射 AudioService、不绕过安全音量提示，也不会读取屏幕内容。
 

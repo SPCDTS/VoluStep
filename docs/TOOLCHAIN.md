@@ -14,7 +14,7 @@
 | Emulator | `37.1.11.0` |
 | Platforms | `android-37.0` |
 | Build Tools | `36.0.0`、`37.0.0` |
-| System Images | Android 9/API 28 Google APIs x86_64；Android 16/API 36.1 Google Play x86_64；Android 17/API 37 Google APIs x86_64 |
+| System Images | Android 9/API 28 Google APIs x86_64；Android 16/API 36 Google APIs x86_64；Android 16/API 36.1 Google Play x86_64；Android 17/API 37 Google APIs x86_64 |
 
 下载归档保存在 `.toolchains/downloads/`，用于离线修复当前环境：
 
@@ -26,9 +26,10 @@
 ## 已创建模拟器
 
 - `VolumeMapper_API_28`：Pixel 2，Android 9/API 28；
+- `VolumeMapper_API_36`：Pixel 7，Android 16/API 36；
 - `VolumeMapper_API_37`：Pixel 7，Android 17/API 37。
 
-AVD 数据由 Android 保存在当前用户的 `.android/avd/`，不属于仓库。重复运行 `scripts/create-avds.ps1` 会保留已有设备；传入 `-Force` 才会重建项目命名的两个 AVD。
+AVD 数据由 Android 保存在当前用户的 `.android/avd/`，不属于仓库。重复运行 `scripts/create-avds.ps1` 会保留已有设备；传入 `-Force` 才会重建项目命名的三个 AVD。
 
 AVD 已创建、系统镜像已安装或 smoke 脚本可启动，只说明测试环境可用，不等于对应 API 的 instrumentation、音频行为或 Android 17 hardening 验收已经通过；测试结果应另按提交和日期记录。
 

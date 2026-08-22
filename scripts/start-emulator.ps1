@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('28', '37')]
+    [ValidateSet('28', '36', '37')]
     [string]$Api = '37',
     [switch]$Headless,
     [switch]$ColdBoot

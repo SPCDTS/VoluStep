@@ -48,8 +48,14 @@ $keySecret = $null
 
 ```powershell
 . .\scripts\android-env.ps1
-& "$env:ANDROID_HOME\build-tools\37.0.0\apksigner.bat" verify --verbose --print-certs .\app\build\outputs\apk\release\app-release.apk
+$apk = '.\app\build\outputs\apk\release\app-release.apk'
+$aab = '.\app\build\outputs\bundle\release\app-release.aab'
+& "$env:ANDROID_HOME\build-tools\37.0.0\zipalign.exe" -c -P 16 -v 4 $apk
+& "$env:ANDROID_HOME\build-tools\37.0.0\apksigner.bat" verify -Werr --verbose --print-certs $apk
+& "$env:JAVA_HOME\bin\jarsigner.exe" -verify -verbose -certs $aab
 ```
+
+必须把 `apksigner` 输出的证书 SHA-256 与既有生产证书或 Play upload key 对照，不能只检查命令 exit 0。还应使用 `aapt2 dump badging` 与 `aapt2 dump xmltree` 检查最终 APK，而不是只审查源码 Manifest。
 
 ## Google Play 必备声明
 
@@ -75,9 +81,10 @@ Play 审核可能不接受该用途；技术可行不等于政策必然批准。
 
 - 更新 `versionCode` / `versionName`；
 - `testDebugUnitTest`、`lintRelease`、`assembleRelease`、`bundleRelease` 全部通过；
-- API 28 与 37 模拟器通过；
+- API 36 与 37 模拟器通过；只要仍声明 `minSdk=28`，API 28 至少完成安装、启动和关键链路基础检查；
 - Xiaomi HyperOS、Pixel、Samsung，及至少一个 OPPO/vivo/Honor 系真机通过；
 - 蓝牙 A2DP 绝对音量开/关、LE Audio（若有）、耳机自身按键已记录；
 - 截图组合键、通话、闹钟、相机和锁屏 fail-open 行为已验证；
 - Data safety、隐私政策、Accessibility 和 FGS 声明与应用实际行为一致；
+- 为 DataStore 配置 API 30 以下 `fullBackupContent` 与 API 31+ `dataExtractionRules`，确保显著披露同意状态不会经备份或设备迁移跳过；
 - 用 `apksigner` 验证证书，并把 AAB 上传到内部测试轨道而非直接生产发布。
