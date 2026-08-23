@@ -95,6 +95,10 @@ Android 17 还应使用系统支持的音频 hardening 调试命令（若该镜�
 
 真机必须手动启用无障碍，避免脚本覆盖用户已有服务。建议流程：
 
+在真机实体按键验证期间不要运行 `android layout` 或其他依赖 UiAutomator 的 UI 层级采集。本次 HyperOS 实测中，它会短暂解绑再重绑设备上已启用的无障碍服务，从而污染服务连续性和按键分派结果。观察界面应使用普通截图，状态核验使用 `dumpsys` / logcat；按键必须由测试人员实际按下。
+
+真实播放测试必须同时记录按键 `eventTime`、无障碍回调到达时间、系统默认调节和应用 `setStreamVolume` 写入。若回调 age 已达到 500 ms，修复版应放行过期初始 `DOWN`；若已有手势 owner，则只排空匹配的迟到尾事件，不能执行短按收尾写。对 OEM 省电策略的任何调整都要记录调整前后对照结果，不能把设置页面已打开当作兼容性通过。
+
 1. `adb devices -l` 记录序列号；
 2. `adb -s SERIAL install -r app\build\outputs\apk\debug\app-debug.apk`；
 3. 在手机 UI 中完成披露、无障碍和通知授权；

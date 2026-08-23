@@ -12,7 +12,7 @@
 - Android 17 所需、由可见 Activity 显式启动的 `specialUse` 前台服务；
 - 音量写入后的单周期两阶段回读、control/route epoch 失效、路由切换重置和连续失败自动放行；
 - A2DP、LE Audio、USB、HDMI、有线与扬声器的运行时能力探测，并区分 `CONFIRMED` 与 `HEURISTIC` 路由；
-- 显著披露、持续通知停止开关、小米/HyperOS 诊断提示；
+- 显著披露、持续通知停止开关、跨 OEM 后台/省电诊断与公开应用详情入口；
 - JVM 单元测试、Android instrumentation 测试、API 28/36/37 模拟器 E2E、真机诊断采集和 Release/AAB 流程。
 
 ## 本机环境
@@ -85,6 +85,8 @@
 6. HyperOS 若连续回读失败，检查“调节媒体音量”权限、后台运行和省电限制。
 
 真机测试流程见 [docs/TESTING.md](docs/TESTING.md)，架构与厂商适配见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 和 [docs/OEM_COMPATIBILITY.md](docs/OEM_COMPATIBILITY.md)。
+
+当前单机样本已在 Xiaomi 15 / HyperOS / Android 16（API 36）验证扬声器前台、桌面后台、亮屏锁屏和 A2DP 绝对音量的精细步进。连接耳机的蓝牙显示名称为“Xiaomi Buds 5 Pro”，但这不能证明其具体硬件型号。真实媒体播放时曾发现 HyperOS 让后台无障碍按键回调超过系统 500 ms 窗口并延迟送达；当前代码已增加过期事件放行与手势排空保护。把该应用的 HyperOS 省电策略从“智能限制”改为“无限制”后，同场景单次对照在约 160 ms 内完成 `8 → 9`，且回前台没有迟到写入；这是一个样本的排障结果，不是跨设备保证。LE Audio 尚未验证。完整证据和边界见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
 ## 能力边界
 

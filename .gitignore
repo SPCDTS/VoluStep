@@ -18,6 +18,7 @@ signing.properties
 # 测试与诊断输出
 artifacts/
 captures/
+.scratch/
 *.hprof
 
 # 系统文件

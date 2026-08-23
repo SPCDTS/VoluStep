@@ -211,7 +211,26 @@ class MappingCoordinator(
         val direction = event.keyCode.toDirection() ?: return false
         val token = KeyToken(event.deviceId, event.keyCode, event.downTime)
 
-        return when (event.action) {
+        val action = event.action
+        if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) return false
+
+        val expirationDisposition = expiredKeyEventDisposition(
+            isExpired = isAccessibilityKeyEventExpired(
+                nowUptimeMillis = SystemClock.uptimeMillis(),
+                eventTimeMillis = event.eventTime,
+            ),
+            isInitialDown = action == KeyEvent.ACTION_DOWN && event.repeatCount == 0,
+            ownsGesture = gestureOwner.get() == token,
+        )
+        when (expirationDisposition) {
+            ExpiredKeyEventDisposition.PASS_THROUGH -> return false
+            ExpiredKeyEventDisposition.DRAIN_OWNED_GESTURE -> {
+                return drainExpiredOwnedGesture(token)
+            }
+            ExpiredKeyEventDisposition.PROCESS -> Unit
+        }
+
+        return when (action) {
             KeyEvent.ACTION_DOWN -> handleAccessibilityDown(event, token, direction)
             KeyEvent.ACTION_UP -> handleAccessibilityUp(event, token, direction)
             else -> false
@@ -284,6 +303,21 @@ class MappingCoordinator(
         return true
     }
 
+    /**
+     * 系统已经为超时事件执行了默认行为；这里只排空此前接管的手势，绝不把旧 UP 交给 reducer。
+     * 回调热路径仅做原子状态切换和协程投递，不读取 AudioManager/Binder。
+     */
+    private fun drainExpiredOwnedGesture(token: KeyToken): Boolean {
+        val owner = gestureOwner.get()
+        if (owner != token || !gestureOwner.compareAndSet(owner, null)) return false
+
+        cancelOwnerDrainWatchdog()
+        ownerHeartbeatAtMillis.set(0L)
+        val stamp = beginControlTransition()
+        enqueueGuaranteed(Command.ExpiredKeyGestureDrained(stamp))
+        return true
+    }
+
     private suspend fun actorLoop() {
         for (command in commands) {
             when (command) {
@@ -298,6 +332,7 @@ class MappingCoordinator(
                 is Command.Tick -> handleTick(command)
                 is Command.WatchdogExpired -> handleWatchdogExpired(command)
                 is Command.OwnerDrainExpired -> handleOwnerDrainExpired(command)
+                is Command.ExpiredKeyGestureDrained -> handleExpiredKeyGestureDrained(command)
                 is Command.EnvironmentChanged -> handleEnvironmentChanged(command)
                 is Command.RefreshSnapshot -> handleRefreshSnapshot(command)
                 is Command.VerifyWrite -> verifyWrite(command)
@@ -554,6 +589,11 @@ class MappingCoordinator(
             cancelActiveGesture(resetMapping = false)
         }
         publish { copy(statusMessage = "已清理未收到 UP 的旧音量键手势") }
+    }
+
+    private fun handleExpiredKeyGestureDrained(command: Command.ExpiredKeyGestureDrained) {
+        if (!adoptTransition(command.stamp)) return
+        publish { copy(statusMessage = "已忽略系统延迟送达的旧音量键手势") }
     }
 
     private fun handleEnvironmentChanged(command: Command.EnvironmentChanged) {
@@ -1203,6 +1243,8 @@ class MappingCoordinator(
         ) : Command
 
         data class OwnerDrainExpired(val token: KeyToken) : Command
+
+        data class ExpiredKeyGestureDrained(val stamp: EpochStamp) : Command
 
         data class EnvironmentChanged(val stamp: EpochStamp) : Command
         data class RefreshSnapshot(val stamp: EpochStamp) : Command

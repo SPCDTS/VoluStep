@@ -85,6 +85,7 @@ fun VolumeMapperApp(graph: AppGraph) {
     var selectedPage by remember { mutableStateOf(AppPage.CONTROL) }
     var showDisclosure by remember { mutableStateOf(false) }
     var showNotificationPermissionRequired by remember { mutableStateOf(false) }
+    var showAppSettingsUnavailable by remember { mutableStateOf(false) }
     var controllerStartError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -157,6 +158,11 @@ fun VolumeMapperApp(graph: AppGraph) {
             AppPage.DIAGNOSTICS -> DiagnosticsScreen(
                 runtime = runtime,
                 onRefresh = graph.mappingCoordinator::refreshSnapshot,
+                onOpenAppSettings = {
+                    if (!AppDetailsSettingsLauncher.open(context)) {
+                        showAppSettingsUnavailable = true
+                    }
+                },
                 modifier = Modifier.padding(innerPadding),
             )
         }
@@ -195,6 +201,17 @@ fun VolumeMapperApp(graph: AppGraph) {
                 TextButton(onClick = { showNotificationPermissionRequired = false }) {
                     Text("稍后")
                 }
+            },
+        )
+    }
+
+    if (showAppSettingsUnavailable) {
+        AlertDialog(
+            onDismissRequest = { showAppSettingsUnavailable = false },
+            title = { Text("无法打开系统设置") },
+            text = { Text("系统没有可处理的应用详情或设置页面。请手动进入系统设置并找到本应用。") },
+            confirmButton = {
+                TextButton(onClick = { showAppSettingsUnavailable = false }) { Text("知道了") }
             },
         )
     }
@@ -491,6 +508,7 @@ private fun KeyBehaviourCard(settings: VolumeMapperSettings, graph: AppGraph) {
 private fun DiagnosticsScreen(
     runtime: ControllerRuntimeState,
     onRefresh: () -> Unit,
+    onOpenAppSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val snapshot = runtime.snapshot
@@ -544,16 +562,37 @@ private fun DiagnosticsScreen(
                 }
             }
         }
-        if (manufacturer.contains("xiaomi", ignoreCase = true) ||
-            Build.BRAND.contains("redmi", ignoreCase = true) ||
-            Build.BRAND.contains("poco", ignoreCase = true)
-        ) {
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+        item {
+            val isXiaomiFamily = manufacturer.contains("xiaomi", ignoreCase = true) ||
+                Build.BRAND.contains("redmi", ignoreCase = true) ||
+                Build.BRAND.contains("poco", ignoreCase = true)
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                ),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                     Text(
-                        "检测到小米系设备：HyperOS 可能额外要求“调节媒体音量”权限，并可能限制后台行为。若写后回读连续不一致，请在系统应用权限与省电设置中允许本应用运行。",
-                        modifier = Modifier.padding(16.dp),
+                        "后台运行与省电策略",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
                     )
+                    Text(
+                        "部分手机厂商可能在媒体播放或后台场景延迟无障碍按键回调。这里仅打开系统应用详情，不会自动更改任何设置；调整省电策略只是排查建议，并非已证明的修复。",
+                    )
+                    Text(
+                        if (isXiaomiFamily) {
+                            "小米 / HyperOS 可在应用详情中检查“调节媒体音量”权限，并尝试将省电策略设为“无限制”。"
+                        } else {
+                            "其他厂商可在应用详情中查找对应的后台运行或电池策略。"
+                        },
+                    )
+                    Button(onClick = onOpenAppSettings) {
+                        Text("打开应用详情")
+                    }
                 }
             }
         }

@@ -75,6 +75,12 @@ $aab = '.\app\build\outputs\bundle\release\app-release.aab'
 
 Play 审核可能不接受该用途；技术可行不等于政策必然批准。若被拒，应保留个人侧载/企业分发版本，或重新设计为仅在可见 Activity 中操作，不能伪造其他 FGS 类型。
 
+## 备份与设备迁移策略
+
+首版保留 `android:allowBackup="true"`，但不会迁移 `files/datastore/volume_mapper.preferences_pb`：API 30 及以下通过 `@xml/backup_rules` 从系统完整备份中排除该文件；API 31 及以上通过 `@xml/data_extraction_rules` 同时从云备份和设备到设备迁移中排除。
+
+这是有意采用的保守策略。显著披露同意状态与映射曲线、按键参数目前保存在同一个 Preferences DataStore 中；如果只迁移设置而恢复同意状态，新设备上的首次流程可能跳过显著披露。因此首版选择不迁移整个设置文件：用户换机或从云备份恢复后需要重新阅读并同意披露，再重新配置曲线和按键参数。应用在原设备上直接升级不会受此规则影响，现有本地设置仍会保留。
+
 ## 发布前清单
 
 以下各项是发布门槛，不代表当前提交、现有 AVD 或任何真机已经通过：
@@ -86,5 +92,5 @@ Play 审核可能不接受该用途；技术可行不等于政策必然批准。
 - 蓝牙 A2DP 绝对音量开/关、LE Audio（若有）、耳机自身按键已记录；
 - 截图组合键、通话、闹钟、相机和锁屏 fail-open 行为已验证；
 - Data safety、隐私政策、Accessibility 和 FGS 声明与应用实际行为一致；
-- 为 DataStore 配置 API 30 以下 `fullBackupContent` 与 API 31+ `dataExtractionRules`，确保显著披露同意状态不会经备份或设备迁移跳过；
+- 检查最终 APK 的 `fullBackupContent` 与 `dataExtractionRules` 引用，并确认两套规则都排除了 `files/datastore/volume_mapper.preferences_pb`；
 - 用 `apksigner` 验证证书，并把 AAB 上传到内部测试轨道而非直接生产发布。
