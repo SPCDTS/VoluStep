@@ -5,8 +5,10 @@ import dev.spcdts.volumemapper.core.AudioRouteDescriptor
 import dev.spcdts.volumemapper.core.AudioRouteType
 import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
+import dev.spcdts.volumemapper.core.RouteConfidence
 import dev.spcdts.volumemapper.core.VolumeDirection
 import dev.spcdts.volumemapper.core.VolumeMappingState
+import dev.spcdts.volumemapper.core.VolumePosition
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -17,6 +19,7 @@ class MappingCoordinatorStateTest {
         route = AudioRouteDescriptor(
             stableId = "bluetooth:7",
             type = AudioRouteType.BLUETOOTH_A2DP,
+            confidence = RouteConfidence.CONFIRMED,
         ),
         range = RouteVolumeRange(minIndex = 0, maxIndex = 150),
         currentIndex = 50,
@@ -24,10 +27,11 @@ class MappingCoordinatorStateTest {
     )
 
     @Test
-    fun `matching snapshot cannot retain remainder without mapping state`() {
+    fun `matching snapshot cannot retain an exact position without mapping state`() {
         assertFalse(
-            canKeepLogicalRemainder(
+            canKeepMappingPosition(
                 mappingState = null,
+                mappingTargetIndex = null,
                 previousExpectedIndex = 50,
                 previousSnapshot = snapshot,
                 observedSnapshot = snapshot,
@@ -36,15 +40,24 @@ class MappingCoordinatorStateTest {
     }
 
     @Test
-    fun `idle state retains sub-index remainder only while platform state is unchanged`() {
-        val idle = VolumeMappingState(logicalPosition = 0.337)
+    fun `idle state retains its exact slot only while platform state is unchanged`() {
+        val idle = VolumeMappingState(position = VolumePosition.ExactStep(stepIndex = 17))
+        val sameBoundsWithDiagnosticDb = snapshot.copy(
+            range = snapshot.range.copy(
+                decibelsByIndex = List(snapshot.range.indexCount) { it.toDouble() },
+            ),
+        )
 
         assertTrue(
-            canKeepLogicalRemainder(idle, 50, snapshot, snapshot),
+            canKeepMappingPosition(idle, 50, 50, snapshot, snapshot),
+        )
+        assertTrue(
+            canKeepMappingPosition(idle, 50, 50, sameBoundsWithDiagnosticDb, snapshot),
         )
         assertFalse(
-            canKeepLogicalRemainder(
+            canKeepMappingPosition(
                 idle,
+                50,
                 50,
                 snapshot,
                 snapshot.copy(currentIndex = 49),
@@ -55,7 +68,7 @@ class MappingCoordinatorStateTest {
     @Test
     fun `active state never crosses a new gesture boundary`() {
         val active = VolumeMappingState(
-            logicalPosition = 0.337,
+            position = VolumePosition.ExactStep(stepIndex = 17),
             activePress = ActiveVolumePress(
                 direction = VolumeDirection.UP,
                 startedAtMillis = 10L,
@@ -63,7 +76,29 @@ class MappingCoordinatorStateTest {
             ),
         )
 
-        assertFalse(canKeepLogicalRemainder(active, 50, snapshot, snapshot))
+        assertFalse(canKeepMappingPosition(active, 50, 50, snapshot, snapshot))
+    }
+
+    @Test
+    fun `state target must match observed index before exact position is retained`() {
+        val stale = VolumeMappingState(position = VolumePosition.ExactStep(stepIndex = 18))
+
+        assertFalse(
+            canKeepMappingPosition(
+                mappingState = stale,
+                mappingTargetIndex = 60,
+                previousExpectedIndex = 50,
+                previousSnapshot = snapshot,
+                observedSnapshot = snapshot,
+            ),
+        )
+    }
+
+    @Test
+    fun `single index range is effectively fixed even when backend flag is false`() {
+        assertTrue(isEffectivelyFixedVolume(true, RouteVolumeRange(0, 150)))
+        assertTrue(isEffectivelyFixedVolume(false, RouteVolumeRange(7, 7)))
+        assertFalse(isEffectivelyFixedVolume(false, RouteVolumeRange(0, 150)))
     }
 
     @Test

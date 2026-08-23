@@ -14,8 +14,9 @@ import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.core.MappingCurve
 import dev.spcdts.volumemapper.core.MappingPoint
 import dev.spcdts.volumemapper.core.MappingPreset
-import dev.spcdts.volumemapper.core.VolumeQuantizationMode
+import dev.spcdts.volumemapper.core.StepVolumeMap
 import java.io.IOException
+import kotlin.math.ceil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.Channel
@@ -30,19 +31,24 @@ import kotlinx.coroutines.launch
 private val Context.volumeMapperDataStore by preferencesDataStore(name = "volume_mapper")
 
 data class VolumeMapperSettings(
-    val outputCurve: MappingCurve = MappingPreset.LOW_VOLUME_FINE.createCurve(),
+    val outputMap: StepVolumeMap = StepVolumeMap.fromCurve(
+        curve = MappingPreset.LOW_VOLUME_FINE.createCurve(),
+        basisSpan = DEFAULT_OUTPUT_BASIS_SPAN,
+        pressCount = DEFAULT_OUTPUT_PRESS_COUNT,
+    ),
     val keyConfig: KeyMappingConfig = KeyMappingConfig(
-        tapStep = 0.02,
         holdDelayMillis = 350L,
         holdUnitsPerSecond = 0.10,
         holdRampDurationMillis = 1_500L,
         holdMaximumMultiplier = 4.0,
         holdRampCurve = MappingCurve.linear(),
     ),
-    val quantizationMode: VolumeQuantizationMode = VolumeQuantizationMode.DECIBELS,
     val showSystemVolumeUi: Boolean = true,
     val disclosureAccepted: Boolean = false,
 )
+
+private const val DEFAULT_OUTPUT_BASIS_SPAN = 150
+private const val DEFAULT_OUTPUT_PRESS_COUNT = 50
 
 /** 单进程设置仓库。内存状态立即更新，DataStore 写入做短暂防抖以适配拖动曲线。 */
 @OptIn(FlowPreview::class)
@@ -92,12 +98,9 @@ class SettingsRepository(
         }
     }
 
-    fun updateCurve(curve: MappingCurve) = update { copy(outputCurve = curve) }
+    fun updateOutputMap(outputMap: StepVolumeMap) = update { copy(outputMap = outputMap) }
 
     fun updateKeyConfig(config: KeyMappingConfig) = update { copy(keyConfig = config) }
-
-    fun updateQuantizationMode(mode: VolumeQuantizationMode) =
-        update { copy(quantizationMode = mode) }
 
     fun updateShowSystemUi(show: Boolean) = update { copy(showSystemVolumeUi = show) }
 
@@ -141,11 +144,9 @@ internal object SettingsSerialization {
         val defaults = VolumeMapperSettings()
         val defaultKeyConfig = defaults.keyConfig
         return defaults.copy(
-            outputCurve = preferences.readCurve(Keys.OUTPUT_CURVE, defaults.outputCurve),
+            outputMap = preferences.readStepVolumeMap()
+                ?: migrateLegacyOutputMap(preferences, defaults.outputMap),
             keyConfig = KeyMappingConfig(
-                tapStep = preferences.readDouble(Keys.TAP_STEP)
-                    ?.takeIf { it.isFinite() && it in 0.0..1.0 }
-                    ?: defaultKeyConfig.tapStep,
                 holdDelayMillis = preferences.readLong(Keys.HOLD_DELAY)
                     ?.takeIf { it >= 0L }
                     ?: defaultKeyConfig.holdDelayMillis,
@@ -163,7 +164,6 @@ internal object SettingsSerialization {
                     defaultKeyConfig.holdRampCurve,
                 ),
             ),
-            quantizationMode = preferences.readQuantizationMode(defaults.quantizationMode),
             showSystemVolumeUi = preferences.readBoolean(Keys.SHOW_SYSTEM_UI)
                 ?: defaults.showSystemVolumeUi,
             disclosureAccepted = preferences.readBoolean(Keys.DISCLOSURE_ACCEPTED)
@@ -175,14 +175,16 @@ internal object SettingsSerialization {
         preferences: MutablePreferences,
         settings: VolumeMapperSettings,
     ) {
-        preferences[Keys.OUTPUT_CURVE] = encodeCurve(settings.outputCurve)
-        preferences[Keys.TAP_STEP] = settings.keyConfig.tapStep
+        preferences[Keys.OUTPUT_STEP_MAP] = encodeStepVolumeMap(settings.outputMap)
+        // Keep a current v2 shadow payload so a downgraded build can still read the authored shape.
+        preferences[Keys.OUTPUT_CURVE] = encodeCurve(settings.outputMap.toLegacyCurve())
+        preferences[Keys.TAP_STEP] = 1.0 / settings.outputMap.pressCount.toDouble()
         preferences[Keys.HOLD_DELAY] = settings.keyConfig.holdDelayMillis
         preferences[Keys.HOLD_SPEED] = settings.keyConfig.holdUnitsPerSecond
         preferences[Keys.RAMP_DURATION] = settings.keyConfig.holdRampDurationMillis
         preferences[Keys.RAMP_MULTIPLIER] = settings.keyConfig.holdMaximumMultiplier
         preferences[Keys.HOLD_CURVE] = encodeCurve(settings.keyConfig.holdRampCurve)
-        preferences[Keys.QUANTIZATION_MODE_NAME] = settings.quantizationMode.name
+        preferences[Keys.QUANTIZATION_MODE_NAME] = "INDEX"
         preferences.remove(Keys.LEGACY_QUANTIZATION_MODE_ORDINAL)
         preferences[Keys.SHOW_SYSTEM_UI] = settings.showSystemVolumeUi
         preferences[Keys.DISCLOSURE_ACCEPTED] = settings.disclosureAccepted
@@ -215,17 +217,55 @@ internal object SettingsSerialization {
         )
     }
 
-    private fun Preferences.readQuantizationMode(
-        default: VolumeQuantizationMode,
-    ): VolumeQuantizationMode {
-        val named = readString(Keys.QUANTIZATION_MODE_NAME)?.let { storedName ->
-            VolumeQuantizationMode.entries.firstOrNull { it.name == storedName }
-        }
-        if (named != null) return named
-        return readInt(Keys.LEGACY_QUANTIZATION_MODE_ORDINAL)
-            ?.let(VolumeQuantizationMode.entries::getOrNull)
-            ?: default
+    fun encodeStepVolumeMap(map: StepVolumeMap): String = buildString {
+        append(STEP_MAP_FORMAT_V1)
+        append('|')
+        append(map.basisSpan)
+        append('|')
+        append(map.offsets.joinToString(separator = ","))
     }
+
+    fun decodeStepVolumeMap(encoded: String): StepVolumeMap {
+        val components = encoded.split('|', limit = 3)
+        require(components.size == 3 && components[0] == STEP_MAP_FORMAT_V1)
+        val basisSpan = components[1].toInt()
+        val offsets = components[2].split(',').map(String::toInt)
+        return StepVolumeMap(basisSpan = basisSpan, offsets = offsets)
+    }
+
+    private fun Preferences.readStepVolumeMap(): StepVolumeMap? =
+        readString(Keys.OUTPUT_STEP_MAP)
+            ?.let { encoded -> runCatching { decodeStepVolumeMap(encoded) }.getOrNull() }
+
+    private fun migrateLegacyOutputMap(
+        preferences: Preferences,
+        default: StepVolumeMap,
+    ): StepVolumeMap {
+        val legacyCurve = preferences.readString(Keys.OUTPUT_CURVE)
+            ?.let { encoded -> runCatching { decodeCurve(encoded) }.getOrNull() }
+            ?: return default
+        val legacyTapStep = preferences.readDouble(Keys.TAP_STEP)
+            ?.takeIf { it.isFinite() && it > 0.0 && it <= 1.0 }
+        val pressCount = legacyTapStep
+            ?.let { ceil(1.0 / it).toInt() }
+            ?.coerceIn(1, DEFAULT_OUTPUT_BASIS_SPAN)
+            ?: default.pressCount
+        return StepVolumeMap.fromCurve(
+            curve = legacyCurve,
+            basisSpan = DEFAULT_OUTPUT_BASIS_SPAN,
+            pressCount = pressCount,
+        )
+    }
+
+    private fun StepVolumeMap.toLegacyCurve(): MappingCurve = MappingCurve(
+        points = offsets.mapIndexed { index, offset ->
+            MappingPoint(
+                x = index.toDouble() / pressCount.toDouble(),
+                y = offset.toDouble() / basisSpan.toDouble(),
+            )
+        },
+        minimumXSpacing = 1.0 / pressCount.toDouble(),
+    )
 
     private fun Preferences.readCurve(
         key: Preferences.Key<String>,
@@ -250,6 +290,7 @@ internal object SettingsSerialization {
         asMap()[key] as? String
 
     private object Keys {
+        val OUTPUT_STEP_MAP = stringPreferencesKey("output_step_map")
         val OUTPUT_CURVE = stringPreferencesKey("output_curve")
         val TAP_STEP = doublePreferencesKey("tap_step")
         val HOLD_DELAY = longPreferencesKey("hold_delay")
@@ -264,4 +305,5 @@ internal object SettingsSerialization {
     }
 
     private const val CURVE_FORMAT_V2 = "v2"
+    private const val STEP_MAP_FORMAT_V1 = "v1"
 }

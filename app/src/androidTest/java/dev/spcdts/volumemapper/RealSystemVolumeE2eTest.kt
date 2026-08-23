@@ -18,8 +18,7 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Configurator
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
-import dev.spcdts.volumemapper.core.MappingCurve
-import dev.spcdts.volumemapper.core.VolumeQuantizationMode
+import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.MappingControllerService
 import dev.spcdts.volumemapper.runtime.MappingCoordinator
@@ -119,20 +118,29 @@ class RealSystemVolumeE2eTest {
                 coordinator.runtime.value.isAccessibilityConnected
             }
 
+            val routeRange = checkNotNull(coordinator.runtime.value.snapshot).range
+            val routeSpan = routeRange.maxIndex - routeRange.minIndex
+            check(routeSpan >= 10) {
+                "媒体音量档位少于 10，无法配置可区分系统默认步长的 E2E 映射"
+            }
+            val initialOffset = routeSpan / 3
+            val mappedUpOffset = ((initialOffset.toDouble() / routeSpan + 0.4) * routeSpan + 0.5)
+                .toInt()
             val testSettings = repository.settings.value.copy(
-                outputCurve = MappingCurve.linear(),
-                keyConfig = repository.settings.value.keyConfig.copy(tapStep = 0.4),
-                quantizationMode = VolumeQuantizationMode.INDEX,
+                // 外部 E2E 从 1/3 档位起步：一次 UP 到约 +40%，再一次 DOWN 回原档。
+                outputMap = StepVolumeMap(
+                    basisSpan = routeSpan,
+                    offsets = listOf(0, initialOffset, mappedUpOffset, routeSpan),
+                ),
                 showSystemVolumeUi = false,
             )
-            repository.updateCurve(testSettings.outputCurve)
+            repository.updateOutputMap(testSettings.outputMap)
             repository.updateKeyConfig(testSettings.keyConfig)
-            repository.updateQuantizationMode(testSettings.quantizationMode)
             repository.updateShowSystemUi(testSettings.showSystemVolumeUi)
             repository.flushPendingWrite()
             awaitCoordinatorSettings(coordinator, testSettings)
 
-            // 宿主机 E2E 只用本方法通过真实 UI 完成披露并写入确定性的 40% 线性配置。
+            // 宿主机 E2E 只用本方法通过真实 UI 完成披露并写入确定性的 40% 离散档位。
             // 返回后 UiAutomation 已断开；宿主机随后通过 root sendevent 向模拟器 evdev
             // 注入硬件层事件，避免 adb shell input/UiAutomation 绕过 Accessibility input filter。
             if (prepareExternalJourney) return
@@ -186,9 +194,8 @@ class RealSystemVolumeE2eTest {
             MappingControllerService.stop(composeRule.activity)
             coordinator.disarm()
             if (!prepareExternalJourney) {
-                repository.updateCurve(originalSettings.outputCurve)
+                repository.updateOutputMap(originalSettings.outputMap)
                 repository.updateKeyConfig(originalSettings.keyConfig)
-                repository.updateQuantizationMode(originalSettings.quantizationMode)
                 repository.updateShowSystemUi(originalSettings.showSystemVolumeUi)
                 repository.flushPendingWrite()
             }

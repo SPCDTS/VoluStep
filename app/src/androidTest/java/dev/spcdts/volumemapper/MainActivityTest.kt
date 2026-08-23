@@ -4,7 +4,6 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -23,20 +22,20 @@ class MainActivityTest {
     fun mainNavigationAndCurveEditorAreReachable() {
         composeRule.onNodeWithText("音量映射器").assertIsDisplayed()
         composeRule.onNodeWithText("曲线").performClick()
-        composeRule.onNodeWithText("x(t) → V 映射").assertIsDisplayed()
+        composeRule.onNodeWithText("按键次数 → 音量 index").assertIsDisplayed()
         composeRule.onNodeWithTag(CurveEditorTestTags.CANVAS).assertIsDisplayed()
 
-        // 先滚到同一个 LazyColumn item 底部，避免在矮屏幕上直接查询尚未组合的后续 item。
-        composeRule.onNodeWithTag(CurveEditorTestTags.Y_SLIDER)
+        // 固定横轴的次数设置、状态选择和整数 index 精调都必须可由标准控件访问。
+        composeRule.onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INPUT)
             .performScrollTo()
             .assertIsDisplayed()
-        composeRule.onNodeWithTag(CurveEditorTestTags.X_SLIDER)
+        composeRule.onNodeWithTag(CurveEditorTestTags.STEP_SELECTOR)
             .performScrollTo()
             .assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("控制点 2 的逻辑位置 x")
+        composeRule.onNodeWithTag(CurveEditorTestTags.INDEX_INPUT)
             .performScrollTo()
             .assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("控制点 2 的目标媒体音量 V")
+        composeRule.onNodeWithTag(CurveEditorTestTags.UNDO)
             .performScrollTo()
             .assertIsDisplayed()
 

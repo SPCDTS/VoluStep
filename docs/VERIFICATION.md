@@ -1,5 +1,33 @@
 # 本机验证记录
 
+## 2026-08-24 离散按键曲线重构
+
+本节对应从基线 `c96f32b` 开始、与本记录一同提交的离散曲线工作树。旧版的连续 `x → V`、短按百分比和 dB 量化已经改为固定均匀横轴与整数 index 状态表；下方更早记录中的“1% / 0.7% / 40% 短按步长”是当时安装包的历史配置名称，不代表当前界面仍提供这些选项。
+
+### 主机门禁
+
+最终源码执行以下门禁并全部成功：
+
+```powershell
+. .\scripts\android-env.ps1
+.\gradlew.bat :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin `
+  :app:lintDebug :app:lintRelease :app:assembleDebug `
+  :app:assembleRelease :app:bundleRelease --rerun-tasks
+```
+
+覆盖包括 `K` 次按键 / `K+1` 状态不变量、严格整数投影、点数变化、0–15 / 0–150 / 非零 min / fixed-range、画笔推挤、离散 reducer、旧设置迁移、exact-index coordinator 连续性和 Android 测试源码。Debug/Release lint 均无阻断项，Debug APK、R8 Release APK 与 Release AAB 均生成成功。
+
+### API 37 模拟器
+
+验证 AVD 为 `VolumeMapper_API_37`，序列号 `emulator-5554`，build fingerprint 为 `google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys`。
+
+- 全量 instrumentation：`MainActivityTest`、`RealSystemVolumeE2eTest`、`VolumeKeyAudioIntegrationTest` 共 3 项，结果 `OK (3 tests)`；最终 UX 提示调整后又定向重跑 `MainActivityTest`，结果 `OK (1 test)`。
+- 宿主 `emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild` 从空白应用数据完成显著披露、真实 AccessibilityService、`specialUse` FGS、通知停止和内核 evdev 按键链路，结果为后台映射 `5 → 11 → 5`；停止后检测到系统 `AudioService.adjustSuggestedStreamVolume`，fail-open 通过。
+- 使用 Android CLI 分别检查曲线主画布和精调控件：固定等距列、选中点、`Δindex` 条带、次数设置、index 输入与撤销/重做在 1080×2400 模拟器上未见裁切或不可达；本地截图保存在被 Git 忽略的 `artifacts/curve-editor-*.png`。
+- 最终只读清理复核：adbd 为 `uid=2000(shell)`，`enabled_accessibility_services=null`，目标服务列表为空，媒体音量为 `5/15`。
+
+本轮结束时先前的小米真机序列号 `112594e4` 已不在 `adb devices` 中，因此没有把这一版 APK 重新安装到真机，也不把旧安装包的真机结果冒充为本次离散曲线通过。重新连接后仍需补一次覆盖安装、设置迁移、0–150 曲线编辑和实体按键回归。
+
 ## 2026-08-23 至 2026-08-24 Xiaomi 15 真机验证
 
 验证设备为 Xiaomi 15，HyperOS，Android 16 / API 36。本节结果只代表这一台手机、当前 ROM 和本次连接的输出设备，不外推到其他小米设备、其他厂商或同名耳机。蓝牙设置显示的名称为“Xiaomi Buds 5 Pro”，但没有取得可验证的硬件型号，因此下文只称其为该显示名称的耳机，不能据此确认具体型号。

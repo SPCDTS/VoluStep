@@ -6,8 +6,7 @@ import android.view.KeyEvent
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
-import dev.spcdts.volumemapper.core.MappingCurve
-import dev.spcdts.volumemapper.core.VolumeQuantizationMode
+import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.MappingCoordinator
 import kotlin.math.max
@@ -58,17 +57,17 @@ class VolumeKeyAudioIntegrationTest {
 
             val readySnapshot = checkNotNull(coordinator.runtime.value.snapshot)
             val indexSpan = readySnapshot.range.maxIndex - readySnapshot.range.minIndex
-            assumeTrue("媒体音量档位过少，无法用 0.1 步长稳定验证向上量化", indexSpan >= 10)
+            assumeTrue("媒体音量档位过少，无法配置 10 次按键的线性映射", indexSpan >= 10)
 
             val testSettings = originalSettings.copy(
-                outputCurve = MappingCurve.linear(),
-                keyConfig = originalSettings.keyConfig.copy(tapStep = 0.1),
-                quantizationMode = VolumeQuantizationMode.INDEX,
+                outputMap = StepVolumeMap.linear(
+                    basisSpan = indexSpan,
+                    pressCount = 10,
+                ),
                 showSystemVolumeUi = false,
             )
-            repository.updateCurve(testSettings.outputCurve)
+            repository.updateOutputMap(testSettings.outputMap)
             repository.updateKeyConfig(testSettings.keyConfig)
-            repository.updateQuantizationMode(testSettings.quantizationMode)
             repository.updateShowSystemUi(testSettings.showSystemVolumeUi)
             awaitCoordinatorSettings(coordinator, testSettings)
 
@@ -129,9 +128,8 @@ class VolumeKeyAudioIntegrationTest {
             coordinator.onForegroundServiceStopped()
             coordinator.setAccessibilityConnected(false)
 
-            repository.updateCurve(originalSettings.outputCurve)
+            repository.updateOutputMap(originalSettings.outputMap)
             repository.updateKeyConfig(originalSettings.keyConfig)
-            repository.updateQuantizationMode(originalSettings.quantizationMode)
             repository.updateShowSystemUi(originalSettings.showSystemVolumeUi)
             repository.flushPendingWrite()
 

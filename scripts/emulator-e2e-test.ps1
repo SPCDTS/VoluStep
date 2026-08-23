@@ -442,7 +442,7 @@ try {
     Invoke-Adb shell pm clear $testPackageName | Out-Null
     $appDataCleared = $true
 
-    Write-Host "[2/7] 通过真实 Compose UI 完成显著披露并写入 40% 线性映射"
+    Write-Host "[2/7] 通过真实 Compose UI 完成显著披露并写入含 40% 跨度的离散映射"
     $instrumentLines = Invoke-Adb shell am instrument '-w' '-r' `
         '-e' class $fixtureTest `
         '-e' e2ePrepareOnly true `

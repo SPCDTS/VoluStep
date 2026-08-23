@@ -242,7 +242,7 @@ class AudioManagerVolumeBackend(context: Context) {
                 minIndex = minIndex,
                 maxIndex = maxIndex,
                 // A guessed device type can return a valid-looking but wrong dB table. Keep the
-                // table empty so DECIBELS mode deliberately falls back to index quantization.
+                // Keep the table empty: an ambiguous device would make diagnostic dB data lie.
                 decibelsByIndex = if (descriptor.confidence == RouteConfidence.CONFIRMED) {
                     readMonotonicDbTable(minIndex, maxIndex, deviceType)
                 } else {

@@ -8,7 +8,7 @@
 - 不访问隐藏 Settings key、隐藏广播或私有 AudioService；
 - 写入后必须回读，因为某些 ROM 会静默忽略调用；
 - 路由、系统版本或 ROM OTA 改变后重新探测；
-- 无法确认能力时回退为标准媒体 index 曲线，并允许用户立即停止。
+- 无法确认路由细节时仍只按公开媒体 index 工作，并允许用户立即停止。
 
 ## 已知差异
 
@@ -55,7 +55,7 @@ Xiaomi 15 / HyperOS / Android 16（API 36）的扬声器媒体范围为 `0..150`
 ## 路由置信度与系统版本
 
 - API 33–37：`getAudioDevicesForAttributes(USAGE_MEDIA)` 恰好返回一个设备才视为 `CONFIRMED`，允许建立 dB 表；多个候选设备仍为 `HEURISTIC`。
-- API 28–32：MediaRouter 与连接设备只能给出启发式选择，DECIBELS 模式会因没有可信 dB 表而回退 INDEX。
+- API 28–32：MediaRouter 与连接设备只能给出启发式选择，不能把该设备的 dB 表当成可靠诊断结果；曲线本身始终直接使用 index。
 - API 31–37：使用公开 mode listener 尽快得知通话/通信模式变化；API 28–30 在 active hold 中每约 500 ms 主动刷新。
 - 所有版本：active hold 的同一 500 ms guard 同时核对实际 route ID、范围和 fixed-volume；环境变化会使缓存失效并增加 epoch。
 

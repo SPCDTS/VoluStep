@@ -3,12 +3,13 @@ package dev.spcdts.volumemapper.runtime
 import android.os.SystemClock
 import android.view.KeyEvent
 import dev.spcdts.volumemapper.audio.AudioManagerVolumeBackend
+import dev.spcdts.volumemapper.core.BoundStepVolumeMap
+import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
 import dev.spcdts.volumemapper.core.VolumeDirection
 import dev.spcdts.volumemapper.core.VolumeMappingAction
 import dev.spcdts.volumemapper.core.VolumeMappingReducer
 import dev.spcdts.volumemapper.core.VolumeMappingState
-import dev.spcdts.volumemapper.core.VolumeQuantizer
 import dev.spcdts.volumemapper.data.SettingsRepository
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import java.util.concurrent.atomic.AtomicBoolean
@@ -82,17 +83,27 @@ internal data class KeyToken(
 )
 
 /** Pure continuity decision kept outside the actor so route/readback edge cases are unit-testable. */
-internal fun canKeepLogicalRemainder(
+internal fun canKeepMappingPosition(
     mappingState: VolumeMappingState?,
+    mappingTargetIndex: Int?,
     previousExpectedIndex: Int?,
     previousSnapshot: RouteVolumeSnapshot?,
     observedSnapshot: RouteVolumeSnapshot,
 ): Boolean =
     mappingState != null &&
         mappingState.activePress == null &&
+        mappingTargetIndex == observedSnapshot.currentIndex &&
         previousExpectedIndex == observedSnapshot.currentIndex &&
         previousSnapshot?.route?.stableId == observedSnapshot.route.stableId &&
-        previousSnapshot.range == observedSnapshot.range
+        previousSnapshot.range.hasSameIndexBounds(observedSnapshot.range)
+
+internal fun isEffectivelyFixedVolume(
+    backendReportsFixed: Boolean,
+    range: RouteVolumeRange,
+): Boolean = backendReportsFixed || range.minIndex == range.maxIndex
+
+private fun RouteVolumeRange.hasSameIndexBounds(other: RouteVolumeRange): Boolean =
+    minIndex == other.minIndex && maxIndex == other.maxIndex
 
 /**
  * 串行化按键、路由、写入和回读的 actor。
@@ -130,7 +141,8 @@ class MappingCoordinator(
     /** Actor-side state. */
     private var actorControlEpoch = 0L
     private var settings: VolumeMapperSettings = observedSettings.get()
-    private var reducer = VolumeMappingReducer(settings.outputCurve, settings.keyConfig)
+    private var boundStepMap: BoundStepVolumeMap = settings.outputMap.bind(RouteVolumeRange(0, 0))
+    private var reducer = VolumeMappingReducer(boundStepMap, settings.keyConfig)
     private var mappingState: VolumeMappingState? = null
     private var activeGesture: ActiveGesture? = null
     private var lastWriteAtMillis = Long.MIN_VALUE
@@ -367,7 +379,7 @@ class MappingCoordinator(
             copy(
                 isArmed = false,
                 isFailOpen = false,
-                logicalPosition = mappingState?.logicalPosition,
+                logicalPosition = mappingState?.let(reducer::logicalPosition),
                 statusMessage = command.reason,
             )
         }
@@ -420,7 +432,9 @@ class MappingCoordinator(
     private fun handleSettingsChanged(command: Command.SettingsChanged) {
         if (!adoptTransition(command.stamp)) return
         settings = command.settings
-        reducer = VolumeMappingReducer(settings.outputCurve, settings.keyConfig)
+        val range = _runtime.value.snapshot?.range ?: RouteVolumeRange(0, 0)
+        boundStepMap = settings.outputMap.bind(range)
+        reducer = VolumeMappingReducer(boundStepMap, settings.keyConfig)
         mappingState = null
         publish {
             copy(
@@ -460,27 +474,27 @@ class MappingCoordinator(
         if (!isGestureStartCurrent(command)) return
 
         if (!acceptSnapshot(observedSnapshot, command.stamp, allowRouteChange = false)) return
-        if (!isGestureStartCurrent(command) || backend.isVolumeFixed) {
+        if (
+            !isGestureStartCurrent(command) ||
+            isEffectivelyFixedVolume(backend.isVolumeFixed, observedSnapshot.range)
+        ) {
             startOwnerDrainWatchdog(command.token)
             return
         }
 
-        val observedNormalized = VolumeQuantizer.normalizedForIndex(
-            observedSnapshot.currentIndex,
-            observedSnapshot.range,
-            settings.quantizationMode,
-        )
-        val canKeepSubStepRemainder = canKeepLogicalRemainder(
+        val reducerRebound = ensureReducerBound(observedSnapshot.range)
+        val canKeepExactPosition = !reducerRebound && canKeepMappingPosition(
             mappingState = mappingState,
+            mappingTargetIndex = mappingState?.let(reducer::targetIndex),
             previousExpectedIndex = previousExpected,
             previousSnapshot = previousSnapshot,
             observedSnapshot = observedSnapshot,
         )
 
-        val initial = if (canKeepSubStepRemainder) {
+        val initial = if (canKeepExactPosition) {
             checkNotNull(mappingState)
         } else {
-            reducer.initialState(observedNormalized)
+            reducer.initialState(observedSnapshot.currentIndex)
         }
         val reduction = reducer.reduce(
             initial,
@@ -496,14 +510,15 @@ class MappingCoordinator(
             direction = command.direction,
             stamp = command.stamp,
             routeId = observedSnapshot.route.stableId,
+            rangeIdentity = observedSnapshot.range.identity,
         )
         mappingState = reduction.state
         activeGesture = gesture
         lastEnvironmentGuardAtMillis = SystemClock.uptimeMillis()
-        publish { copy(logicalPosition = reduction.state.logicalPosition) }
+        publish { copy(logicalPosition = reducer.logicalPosition(reduction.state)) }
 
         if (reduction.writeRequested) {
-            applyTarget(reduction.targetOutputVolume, force = true, context = gesture.writeContext)
+            applyTarget(reduction.targetIndex, force = true, context = gesture.writeContext)
         }
         if (isActiveGestureCurrent(gesture)) startTicker(gesture)
     }
@@ -533,12 +548,13 @@ class MappingCoordinator(
         cancelTicker()
         activeGesture = null
         pendingWrite = null
-        publish { copy(logicalPosition = reduction.state.logicalPosition) }
+        publish { copy(logicalPosition = reducer.logicalPosition(reduction.state)) }
 
-        // A final UP integration must not depend on another ticker to flush a throttled target.
-        if (reduction.writeRequested) {
-            applyTarget(reduction.targetOutputVolume, force = true, context = gesture.writeContext)
-        }
+        // Always converge to the reducer's final integer. The latest tick may already have moved
+        // state while its write was throttled; in that case UP itself need not create a new
+        // reduction, but it must still flush the pending target. applyTarget is a no-op when the
+        // expected index is already current.
+        applyTarget(reduction.targetIndex, force = true, context = gesture.writeContext)
     }
 
     private fun handleTick(command: Command.Tick) {
@@ -553,9 +569,9 @@ class MappingCoordinator(
         val state = mappingState ?: return
         val reduction = reducer.reduce(state, VolumeMappingAction.AdvanceTime(command.nowMillis))
         mappingState = reduction.state
-        publish { copy(logicalPosition = reduction.state.logicalPosition) }
+        publish { copy(logicalPosition = reducer.logicalPosition(reduction.state)) }
         if (reduction.writeRequested) {
-            applyTarget(reduction.targetOutputVolume, force = false, context = gesture.writeContext)
+            applyTarget(reduction.targetIndex, force = false, context = gesture.writeContext)
         }
 
         val pending = pendingWrite
@@ -565,7 +581,7 @@ class MappingCoordinator(
             isWriteIntervalElapsed(command.nowMillis)
         ) {
             pendingWrite = null
-            writeTarget(pending.targetNormalized, pending.context)
+            writeTarget(pending.targetIndex, pending.context)
         }
     }
 
@@ -651,15 +667,14 @@ class MappingCoordinator(
         }
         if (!isActiveGestureCurrent(gesture)) return false
 
-        val currentSnapshot = _runtime.value.snapshot ?: return false
         if (
             guardedSnapshot.route.stableId != gesture.routeId ||
-            guardedSnapshot.range != currentSnapshot.range
+            guardedSnapshot.range.identity != gesture.rangeIdentity
         ) {
             adoptUnexpectedRoute(guardedSnapshot)
             return false
         }
-        if (backend.isVolumeFixed) {
+        if (isEffectivelyFixedVolume(backend.isVolumeFixed, guardedSnapshot.range)) {
             invalidateForFixedVolume(guardedSnapshot)
             return false
         }
@@ -681,11 +696,12 @@ class MappingCoordinator(
     private fun invalidateForFixedVolume(snapshot: RouteVolumeSnapshot) {
         val stamp = beginControlTransition()
         actorControlEpoch = stamp.controlEpoch
-        cancelActorWork(resetMapping = false)
+        cancelActorWork(resetMapping = true)
         publish {
             copy(
                 snapshot = snapshot,
                 isVolumeFixed = true,
+                logicalPosition = null,
                 expectedIndex = snapshot.currentIndex,
                 statusMessage = "系统报告固定音量，已交还默认按键行为",
             )
@@ -734,11 +750,14 @@ class MappingCoordinator(
         allowRouteChange: Boolean,
     ): Boolean {
         if (!isStampCurrent(stamp)) return false
-        val previousRouteId = _runtime.value.snapshot?.route?.stableId
+        val previousSnapshot = _runtime.value.snapshot
         if (
             !allowRouteChange &&
-            previousRouteId != null &&
-            previousRouteId != snapshot.route.stableId
+            previousSnapshot != null &&
+            (
+                previousSnapshot.route.stableId != snapshot.route.stableId ||
+                    previousSnapshot.range.identity != snapshot.range.identity
+                )
         ) {
             adoptUnexpectedRoute(snapshot)
             return false
@@ -747,7 +766,7 @@ class MappingCoordinator(
         publish {
             withAcceptedSnapshot(
                 snapshot = snapshot,
-                isVolumeFixed = backend.isVolumeFixed,
+                isVolumeFixed = isEffectivelyFixedVolume(backend.isVolumeFixed, snapshot.range),
                 isMediaContextSafe = backend.isMediaContextSafe,
             )
         }
@@ -761,57 +780,55 @@ class MappingCoordinator(
         publish {
             copy(
                 snapshot = snapshot,
-                isVolumeFixed = backend.isVolumeFixed,
+                isVolumeFixed = isEffectivelyFixedVolume(backend.isVolumeFixed, snapshot.range),
                 isMediaContextSafe = backend.isMediaContextSafe,
                 logicalPosition = null,
                 expectedIndex = snapshot.currentIndex,
-                statusMessage = "检测到输出路由切换，已取消本次按键手势",
+                statusMessage = "检测到输出路由或音量范围变化，已取消本次按键手势",
             )
         }
     }
 
     private fun applyTarget(
-        normalizedTarget: Double,
+        targetIndex: Int,
         force: Boolean,
         context: WriteContext,
     ) {
         if (!isWriteContextCurrent(context)) return
         val now = SystemClock.uptimeMillis()
         if (!force && !isWriteIntervalElapsed(now)) {
-            pendingWrite = PendingWrite(normalizedTarget, context)
+            pendingWrite = PendingWrite(targetIndex, context)
             return
         }
         pendingWrite = null
-        writeTarget(normalizedTarget, context)
+        writeTarget(targetIndex, context)
     }
 
-    private fun writeTarget(normalizedTarget: Double, context: WriteContext) {
+    private fun writeTarget(targetIndex: Int, context: WriteContext) {
         if (!isWriteContextCurrent(context)) return
         val snapshot = _runtime.value.snapshot ?: return
         if (snapshot.route.stableId != context.routeId) return
-
-        val quantized = VolumeQuantizer.quantize(
-            targetNormalized = normalizedTarget,
-            range = snapshot.range,
-            mode = settings.quantizationMode,
-        )
-        if (quantized.index == _runtime.value.expectedIndex) return
+        if (!snapshot.range.contains(targetIndex)) return
+        if (targetIndex == _runtime.value.expectedIndex) return
 
         // Epoch/route check immediately before the blocking write.
         if (!isWriteContextCurrent(context)) return
         lastWriteAtMillis = SystemClock.uptimeMillis()
-        val result = backend.setMediaVolume(quantized.index, settings.showSystemVolumeUi)
+        val result = backend.setMediaVolume(targetIndex, settings.showSystemVolumeUi)
         // A transition racing the Binder call makes its result stale, regardless of success/failure.
         if (!isWriteContextCurrent(context)) return
 
         result.onSuccess {
+            // The settle window starts after the blocking Binder call completes, not when it
+            // begins. Keep the pre-call timestamp only as an attempt throttle on failures.
+            lastWriteAtMillis = SystemClock.uptimeMillis()
             publish {
                 copy(
-                    expectedIndex = quantized.index,
-                    statusMessage = "已请求 ${quantized.index}/${snapshot.range.maxIndex}",
+                    expectedIndex = targetIndex,
+                    statusMessage = "已请求 $targetIndex/${snapshot.range.maxIndex}",
                 )
             }
-            scheduleVerification(context, quantized.index, lastWriteAtMillis)
+            scheduleVerification(context, targetIndex, lastWriteAtMillis)
         }.onFailure {
             registerFailure(
                 "系统拒绝修改音量：${it.message ?: it.javaClass.simpleName}",
@@ -875,38 +892,40 @@ class MappingCoordinator(
             return
         }
         if (!isWriteContextCurrent(cycle.context) || verificationCycle?.id != cycle.id) return
-        if (observed.route.stableId != cycle.context.routeId) {
+        if (
+            observed.route.stableId != cycle.context.routeId ||
+            observed.range.identity != cycle.context.rangeIdentity
+        ) {
             adoptUnexpectedRoute(observed)
             return
         }
-        if (backend.isVolumeFixed) {
+        if (isEffectivelyFixedVolume(backend.isVolumeFixed, observed.range)) {
             invalidateForFixedVolume(observed)
             return
         }
 
         val targetIndex = cycle.latestTargetIndex
-        publish {
-            copy(
-                snapshot = observed,
-                isVolumeFixed = backend.isVolumeFixed,
-                isMediaContextSafe = backend.isMediaContextSafe,
-                expectedIndex = observed.currentIndex,
-            )
-        }
         if (observed.currentIndex == targetIndex) {
             cancelVerification()
             publish {
                 copy(
+                    snapshot = observed,
+                    isVolumeFixed = false,
+                    isMediaContextSafe = backend.isMediaContextSafe,
+                    expectedIndex = observed.currentIndex,
                     consecutiveWriteFailures = 0,
                     statusMessage = "写入已确认：${observed.currentIndex}/${observed.range.maxIndex}",
                 )
             }
-        } else {
-            synchronizeMappingToObserved(observed)
-            if (!command.final) return
+            return
+        }
 
-            val latestWriteAge = SystemClock.uptimeMillis() - cycle.latestWriteAtMillis
-            if (latestWriteAge < FINAL_VERIFY_DELAY_MILLIS) {
+        val latestWriteAge = SystemClock.uptimeMillis() - cycle.latestWriteAtMillis
+        if (latestWriteAge < FINAL_VERIFY_DELAY_MILLIS) {
+            // This snapshot can predate the latest write in a continuous hold. Keep the exact
+            // reducer slot, fractional hold remainder and any newer throttled target until the
+            // newest write has received the complete settling window.
+            if (command.final) {
                 if (activeGesture?.writeContext == cycle.context) {
                     // A fixed-duration cycle still probes a continuous hold. Start a fresh cycle
                     // instead of letting per-write generations postpone verification forever.
@@ -920,36 +939,61 @@ class MappingCoordinator(
                         FINAL_VERIFY_DELAY_MILLIS - latestWriteAge,
                     )
                 }
-                return
             }
-            cancelVerification()
-            registerFailure(
-                "写后回读不一致：请求 $targetIndex，系统保持 ${observed.currentIndex}",
-                cycle.context.stamp,
-            )
-            if (!isStampCurrent(cycle.context.stamp)) return
+            return
         }
+
+        publish {
+            copy(
+                snapshot = observed,
+                isVolumeFixed = false,
+                isMediaContextSafe = backend.isMediaContextSafe,
+                expectedIndex = observed.currentIndex,
+            )
+        }
+        synchronizeMappingToObserved(observed)
+        if (!command.final) return
+
+        cancelVerification()
+        registerFailure(
+            "写后回读不一致：请求 $targetIndex，系统保持 ${observed.currentIndex}",
+            cycle.context.stamp,
+        )
+        if (!isStampCurrent(cycle.context.stamp)) return
     }
 
     private fun synchronizeMappingToObserved(observed: RouteVolumeSnapshot) {
-        val observedNormalized = VolumeQuantizer.normalizedForIndex(
-            observed.currentIndex,
-            observed.range,
-            settings.quantizationMode,
-        )
+        // A mature mismatch makes every throttled target derived from the old anchor stale.
+        pendingWrite = null
+        ensureReducerBound(observed.range)
         val state = mappingState
         mappingState = if (state == null) {
-            reducer.initialState(observedNormalized)
+            reducer.initialState(observed.currentIndex)
         } else {
             reducer.reduce(
                 state,
                 VolumeMappingAction.SynchronizeObserved(
-                    outputVolume = observedNormalized,
+                    observedIndex = observed.currentIndex,
                     forceWhilePressed = true,
                 ),
             ).state
         }
-        publish { copy(logicalPosition = mappingState?.logicalPosition) }
+        publish { copy(logicalPosition = mappingState?.let(reducer::logicalPosition)) }
+    }
+
+    /** Rebuilds the route-specific step table when the effective integer range changes. */
+    private fun ensureReducerBound(range: RouteVolumeRange): Boolean {
+        if (
+            boundStepMap.source == settings.outputMap &&
+            boundStepMap.range.hasSameIndexBounds(range)
+        ) {
+            return false
+        }
+        val nextBoundMap = settings.outputMap.bind(range)
+        boundStepMap = nextBoundMap
+        reducer = VolumeMappingReducer(boundStepMap, settings.keyConfig)
+        mappingState = null
+        return true
     }
 
     private fun registerFailure(message: String, stamp: EpochStamp) {
@@ -1125,28 +1169,24 @@ class MappingCoordinator(
         // A fast UP can drain callback ownership before the actor receives this already-accepted
         // DOWN. Channel ordering still delivers DOWN before UP, so epoch/eligibility determines
         // whether the tap is current; gestureOwner only governs continued hold/ticker ownership.
-        isWriteContextCurrent(
-            WriteContext(
-                stamp = command.stamp,
-                routeId = _runtime.value.snapshot?.route?.stableId.orEmpty(),
-            ),
-            requireRouteId = false,
-        )
+        isStampCurrent(command.stamp) && eligible.get() && backend.isMediaContextSafe
 
     private fun isActiveGestureCurrent(gesture: ActiveGesture): Boolean =
         activeGesture == gesture &&
             gestureOwner.get() == gesture.token &&
             isWriteContextCurrent(gesture.writeContext)
 
-    private fun isWriteContextCurrent(
-        context: WriteContext,
-        requireRouteId: Boolean = true,
-    ): Boolean {
+    private fun isWriteContextCurrent(context: WriteContext): Boolean {
         if (!isStampCurrent(context.stamp)) return false
         if (!eligible.get() || !backend.isMediaContextSafe) return false
-        if (requireRouteId && _runtime.value.snapshot?.route?.stableId != context.routeId) return false
+        val snapshot = _runtime.value.snapshot ?: return false
+        if (snapshot.route.stableId != context.routeId) return false
+        if (snapshot.range.identity != context.rangeIdentity) return false
         return true
     }
+
+    private val RouteVolumeRange.identity: VolumeRangeIdentity
+        get() = VolumeRangeIdentity(minIndex = minIndex, maxIndex = maxIndex)
 
     private inline fun publish(transform: ControllerRuntimeState.() -> ControllerRuntimeState) {
         _runtime.update {
@@ -1182,6 +1222,7 @@ class MappingCoordinator(
     private data class WriteContext(
         val stamp: EpochStamp,
         val routeId: String,
+        val rangeIdentity: VolumeRangeIdentity,
     )
 
     private data class ActiveGesture(
@@ -1189,13 +1230,19 @@ class MappingCoordinator(
         val direction: VolumeDirection,
         val stamp: EpochStamp,
         val routeId: String,
+        val rangeIdentity: VolumeRangeIdentity,
     ) {
         val writeContext: WriteContext
-            get() = WriteContext(stamp, routeId)
+            get() = WriteContext(stamp, routeId, rangeIdentity)
     }
 
+    private data class VolumeRangeIdentity(
+        val minIndex: Int,
+        val maxIndex: Int,
+    )
+
     private data class PendingWrite(
-        val targetNormalized: Double,
+        val targetIndex: Int,
         val context: WriteContext,
     )
 

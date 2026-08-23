@@ -16,15 +16,16 @@
 
 当前覆盖：
 
-- 曲线端点、单调性、分段插值、反解与 plateau bias；
-- 拖动控制点时的相邻约束、增删点和曲线积分；
-- 短按、长按延迟、加速、repeat no-op、匹配/不匹配 UP、readback 同步与取消；
+- 固定均匀横轴、整数端点、严格单调 offset 与折线采样；
+- 点数变化、跨路由范围重投影、全局最小平方结果及确定性 tie-break；
+- 单点相邻约束与画笔拖动的最小推挤；
+- 精确状态短按、外部 index 的严格上下界选择、长按延迟、加速、repeat no-op、匹配/不匹配 UP、readback 同步与取消；
 - 单次大跨度积分与 50 ms 多次积分的一致性；
-- 非零 min、0–15 快照边界、0–150 启发式路由、重复/不可用 dB 与无 dB 降级量化；
-- mapping state 为空、外部 index 变化和 active state 时的小档位余量保留边界；
+- 非零 min、固定音量、0–15 与 0–150 路由绑定边界；
+- mapping state 为空、外部 index 变化、精确状态连续性和 active hold 步数余量边界；
 - DataStore 设置 round-trip、旧格式迁移和坏字段独立降级。
 
-这些是 pure reducer/quantizer/serialization 测试，不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也没有用 fake backend 覆盖 coordinator 的完整并发时序。
+这些是 pure map/reducer/serialization 测试，不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也没有用 fake backend 覆盖 coordinator 的完整并发时序。
 
 ### Lint 与构建
 
@@ -38,9 +39,9 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 
 仓库包含三项设备侧测试：
 
-- `MainActivityTest`：验证主导航、曲线编辑器、Slider 与预设控件可达；
+- `MainActivityTest`：验证主导航、按键次数、选中点精调、撤销/重做与预设控件可达；
 - `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造完整 DOWN/UP，并验证真实 `STREAM_MUSIC` index 改变和最终清理。
-- `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并从通知 action 停止映射；宿主 E2E 会先执行 `pm clear`，再复用它准备确定性的 40% 线性曲线。
+- `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并从通知 action 停止映射；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性离散状态表。
 
 第二项测试不会启动真实 AccessibilityService，也不会验证系统是否把物理按键分派给服务。第三项的 instrumentation 阶段不能独自证明按键分派，因为 UiAutomation 注入会绕过 Accessibility input filter；实体按键链路由下述宿主 E2E 使用内核 evdev 事件验证。模拟器结果仍不能替代 OEM、蓝牙耳机和真实系统授权页测试。编译测试 APK 与实际执行应区分：
 
@@ -124,6 +125,9 @@ Android 17 还应使用系统支持的音频 hardening 调试命令（若该镜�
 - 只有 active press 存在 50 ms ticker，结束后无常驻 tick；连续长按写入稳态不超过约 14 次/秒；
 - disarm、FGS stop、settings、手动刷新和 route/environment 变化先原子失效 control epoch；route 变化还失效 route epoch，旧 I/O 结果不能复活；
 - active hold 每约 500 ms 核对 mode、route ID、范围与 fixed-volume，且 guard 不覆盖 active logical/expected index；
-- 一个 verification cycle 跟踪 latest expected，首次 mismatch 立即同步 observed，final mismatch 才计失败；
+- 一个 verification cycle 跟踪 latest expected；fresh mismatch 不重锚，成熟 mismatch 清 pending 并同步 observed，final mismatch 才计失败；
+- UP 必须刷新最终 reducer target；同一 route ID 的 min/max 变化必须取消手势，只有 dB 诊断元数据变化不能重建 reducer；
 - 三次连续读写/最终回读失败后新按键自动交还系统；
+- 设置中 `K` 次按键必须对应 `K+1` 个固定均匀状态，端点固定且 index 严格递增；
+- 当前路由跨度小于 `K` 时只临时降低有效次数，不能生成重复 index 或破坏保存的原始设置；
 - 不读取窗口内容，不使用隐藏 API，不绕过系统安全音量。

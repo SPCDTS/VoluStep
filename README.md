@@ -4,10 +4,10 @@
 
 项目当前实现：
 
-- 可拖拽、可用 Slider 精调的 `x → V` 单调分段线性曲线；
-- 线性、低音量精细、S 曲线、夜间上限四种预设；
-- 可调短按步长、长按延迟、长按速度与加速曲线；
-- INDEX 与 dB 两种量化方式，并叠加显示当前设备的实际阶梯；
+- 横轴固定均匀、纵轴直接对应整数 audio index 的离散映射曲线；`K` 次短按对应 `K+1` 个状态；
+- 可配置按键次数，以画笔式拖动、单点 index 输入、`±1`、撤销/重做和 `Δindex` 预览精调曲线；
+- 线性、低音量精细与 S 曲线预设，以及可调长按延迟、速度和加速曲线；
+- 曲线按当前路由实际 min/max 投影；较小范围会临时减少有效按键次数并明确提示；
 - AccessibilityService 全局过滤音量键，以 `(deviceId, keyCode, downTime)` 标识一次手势；repeat 只刷新心跳，长按才启动 50 ms ticker；
 - Android 17 所需、由可见 Activity 显式启动的 `specialUse` 前台服务；
 - 音量写入后的单周期两阶段回读、control/route epoch 失效、路由切换重置和连续失败自动放行；
@@ -84,7 +84,7 @@
 5. 在诊断页确认蓝牙路由、系统 min/max、dB 样本和回读状态。
 6. HyperOS 若连续回读失败，检查“调节媒体音量”权限、后台运行和省电限制。
 
-真机测试流程见 [docs/TESTING.md](docs/TESTING.md)，架构与厂商适配见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 和 [docs/OEM_COMPATIBILITY.md](docs/OEM_COMPATIBILITY.md)。
+真机测试流程见 [docs/TESTING.md](docs/TESTING.md)，离散曲线与开源交互调研见 [docs/CURVE_EDITOR.md](docs/CURVE_EDITOR.md)，架构与厂商适配见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 和 [docs/OEM_COMPATIBILITY.md](docs/OEM_COMPATIBILITY.md)。
 
 当前单机样本已在 Xiaomi 15 / HyperOS / Android 16（API 36）验证扬声器前台、桌面后台、亮屏锁屏和 A2DP 绝对音量的精细步进。连接耳机的蓝牙显示名称为“Xiaomi Buds 5 Pro”，但这不能证明其具体硬件型号。真实媒体播放时曾发现 HyperOS 让后台无障碍按键回调超过系统 500 ms 窗口并延迟送达；当前代码已增加过期事件放行与手势排空保护。把该应用的 HyperOS 省电策略从“智能限制”改为“无限制”后，同场景单次对照在约 160 ms 内完成 `8 → 9`，且回前台没有迟到写入；这是一个样本的排障结果，不是跨设备保证。LE Audio 尚未验证。完整证据和边界见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
@@ -94,7 +94,7 @@
 
 - 普通应用最终只能写公开的整数 `STREAM_MUSIC` index，不能改 AudioPolicy 音量曲线、post-mix 增益或蓝牙原始 AVRCP/VCS 值；
 - `getStreamVolumeDb()` 是 Android 策略衰减，不是耳机真实声压 SPL；
-- API 33+ 只有系统为媒体属性明确返回单一路由时才使用 dB 表；多路由歧义或 API 28–32 的启发式路由会回退到 index 量化；
+- 当前映射纵轴只使用实际整数 index；dB 表保留用于诊断，不参与按键目标计算；
 - A2DP 绝对音量通常只有 0–127，LE Audio VCS 通常只有 0–255，耳机固件还可能合并相邻档位；
 - 耳机自身按键若直接发绝对音量通知，可能完全不经过 Accessibility `KeyEvent`；
 - 检测到系统通话音频模式时会放行；公开 API 无法可靠识别所有闹钟、相机和 OEM 前台场景，使用这些功能前应从通知或应用内停止映射；

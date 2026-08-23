@@ -1,5 +1,6 @@
 package dev.spcdts.volumemapper.core
 
+import kotlin.math.floor
 import kotlin.math.max
 
 enum class VolumeDirection(val sign: Double) {
@@ -9,7 +10,6 @@ enum class VolumeDirection(val sign: Double) {
 
 /** User-tunable key behaviour. The hold ramp is integrated exactly between timer ticks. */
 data class KeyMappingConfig(
-    val tapStep: Double = 0.025,
     val holdDelayMillis: Long = 350L,
     val holdUnitsPerSecond: Double = 0.12,
     val holdRampDurationMillis: Long = 1_500L,
@@ -17,9 +17,6 @@ data class KeyMappingConfig(
     val holdRampCurve: MappingCurve = MappingCurve.linear(),
 ) {
     init {
-        require(tapStep.isFinite() && tapStep in 0.0..1.0) {
-            "tapStep must be finite and in 0..1"
-        }
         require(holdDelayMillis >= 0L) { "holdDelayMillis cannot be negative" }
         require(holdUnitsPerSecond.isFinite() && holdUnitsPerSecond >= 0.0) {
             "holdUnitsPerSecond must be finite and non-negative"
@@ -43,15 +40,80 @@ data class ActiveVolumePress(
     }
 }
 
-/** The reducer owns logical x; the selected [MappingCurve] turns it into the requested volume V. */
+/**
+ * Identifies whether the reducer owns an exact configured slot or is anchored only to an index
+ * observed from Android. An observed index deliberately remains unsnapped until the next key
+ * direction selects a strict upper or lower configured step.
+ */
+sealed interface VolumePosition {
+    data class ExactStep(val stepIndex: Int) : VolumePosition {
+        init {
+            require(stepIndex >= 0) { "stepIndex cannot be negative" }
+        }
+    }
+
+    data class ObservedIndex(val index: Int) : VolumePosition
+}
+
+/**
+ * Reducer state for one route-bound step map.
+ *
+ * [heldStepRemainder] retains hold displacement smaller than one configured slot. It never affects
+ * the target index directly and is cleared when the gesture ends.
+ */
 data class VolumeMappingState(
-    val logicalPosition: Double,
+    val position: VolumePosition,
     val activePress: ActiveVolumePress? = null,
+    val heldStepRemainder: Double = 0.0,
     val revision: Long = 0L,
 ) {
     init {
-        require(logicalPosition.isFinite() && logicalPosition in 0.0..1.0) {
-            "logicalPosition must be finite and in 0..1"
+        require(
+            heldStepRemainder.isFinite() &&
+                heldStepRemainder >= 0.0 &&
+                heldStepRemainder < 1.0,
+        ) { "heldStepRemainder must be finite and in 0..<1" }
+        require(activePress != null || heldStepRemainder == 0.0) {
+            "An idle state cannot retain a held-step remainder"
+        }
+    }
+
+    /** Derives the normalized editor position by inverting the route-bound piecewise-linear map. */
+    fun logicalPosition(stepMap: BoundStepVolumeMap): Double {
+        val pressCount = stepMap.effectivePressCount
+        if (pressCount == 0) return 0.0
+
+        return when (val current = position) {
+            is VolumePosition.ExactStep -> {
+                require(current.stepIndex in stepMap.indices.indices) {
+                    "Exact step is outside the bound map"
+                }
+                current.stepIndex.toDouble() / pressCount.toDouble()
+            }
+
+            is VolumePosition.ObservedIndex -> {
+                require(stepMap.range.contains(current.index)) {
+                    "Observed index is outside the bound route range"
+                }
+                val searchResult = stepMap.indices.binarySearch(current.index)
+                if (searchResult >= 0) {
+                    searchResult.toDouble() / pressCount.toDouble()
+                } else {
+                    val rightStep = -searchResult - 1
+                    when {
+                        rightStep <= 0 -> 0.0
+                        rightStep >= stepMap.indices.size -> 1.0
+                        else -> {
+                            val leftStep = rightStep - 1
+                            val leftIndex = stepMap.indices[leftStep]
+                            val rightIndex = stepMap.indices[rightStep]
+                            val fraction = (current.index - leftIndex).toDouble() /
+                                (rightIndex - leftIndex).toDouble()
+                            (leftStep.toDouble() + fraction) / pressCount.toDouble()
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -71,7 +133,7 @@ sealed interface VolumeMappingAction {
     data class AdvanceTime(val nowMillis: Long) : VolumeMappingAction
 
     data class SynchronizeObserved(
-        val outputVolume: Double,
+        val observedIndex: Int,
         val forceWhilePressed: Boolean = false,
     ) : VolumeMappingAction
 
@@ -79,50 +141,69 @@ sealed interface VolumeMappingAction {
 }
 
 /**
- * A transition always reports the current mapped target. [writeRequested] is true only when a key
- * action changed x and the platform backend should be asked to apply a new volume.
+ * A transition always reports one actual index from the current route or the untouched observed
+ * index. [writeRequested] is true only when a key action changed that integer target.
  */
 data class MappingReduction(
     val state: VolumeMappingState,
-    val targetOutputVolume: Double,
+    val targetIndex: Int,
     val writeRequested: Boolean,
 )
 
-/** Pure state machine for tap, repeat and hold behaviour. */
+/** Pure state machine for discrete short presses and frame-rate-independent hold movement. */
 class VolumeMappingReducer(
-    val outputCurve: MappingCurve,
+    val stepMap: BoundStepVolumeMap,
     val config: KeyMappingConfig,
 ) {
-    fun initialState(observedOutputVolume: Double): VolumeMappingState =
-        VolumeMappingState(
-            logicalPosition = outputCurve.inverse(observedOutputVolume.coerceIn(0.0, 1.0)),
-        )
+    fun initialState(observedIndex: Int): VolumeMappingState {
+        require(stepMap.range.contains(observedIndex)) {
+            "observedIndex is outside the bound route range"
+        }
+        return VolumeMappingState(position = VolumePosition.ObservedIndex(observedIndex))
+    }
 
-    fun targetOutput(state: VolumeMappingState): Double = outputCurve.evaluate(state.logicalPosition)
+    fun targetIndex(state: VolumeMappingState): Int = when (val current = state.position) {
+        is VolumePosition.ExactStep -> {
+            require(current.stepIndex in stepMap.indices.indices) {
+                "Exact step is outside the bound map"
+            }
+            stepMap.indices[current.stepIndex]
+        }
+
+        is VolumePosition.ObservedIndex -> {
+            require(stepMap.range.contains(current.index)) {
+                "Observed index is outside the bound route range"
+            }
+            current.index
+        }
+    }
+
+    fun logicalPosition(state: VolumeMappingState): Double = state.logicalPosition(stepMap)
 
     fun reduce(state: VolumeMappingState, action: VolumeMappingAction): MappingReduction {
+        val previousTarget = targetIndex(state)
         val nextState: VolumeMappingState
         val writeRequested: Boolean
 
         when (action) {
             is VolumeMappingAction.KeyDown -> {
                 if (action.repeated) {
-                    // Repeat cadence is an input-liveness signal, not a movement clock. In
-                    // particular, an orphan repeat must never create a new press after cancellation.
+                    // Repeat cadence is only an input-liveness signal. An orphan repeat must not
+                    // create a press, and movement remains owned by the monotonic hold clock.
                     nextState = state
                     writeRequested = false
                 } else {
                     val advanced = advance(state, action.eventTimeMillis)
-                    val moved = moveBy(advanced, action.direction.sign * config.tapStep)
+                    val moved = moveByWholeSteps(advanced, action.direction, stepCount = 1)
                     nextState = moved.copy(
                         activePress = ActiveVolumePress(
                             direction = action.direction,
                             startedAtMillis = action.eventTimeMillis,
                             lastIntegratedAtMillis = action.eventTimeMillis,
                         ),
+                        heldStepRemainder = 0.0,
                     )
-                    writeRequested = moved.logicalPosition != advanced.logicalPosition ||
-                        advanced.logicalPosition != state.logicalPosition
+                    writeRequested = targetIndex(nextState) != previousTarget
                 }
             }
 
@@ -130,8 +211,8 @@ class VolumeMappingReducer(
                 val active = state.activePress
                 if (active?.direction == action.direction) {
                     val advanced = advance(state, action.eventTimeMillis)
-                    nextState = advanced.copy(activePress = null)
-                    writeRequested = advanced.logicalPosition != state.logicalPosition
+                    nextState = advanced.copy(activePress = null, heldStepRemainder = 0.0)
+                    writeRequested = targetIndex(nextState) != previousTarget
                 } else {
                     nextState = state
                     writeRequested = false
@@ -140,29 +221,34 @@ class VolumeMappingReducer(
 
             is VolumeMappingAction.AdvanceTime -> {
                 nextState = advance(state, action.nowMillis)
-                writeRequested = nextState.logicalPosition != state.logicalPosition
+                writeRequested = targetIndex(nextState) != previousTarget
             }
 
             is VolumeMappingAction.SynchronizeObserved -> {
-                if (state.activePress != null && !action.forceWhilePressed) {
-                    nextState = state
-                } else {
-                    val observed = action.outputVolume.coerceIn(0.0, 1.0)
-                    nextState = setPosition(state, outputCurve.inverse(observed))
+                require(stepMap.range.contains(action.observedIndex)) {
+                    "observedIndex is outside the bound route range"
                 }
-                // A readback synchronization must never echo another platform write.
+                nextState = when {
+                    state.activePress != null && !action.forceWhilePressed -> state
+                    action.observedIndex == previousTarget -> state
+                    else -> setPosition(
+                        state.copy(heldStepRemainder = 0.0),
+                        VolumePosition.ObservedIndex(action.observedIndex),
+                    )
+                }
+                // Synchronizing platform readback must never echo another platform write.
                 writeRequested = false
             }
 
             VolumeMappingAction.CancelPress -> {
-                nextState = state.copy(activePress = null)
+                nextState = state.copy(activePress = null, heldStepRemainder = 0.0)
                 writeRequested = false
             }
         }
 
         return MappingReduction(
             state = nextState,
-            targetOutputVolume = targetOutput(nextState),
+            targetIndex = targetIndex(nextState),
             writeRequested = writeRequested,
         )
     }
@@ -170,23 +256,41 @@ class VolumeMappingReducer(
     private fun advance(state: VolumeMappingState, requestedNowMillis: Long): VolumeMappingState {
         val press = state.activePress ?: return state
         val nowMillis = max(requestedNowMillis, press.lastIntegratedAtMillis)
-        val holdStartMillis = press.startedAtMillis + config.holdDelayMillis
+        val holdStartMillis = saturatedAdd(press.startedAtMillis, config.holdDelayMillis)
         val integrationStartMillis = max(press.lastIntegratedAtMillis, holdStartMillis)
-        val displacement = if (nowMillis > integrationStartMillis) {
+        val normalizedDisplacement = if (nowMillis > integrationStartMillis) {
             holdDisplacement(
                 fromHeldMillis = integrationStartMillis - holdStartMillis,
                 toHeldMillis = nowMillis - holdStartMillis,
-            ) * press.direction.sign
+            )
         } else {
             0.0
         }
 
-        val moved = moveBy(state, displacement)
+        val newPress = press.copy(lastIntegratedAtMillis = nowMillis)
+        if (normalizedDisplacement == 0.0 || stepMap.effectivePressCount == 0) {
+            return state.copy(activePress = newPress)
+        }
+
+        val displacementInSteps = normalizedDisplacement * stepMap.effectivePressCount.toDouble()
+        val accumulated = state.heldStepRemainder + displacementInSteps
+        val wholeSteps = when {
+            !accumulated.isFinite() -> stepMap.effectivePressCount
+            accumulated >= stepMap.effectivePressCount.toDouble() -> stepMap.effectivePressCount
+            else -> floor(accumulated + STEP_EPSILON).toInt()
+        }
+        val remainder = when {
+            !accumulated.isFinite() || wholeSteps == stepMap.effectivePressCount -> 0.0
+            else -> (accumulated - wholeSteps.toDouble()).coerceIn(0.0, MAX_STEP_REMAINDER)
+        }
+        val moved = moveByWholeSteps(state, press.direction, wholeSteps)
         return moved.copy(
-            activePress = press.copy(lastIntegratedAtMillis = nowMillis),
+            activePress = newPress,
+            heldStepRemainder = remainder,
         )
     }
 
+    /** Returns normalized full-range displacement; callers convert it to configured slots. */
     private fun holdDisplacement(fromHeldMillis: Long, toHeldMillis: Long): Double {
         val durationSeconds = (toHeldMillis - fromHeldMillis) / MILLIS_PER_SECOND
         val rampDurationMillis = config.holdRampDurationMillis.toDouble()
@@ -199,15 +303,50 @@ class VolumeMappingReducer(
         return config.holdUnitsPerSecond * multiplierAreaSeconds
     }
 
-    private fun moveBy(state: VolumeMappingState, delta: Double): VolumeMappingState =
-        setPosition(state, (state.logicalPosition + delta).coerceIn(0.0, 1.0))
+    private fun moveByWholeSteps(
+        state: VolumeMappingState,
+        direction: VolumeDirection,
+        stepCount: Int,
+    ): VolumeMappingState {
+        require(stepCount >= 0) { "stepCount cannot be negative" }
+        if (stepCount == 0 || stepMap.effectivePressCount == 0) return state
 
-    private fun setPosition(state: VolumeMappingState, logicalPosition: Double): VolumeMappingState {
-        if (logicalPosition == state.logicalPosition) return state
-        return state.copy(logicalPosition = logicalPosition, revision = state.revision + 1L)
+        val targetStep = when (val current = state.position) {
+            is VolumePosition.ExactStep -> {
+                val signedTarget = when (direction) {
+                    VolumeDirection.UP -> current.stepIndex.toLong() + stepCount.toLong()
+                    VolumeDirection.DOWN -> current.stepIndex.toLong() - stepCount.toLong()
+                }
+                signedTarget.coerceIn(0L, stepMap.effectivePressCount.toLong()).toInt()
+            }
+
+            is VolumePosition.ObservedIndex -> {
+                val firstStep = stepMap.nextStep(current.index, direction) ?: return state
+                val remaining = stepCount - 1
+                when (direction) {
+                    VolumeDirection.UP -> firstStep.stepIndex + remaining
+                    VolumeDirection.DOWN -> firstStep.stepIndex - remaining
+                }.coerceIn(0, stepMap.effectivePressCount)
+            }
+        }
+
+        return setPosition(state, VolumePosition.ExactStep(targetStep))
     }
+
+    private fun setPosition(
+        state: VolumeMappingState,
+        position: VolumePosition,
+    ): VolumeMappingState {
+        if (position == state.position) return state
+        return state.copy(position = position, revision = state.revision + 1L)
+    }
+
+    private fun saturatedAdd(left: Long, nonNegativeRight: Long): Long =
+        if (left > Long.MAX_VALUE - nonNegativeRight) Long.MAX_VALUE else left + nonNegativeRight
 
     private companion object {
         const val MILLIS_PER_SECOND: Double = 1_000.0
+        const val STEP_EPSILON: Double = 1e-9
+        const val MAX_STEP_REMAINDER: Double = 1.0 - STEP_EPSILON
     }
 }

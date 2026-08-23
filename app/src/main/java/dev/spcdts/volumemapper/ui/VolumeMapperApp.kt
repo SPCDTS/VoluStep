@@ -66,7 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import dev.spcdts.volumemapper.AppGraph
 import dev.spcdts.volumemapper.core.MappingPreset
-import dev.spcdts.volumemapper.core.VolumeQuantizationMode
+import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.ControllerRuntimeState
 import dev.spcdts.volumemapper.runtime.MappingControllerService
@@ -384,6 +384,19 @@ private fun CurveScreen(
     graph: AppGraph,
     modifier: Modifier = Modifier,
 ) {
+    val editableSpan = runtime.snapshot?.range?.let { it.maxIndex - it.minIndex }
+        ?.takeIf { it > 0 }
+        ?: settings.outputMap.basisSpan
+    val editablePressCount = settings.outputMap.pressCount.coerceAtMost(editableSpan)
+    val editableMap = runtime.snapshot?.range
+        ?.takeIf { it.maxIndex > it.minIndex }
+        ?.let(settings.outputMap::rebase)
+        ?: settings.outputMap
+    val fullRangePresets = listOf(
+        MappingPreset.LINEAR,
+        MappingPreset.LOW_VOLUME_FINE,
+        MappingPreset.S_CURVE,
+    )
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -392,21 +405,28 @@ private fun CurveScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            Text("x(t) → V 映射", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("按键次数 → 音量 index", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text(
-                "蓝线是连续目标，绿线是当前手机/耳机路由量化后实际可请求的阶梯。",
+                "横轴均匀排列：从最小到最大需要 K 次短按，因此包含 K+1 个音量状态；纵轴是当前媒体路由的真实整数 index。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (runtime.snapshot != null && editablePressCount < settings.outputMap.pressCount) {
+                Text(
+                    "当前路由只有 $editableSpan 个可区分区间，配置的 ${settings.outputMap.pressCount} 次已临时降为 $editablePressCount 次。",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
         item {
             Card {
                 MappingCurveEditor(
-                    curve = settings.outputCurve,
+                    outputMap = settings.outputMap,
                     snapshot = runtime.snapshot,
-                    quantizationMode = settings.quantizationMode,
                     currentLogicalPosition = runtime.logicalPosition,
-                    onCurveChanged = graph.settingsRepository::updateCurve,
-                    onCurveChangeFinished = graph.settingsRepository::flushPendingWrite,
+                    onMapCommitted = { outputMap ->
+                        graph.settingsRepository.updateOutputMap(outputMap)
+                        graph.settingsRepository.flushPendingWrite()
+                    },
                     modifier = Modifier.padding(16.dp),
                 )
             }
@@ -420,11 +440,16 @@ private fun CurveScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(MappingPreset.entries) { preset ->
+                    items(fullRangePresets) { preset ->
+                        val presetMap = StepVolumeMap.fromCurve(
+                            curve = preset.createCurve(),
+                            basisSpan = editableSpan,
+                            pressCount = editablePressCount,
+                        )
                         FilterChip(
-                            selected = settings.outputCurve == preset.createCurve(),
+                            selected = editableMap == presetMap,
                             onClick = {
-                                graph.settingsRepository.updateCurve(preset.createCurve())
+                                graph.settingsRepository.updateOutputMap(presetMap)
                                 graph.settingsRepository.flushPendingWrite()
                             },
                             label = { Text(preset.displayName()) },
@@ -444,17 +469,7 @@ private fun KeyBehaviourCard(settings: VolumeMapperSettings, graph: AppGraph) {
     Card(modifier = Modifier.testTag(VolumeMapperTestTags.KEY_BEHAVIOUR_CARD)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("按键响应", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text("每次短按：逻辑位置 ${(settings.keyConfig.tapStep * 100).format1()}%")
-            Slider(
-                value = settings.keyConfig.tapStep.toFloat(),
-                onValueChange = {
-                    graph.settingsRepository.updateKeyConfig(
-                        settings.keyConfig.copy(tapStep = it.toDouble()),
-                    )
-                },
-                onValueChangeFinished = graph.settingsRepository::flushPendingWrite,
-                valueRange = 0.0025f..0.1f,
-            )
+            Text("短按严格前进或后退一个曲线状态；总次数由上方 K 控制，每个状态直接对应一个整数 index。")
             Text("长按基础速度：${(settings.keyConfig.holdUnitsPerSecond * 100).format1()}% / 秒")
             Slider(
                 value = settings.keyConfig.holdUnitsPerSecond.toFloat(),
@@ -477,19 +492,6 @@ private fun KeyBehaviourCard(settings: VolumeMapperSettings, graph: AppGraph) {
                 onValueChangeFinished = graph.settingsRepository::flushPendingWrite,
                 valueRange = 150f..800f,
             )
-            Text("量化方式")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                VolumeQuantizationMode.entries.forEach { mode ->
-                    FilterChip(
-                        selected = settings.quantizationMode == mode,
-                        onClick = {
-                            graph.settingsRepository.updateQuantizationMode(mode)
-                            graph.settingsRepository.flushPendingWrite()
-                        },
-                        label = { Text(if (mode == VolumeQuantizationMode.DECIBELS) "按 dB" else "按档位") },
-                    )
-                }
-            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("显示系统音量浮层", modifier = Modifier.weight(1f))
                 Switch(
@@ -525,13 +527,13 @@ private fun DiagnosticsScreen(
         add(
             "路由可信度" to when (snapshot?.route?.confidence?.name) {
                 "CONFIRMED" -> "系统明确报告"
-                "HEURISTIC" -> "启发式识别，dB 模式自动退回档位量化"
+                "HEURISTIC" -> "启发式识别；dB 仅作诊断参考"
                 else -> "未知"
             },
         )
         add("设备名称" to (snapshot?.route?.productName ?: "系统未提供"))
         add("媒体档位" to snapshot?.let { "${it.range.minIndex}…${it.range.maxIndex}，当前 ${it.currentIndex}" }.orEmpty())
-        add("公开 dB 样本" to if (finiteDb.isEmpty()) "不可用，将按 index 降级" else "${finiteDb.size} 个，${finiteDb.first().format1()}…${finiteDb.last().format1()} dB")
+        add("公开 dB 样本" to if (finiteDb.isEmpty()) "不可用；映射仍直接使用 index" else "${finiteDb.size} 个，${finiteDb.first().format1()}…${finiteDb.last().format1()} dB（仅诊断）")
         add("重复 dB 档位" to duplicateDb.toString())
         add("连续写入失败" to runtime.consecutiveWriteFailures.toString())
     }
