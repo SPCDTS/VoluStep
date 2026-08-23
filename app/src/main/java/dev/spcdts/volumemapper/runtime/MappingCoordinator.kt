@@ -51,6 +51,29 @@ data class ControllerRuntimeState(
             snapshot != null
 }
 
+/** 基于已接收快照后的完整状态决定文案，避免读取复制前的 [canInterceptKeys]。 */
+internal fun ControllerRuntimeState.withAcceptedSnapshot(
+    snapshot: RouteVolumeSnapshot,
+    isVolumeFixed: Boolean,
+    isMediaContextSafe: Boolean,
+): ControllerRuntimeState {
+    val acceptedState = copy(
+        snapshot = snapshot,
+        isVolumeFixed = isVolumeFixed,
+        isMediaContextSafe = isMediaContextSafe,
+        expectedIndex = snapshot.currentIndex,
+    )
+    return acceptedState.copy(
+        statusMessage = when {
+            acceptedState.isVolumeFixed -> "系统报告固定音量，已交还默认按键行为"
+            !acceptedState.isMediaContextSafe -> "当前通话或系统音频场景不接管音量键"
+            acceptedState.isFailOpen -> acceptedState.statusMessage
+            acceptedState.canInterceptKeys -> "映射服务已就绪"
+            else -> acceptedState.statusMessage
+        },
+    )
+}
+
 /** 唯一标识一次物理按键手势；repeat 和 UP 必须携带与初始 DOWN 相同的 downTime。 */
 internal data class KeyToken(
     val deviceId: Int,
@@ -682,18 +705,10 @@ class MappingCoordinator(
         }
 
         publish {
-            copy(
+            withAcceptedSnapshot(
                 snapshot = snapshot,
                 isVolumeFixed = backend.isVolumeFixed,
                 isMediaContextSafe = backend.isMediaContextSafe,
-                expectedIndex = snapshot.currentIndex,
-                statusMessage = when {
-                    backend.isVolumeFixed -> "系统报告固定音量，已交还默认按键行为"
-                    !backend.isMediaContextSafe -> "当前通话或系统音频场景不接管音量键"
-                    isFailOpen -> statusMessage
-                    canInterceptKeys -> "映射服务已就绪"
-                    else -> statusMessage
-                },
             )
         }
         return isStampCurrent(stamp)

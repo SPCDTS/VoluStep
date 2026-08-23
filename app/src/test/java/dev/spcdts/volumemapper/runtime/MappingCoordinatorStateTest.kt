@@ -7,6 +7,7 @@ import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
 import dev.spcdts.volumemapper.core.VolumeDirection
 import dev.spcdts.volumemapper.core.VolumeMappingState
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -63,5 +64,25 @@ class MappingCoordinatorStateTest {
         )
 
         assertFalse(canKeepLogicalRemainder(active, 50, snapshot, snapshot))
+    }
+
+    @Test
+    fun `accepted snapshot publishes ready status from resulting state`() {
+        val probing = ControllerRuntimeState(
+            isArmed = true,
+            isForegroundServiceRunning = true,
+            isAccessibilityConnected = true,
+            isMediaContextSafe = true,
+            statusMessage = "正在探测媒体音量能力",
+        )
+
+        val accepted = probing.withAcceptedSnapshot(
+            snapshot = snapshot,
+            isVolumeFixed = false,
+            isMediaContextSafe = true,
+        )
+
+        assertTrue(accepted.canInterceptKeys)
+        assertEquals("映射服务已就绪", accepted.statusMessage)
     }
 }
