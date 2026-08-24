@@ -16,6 +16,8 @@ class StepVolumeMapTest {
         expectIllegalArgument { StepVolumeMap(4, listOf(0, 3)) }
         expectIllegalArgument { StepVolumeMap(4, listOf(0, 2, 2, 4)) }
         expectIllegalArgument { StepVolumeMap(2, listOf(0, 1, 2, 3)) }
+        expectIllegalArgument { StepVolumeMap(4, pressCount = 0, offsets = listOf(0, 4)) }
+        expectIllegalArgument { StepVolumeMap(4, pressCount = 5, offsets = listOf(0, 4)) }
     }
 
     @Test
@@ -71,17 +73,44 @@ class StepVolumeMapTest {
     }
 
     @Test
-    fun `changing press count resamples with deterministic strict projection`() {
-        val original = StepVolumeMap(basisSpan = 20, offsets = listOf(0, 4, 20))
+    fun `changing press count leaves control polyline unchanged`() {
+        val original = StepVolumeMap(
+            basisSpan = 20,
+            pressCount = 8,
+            offsets = listOf(0, 4, 20),
+        )
 
-        val expanded = original.resample(4)
+        val changed = original.withPressCount(4)
 
-        assertEquals(4, expanded.pressCount)
+        assertEquals(4, changed.pressCount)
+        assertEquals(3, changed.controlPointCount)
+        assertEquals(original.offsets, changed.offsets)
+        assertEquals(original.evaluateOffset(0.7), changed.evaluateOffset(0.7), TOLERANCE)
+        assertSame(changed, changed.withPressCount(4))
+        expectIllegalArgument { original.withPressCount(0) }
+        expectIllegalArgument { original.withPressCount(21) }
+    }
+
+    @Test
+    fun `changing control point count resamples shape without changing press count`() {
+        val original = StepVolumeMap(
+            basisSpan = 20,
+            pressCount = 8,
+            offsets = listOf(0, 4, 20),
+        )
+
+        val expanded = original.resampleControlPoints(5)
+
+        assertEquals(8, expanded.pressCount)
+        assertEquals(5, expanded.controlPointCount)
         assertEquals(listOf(0, 2, 4, 12, 20), expanded.offsets)
-        assertSame(expanded, expanded.resample(4))
-        assertEquals(StepVolumeMap(basisSpan = 20, offsets = listOf(0, 20)), expanded.resample(1))
-        expectIllegalArgument { original.resample(0) }
-        expectIllegalArgument { original.resample(21) }
+        assertSame(expanded, expanded.resampleControlPoints(5))
+        assertEquals(
+            StepVolumeMap(basisSpan = 20, pressCount = 8, offsets = listOf(0, 20)),
+            expanded.resampleControlPoints(2),
+        )
+        expectIllegalArgument { original.resampleControlPoints(1) }
+        expectIllegalArgument { original.resampleControlPoints(22) }
     }
 
     @Test
@@ -103,19 +132,21 @@ class StepVolumeMapTest {
 
         assertEquals(
             listOf(0, 1, 2, 3, 20),
-            original.withOffsetPushing(stepIndex = 3, requestedOffset = -100).offsets,
+            original.withOffsetPushing(controlPointIndex = 3, requestedOffset = -100).offsets,
         )
         assertEquals(
             listOf(0, 17, 18, 19, 20),
-            original.withOffsetPushing(stepIndex = 1, requestedOffset = 100).offsets,
+            original.withOffsetPushing(controlPointIndex = 1, requestedOffset = 100).offsets,
         )
         assertEquals(
             listOf(0, 3, 12, 14, 20),
-            original.withOffsetPushing(stepIndex = 2, requestedOffset = 12).offsets,
+            original.withOffsetPushing(controlPointIndex = 2, requestedOffset = 12).offsets,
         )
-        assertSame(original, original.withOffsetPushing(stepIndex = 0, requestedOffset = 10))
-        assertSame(original, original.withOffsetPushing(stepIndex = 4, requestedOffset = 10))
-        expectIllegalArgument { original.withOffsetPushing(stepIndex = 5, requestedOffset = 10) }
+        assertSame(original, original.withOffsetPushing(controlPointIndex = 0, requestedOffset = 10))
+        assertSame(original, original.withOffsetPushing(controlPointIndex = 4, requestedOffset = 10))
+        expectIllegalArgument {
+            original.withOffsetPushing(controlPointIndex = 5, requestedOffset = 10)
+        }
     }
 
     @Test
@@ -134,6 +165,24 @@ class StepVolumeMapTest {
     }
 
     @Test
+    fun `rebase preserves the already bound press targets when integer controls would drift`() {
+        val source = StepVolumeMap(
+            basisSpan = 4,
+            pressCount = 2,
+            offsets = listOf(0, 2, 3, 4),
+        )
+        val range = RouteVolumeRange(minIndex = 5, maxIndex = 8)
+
+        val before = source.bind(range)
+        val rebased = source.rebase(range)
+
+        assertEquals(listOf(5, 7, 8), before.indices)
+        assertEquals(before.indices, rebased.bind(range).indices)
+        assertEquals(2, rebased.pressCount)
+        assertEquals(listOf(0, 2, 3), rebased.offsets)
+    }
+
+    @Test
     fun `same span binding preserves every authored offset exactly`() {
         val source = StepVolumeMap(15, listOf(0, 1, 3, 9, 15))
 
@@ -141,6 +190,46 @@ class StepVolumeMapTest {
 
         assertEquals(source.offsets, bound.indices)
         assertEquals(source.pressCount, bound.effectivePressCount)
+    }
+
+    @Test
+    fun `fewer control points than press states are interpolated at every press`() {
+        val source = StepVolumeMap(
+            basisSpan = 20,
+            pressCount = 5,
+            offsets = listOf(0, 4, 20),
+        )
+
+        val bound = source.bind(RouteVolumeRange(0, 20))
+
+        assertEquals(3, source.controlPointCount)
+        assertEquals(5, bound.effectivePressCount)
+        assertEquals(listOf(0, 2, 3, 7, 14, 20), bound.indices)
+    }
+
+    @Test
+    fun `more control points than press states retain independent authored detail`() {
+        val source = StepVolumeMap(
+            basisSpan = 20,
+            pressCount = 3,
+            offsets = listOf(0, 1, 2, 4, 8, 14, 20),
+        )
+
+        val bound = source.bind(RouteVolumeRange(0, 20))
+
+        assertEquals(7, source.controlPointCount)
+        assertEquals(3, bound.effectivePressCount)
+        assertEquals(listOf(0, 2, 8, 20), bound.indices)
+    }
+
+    @Test
+    fun `press count participates in map identity independently of control points`() {
+        val controls = listOf(0, 3, 12)
+
+        val threePresses = StepVolumeMap(12, pressCount = 3, offsets = controls)
+        val fourPresses = StepVolumeMap(12, pressCount = 4, offsets = controls)
+
+        assertTrue(threePresses != fourPresses)
     }
 
     @Test

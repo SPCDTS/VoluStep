@@ -318,7 +318,11 @@ class VolumeMappingReducerTest {
         pressCount: Int,
         config: KeyMappingConfig,
     ): VolumeMappingReducer {
-        val map = StepVolumeMap.linear(basisSpan = pressCount, pressCount = pressCount)
+        val map = StepVolumeMap.linear(
+            basisSpan = pressCount,
+            pressCount = pressCount,
+            controlPointCount = 2,
+        )
             .bind(RouteVolumeRange(minIndex = 0, maxIndex = pressCount))
         return VolumeMappingReducer(map, config)
     }

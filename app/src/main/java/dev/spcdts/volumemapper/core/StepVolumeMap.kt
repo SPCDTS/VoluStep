@@ -6,22 +6,38 @@ import kotlin.math.floor
 /**
  * An immutable output map authored against an integer reference range.
  *
- * [basisSpan] is the reference route's `maxIndex - minIndex`. The x coordinates are implicit and
- * uniformly spaced: [pressCount] is the number of short presses from minimum to maximum, while
- * [offsets] contains both endpoints and therefore has `pressCount + 1` entries. Integer offsets are
- * strictly increasing so every configured press has an observable reference-range effect.
+ * [basisSpan] is the reference route's `maxIndex - minIndex`. [pressCount] is the number of short
+ * presses from minimum to maximum. [offsets] are independently configurable control-point values;
+ * their x coordinates are implicit, uniform and include both endpoints. Integer control offsets
+ * are strictly increasing, while the K + 1 runtime press states are sampled from their polyline.
  */
 class StepVolumeMap(
     val basisSpan: Int,
+    val pressCount: Int,
     offsets: List<Int>,
 ) {
     val offsets: List<Int> = offsets.toList()
-    val pressCount: Int = this.offsets.lastIndex
+    val controlPointCount: Int = this.offsets.size
+    val controlSegmentCount: Int = this.offsets.lastIndex
+
+    /** Source-compatible constructor for v1 maps, where every press state was a control point. */
+    constructor(
+        basisSpan: Int,
+        offsets: List<Int>,
+    ) : this(
+        basisSpan = basisSpan,
+        pressCount = offsets.lastIndex,
+        offsets = offsets,
+    )
 
     init {
         require(basisSpan > 0) { "basisSpan must be positive" }
-        require(this.offsets.size >= 2) { "A step map needs at least one press" }
+        require(pressCount > 0) { "pressCount must be positive" }
         require(pressCount <= basisSpan) { "pressCount cannot exceed basisSpan" }
+        require(controlPointCount >= 2) { "A step map needs at least two control points" }
+        require(controlSegmentCount <= basisSpan) {
+            "controlPointCount cannot exceed basisSpan + 1"
+        }
         require(this.offsets.first() == 0) { "The first offset must be 0" }
         require(this.offsets.last() == basisSpan) { "The last offset must equal basisSpan" }
         require(this.offsets.zipWithNext().all { (left, right) -> right > left }) {
@@ -29,10 +45,12 @@ class StepVolumeMap(
         }
     }
 
-    /** Returns the implicit normalized x coordinate for [stepIndex]. */
-    fun normalizedXAt(stepIndex: Int): Double {
-        require(stepIndex in 0..pressCount) { "stepIndex is outside this map" }
-        return stepIndex.toDouble() / pressCount.toDouble()
+    /** Returns the implicit normalized x coordinate for [controlPointIndex]. */
+    fun normalizedXAt(controlPointIndex: Int): Double {
+        require(controlPointIndex in 0..controlSegmentCount) {
+            "controlPointIndex is outside this map"
+        }
+        return controlPointIndex.toDouble() / controlSegmentCount.toDouble()
     }
 
     /** Evaluates the authored curve in reference-range offset units. */
@@ -41,8 +59,8 @@ class StepVolumeMap(
         if (normalizedX <= 0.0) return 0.0
         if (normalizedX >= 1.0) return basisSpan.toDouble()
 
-        val scaled = normalizedX * pressCount.toDouble()
-        val leftIndex = floor(scaled).toInt().coerceIn(0, pressCount - 1)
+        val scaled = normalizedX * controlSegmentCount.toDouble()
+        val leftIndex = floor(scaled).toInt().coerceIn(0, controlSegmentCount - 1)
         val fraction = scaled - leftIndex.toDouble()
         val left = offsets[leftIndex].toDouble()
         val right = offsets[leftIndex + 1].toDouble()
@@ -50,17 +68,20 @@ class StepVolumeMap(
     }
 
     /** Moves one authored y value while keeping endpoints fixed and all offsets strict. */
-    fun withOffset(stepIndex: Int, requestedOffset: Int): StepVolumeMap {
-        require(stepIndex in 0..pressCount) { "stepIndex is outside this map" }
-        if (stepIndex == 0 || stepIndex == pressCount) return this
+    fun withOffset(controlPointIndex: Int, requestedOffset: Int): StepVolumeMap {
+        require(controlPointIndex in 0..controlSegmentCount) {
+            "controlPointIndex is outside this map"
+        }
+        if (controlPointIndex == 0 || controlPointIndex == controlSegmentCount) return this
         val constrained = requestedOffset.coerceIn(
-            minimumValue = offsets[stepIndex - 1] + 1,
-            maximumValue = offsets[stepIndex + 1] - 1,
+            minimumValue = offsets[controlPointIndex - 1] + 1,
+            maximumValue = offsets[controlPointIndex + 1] - 1,
         )
-        if (constrained == offsets[stepIndex]) return this
+        if (constrained == offsets[controlPointIndex]) return this
         return StepVolumeMap(
             basisSpan = basisSpan,
-            offsets = offsets.toMutableList().apply { this[stepIndex] = constrained },
+            pressCount = pressCount,
+            offsets = offsets.toMutableList().apply { this[controlPointIndex] = constrained },
         )
     }
 
@@ -68,34 +89,54 @@ class StepVolumeMap(
      * Moves one authored value and minimally pushes neighbours that would otherwise be crossed.
      * This is useful for touch drawing, where a strict clamp can make a dense curve feel stuck.
      */
-    fun withOffsetPushing(stepIndex: Int, requestedOffset: Int): StepVolumeMap {
-        require(stepIndex in 0..pressCount) { "stepIndex is outside this map" }
-        if (stepIndex == 0 || stepIndex == pressCount) return this
+    fun withOffsetPushing(controlPointIndex: Int, requestedOffset: Int): StepVolumeMap {
+        require(controlPointIndex in 0..controlSegmentCount) {
+            "controlPointIndex is outside this map"
+        }
+        if (controlPointIndex == 0 || controlPointIndex == controlSegmentCount) return this
         val constrained = requestedOffset.coerceIn(
-            minimumValue = stepIndex,
-            maximumValue = basisSpan - (pressCount - stepIndex),
+            minimumValue = controlPointIndex,
+            maximumValue = basisSpan - (controlSegmentCount - controlPointIndex),
         )
-        if (constrained == offsets[stepIndex]) return this
+        if (constrained == offsets[controlPointIndex]) return this
 
         val pushed = offsets.toMutableList()
-        pushed[stepIndex] = constrained
-        for (index in stepIndex - 1 downTo 1) {
+        pushed[controlPointIndex] = constrained
+        for (index in controlPointIndex - 1 downTo 1) {
             pushed[index] = minOf(pushed[index], pushed[index + 1] - 1)
         }
-        for (index in stepIndex + 1 until pressCount) {
+        for (index in controlPointIndex + 1 until controlSegmentCount) {
             pushed[index] = maxOf(pushed[index], pushed[index - 1] + 1)
         }
-        return StepVolumeMap(basisSpan = basisSpan, offsets = pushed)
+        return StepVolumeMap(basisSpan = basisSpan, pressCount = pressCount, offsets = pushed)
     }
 
-    /** Resamples the implicit curve to a different number of short presses on the same basis. */
-    fun resample(newPressCount: Int): StepVolumeMap {
+    /** Changes only K; the authored control-point polyline remains exactly the same. */
+    fun withPressCount(newPressCount: Int): StepVolumeMap {
         require(newPressCount > 0) { "newPressCount must be positive" }
         require(newPressCount <= basisSpan) { "newPressCount cannot exceed basisSpan" }
         if (newPressCount == pressCount) return this
-        val targets = sampleTargets(newPressCount, outputSpan = basisSpan)
         return StepVolumeMap(
             basisSpan = basisSpan,
+            pressCount = newPressCount,
+            offsets = offsets,
+        )
+    }
+
+    /** Resamples the authored polyline to a different number of uniformly spaced control points. */
+    fun resampleControlPoints(newControlPointCount: Int): StepVolumeMap {
+        require(newControlPointCount >= 2) { "newControlPointCount must be at least 2" }
+        require(newControlPointCount <= basisSpan + 1) {
+            "newControlPointCount cannot exceed basisSpan + 1"
+        }
+        if (newControlPointCount == controlPointCount) return this
+        val newSegmentCount = newControlPointCount - 1
+        val targets = List(newControlPointCount) { pointIndex ->
+            evaluateOffset(pointIndex.toDouble() / newSegmentCount.toDouble())
+        }
+        return StepVolumeMap(
+            basisSpan = basisSpan,
+            pressCount = pressCount,
             offsets = StrictIntegerProjection.project(targets, basisSpan),
         )
     }
@@ -136,10 +177,30 @@ class StepVolumeMap(
     fun rebase(range: RouteVolumeRange): StepVolumeMap {
         val routeSpan = range.maxIndex - range.minIndex
         require(routeSpan > 0) { "Cannot rebase onto a fixed-volume range" }
-        val bound = bind(range)
+        if (basisSpan == routeSpan) return this
+        val previouslyBound = bind(range)
+        val rebasedPressCount = minOf(pressCount, routeSpan)
+        val rebasedControlPointCount = minOf(controlPointCount, routeSpan + 1)
+        val rebasedSegmentCount = rebasedControlPointCount - 1
+        val targets = List(rebasedControlPointCount) { pointIndex ->
+            val normalizedX = pointIndex.toDouble() / rebasedSegmentCount.toDouble()
+            evaluateOffset(normalizedX) * routeSpan.toDouble() / basisSpan.toDouble()
+        }
+        val shapePreservingCandidate = StepVolumeMap(
+            basisSpan = routeSpan,
+            pressCount = rebasedPressCount,
+            offsets = StrictIntegerProjection.project(targets, routeSpan),
+        )
+        if (shapePreservingCandidate.bind(range).indices == previouslyBound.indices) {
+            return shapePreservingCandidate
+        }
+
+        // Integer control-point projection can otherwise change the route's current K + 1 targets.
+        // Fall back to one control point per bound state so opening the editor is behavior-preserving.
         return StepVolumeMap(
             basisSpan = routeSpan,
-            offsets = bound.indices.map { it - range.minIndex },
+            pressCount = previouslyBound.effectivePressCount,
+            offsets = previouslyBound.indices.map { it - range.minIndex },
         )
     }
 
@@ -150,24 +211,36 @@ class StepVolumeMap(
         }
 
     override fun equals(other: Any?): Boolean =
-        other is StepVolumeMap && basisSpan == other.basisSpan && offsets == other.offsets
+        other is StepVolumeMap &&
+            basisSpan == other.basisSpan &&
+            pressCount == other.pressCount &&
+            offsets == other.offsets
 
-    override fun hashCode(): Int = 31 * basisSpan + offsets.hashCode()
+    override fun hashCode(): Int = 31 * (31 * basisSpan + pressCount) + offsets.hashCode()
 
     override fun toString(): String =
-        "StepVolumeMap(basisSpan=$basisSpan, offsets=$offsets)"
+        "StepVolumeMap(basisSpan=$basisSpan, pressCount=$pressCount, offsets=$offsets)"
 
     companion object {
         /** Creates the closest strict integer projection of a linear curve. */
-        fun linear(basisSpan: Int, pressCount: Int): StepVolumeMap {
+        fun linear(
+            basisSpan: Int,
+            pressCount: Int,
+            controlPointCount: Int = pressCount + 1,
+        ): StepVolumeMap {
             require(basisSpan > 0) { "basisSpan must be positive" }
             require(pressCount > 0) { "pressCount must be positive" }
             require(pressCount <= basisSpan) { "pressCount cannot exceed basisSpan" }
-            val targets = List(pressCount + 1) { stepIndex ->
-                stepIndex.toDouble() * basisSpan.toDouble() / pressCount.toDouble()
+            require(controlPointCount in 2..basisSpan + 1) {
+                "controlPointCount must be between 2 and basisSpan + 1"
+            }
+            val segmentCount = controlPointCount - 1
+            val targets = List(controlPointCount) { pointIndex ->
+                pointIndex.toDouble() * basisSpan.toDouble() / segmentCount.toDouble()
             }
             return StepVolumeMap(
                 basisSpan = basisSpan,
+                pressCount = pressCount,
                 offsets = StrictIntegerProjection.project(targets, basisSpan),
             )
         }
@@ -181,23 +254,31 @@ class StepVolumeMap(
             curve: MappingCurve,
             basisSpan: Int,
             pressCount: Int,
+            controlPointCount: Int = pressCount + 1,
         ): StepVolumeMap {
             require(basisSpan > 0) { "basisSpan must be positive" }
             require(pressCount > 0) { "pressCount must be positive" }
             require(pressCount <= basisSpan) { "pressCount cannot exceed basisSpan" }
+            require(controlPointCount in 2..basisSpan + 1) {
+                "controlPointCount must be between 2 and basisSpan + 1"
+            }
 
-            val sampled = List(pressCount + 1) { stepIndex ->
-                curve.evaluate(stepIndex.toDouble() / pressCount.toDouble())
+            val segmentCount = controlPointCount - 1
+            val sampled = List(controlPointCount) { pointIndex ->
+                curve.evaluate(pointIndex.toDouble() / segmentCount.toDouble())
             }
             val floor = sampled.first()
             val cap = sampled.last()
-            if (abs(cap - floor) <= FLAT_OUTPUT_EPSILON) return linear(basisSpan, pressCount)
+            if (abs(cap - floor) <= FLAT_OUTPUT_EPSILON) {
+                return linear(basisSpan, pressCount, controlPointCount)
+            }
 
             val targets = sampled.map { level ->
                 (level - floor) * basisSpan.toDouble() / (cap - floor)
             }
             return StepVolumeMap(
                 basisSpan = basisSpan,
+                pressCount = pressCount,
                 offsets = StrictIntegerProjection.project(targets, basisSpan),
             )
         }

@@ -1,5 +1,18 @@
 # 本机验证记录
 
+## 2026-08-24 K/P 独立曲线模型
+
+本轮把“从最小到最大需要的按键次数 `K`”与“搭建折线的控制点总数 `P`（含两端）”从模型到界面完全解耦。保存格式升级为 `v2|basisSpan|K|controlOffsets`；旧 `v1` 会无损解释为 `P=K+1`，降级 shadow 对 `K=1…150` 全部验证不会因浮点误差多恢复一次按键。
+
+验证结果：
+
+- `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:lintRelease :app:assembleDebug :app:assembleRelease :app:bundleRelease`：通过；覆盖 `P<K+1`、`P>K+1`、单独修改 K/P、跨范围 rebase 保持实际按键目标、v2 round-trip、v1 迁移和全部 K 的降级恢复；
+- `:app:connectedDebugAndroidTest`：API 37 模拟器 3/3 通过，0 skip、0 failure；主界面测试实际修改 P、断言 K 不变，并通过撤销无损恢复完整折线与控制点选择；真实 `AudioManager` 集成使用 `K=10、P=3`；
+- `scripts/emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild`：通过，真实 AccessibilityService、`specialUse` FGS 与 evdev 链路完成后台映射 `5 → 11 → 5`，通知停止后由系统接管；
+- 视觉与交互检查使用 1080×2400 的 `VolumeMapper_API_37`：默认 authored 配置为 `K=50、P=5、basis=150`，当前 0…15 路由只生成 15 次有效按键的小点预览；把 P 改为 3 后，界面与语义树均确认 K 仍保持 50。无效 P 输入会显示合法范围，K/P 输入、画布和底部操作没有横向溢出；截图保存在被 Git 忽略的 `artifacts/kp-*.png`。
+
+本轮没有连接 Xiaomi 真机或蓝牙耳机，因此这里只确认模型、持久化、Android 公开音量链路和模拟器实体按键分派；耳机端可听档位仍需在目标设备上复测。
+
 ## 2026-08-24 简约 UI 重构
 
 本轮把高频操作留在默认层，把精确输入、按键响应、设备底层信息和后台排障建议改为按需展开；同时统一为单一蓝色强调色、中性 surface，并支持系统明暗模式。显著披露、fail-open、路由降级和固定音量提示没有因简化界面而删除。

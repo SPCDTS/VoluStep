@@ -63,6 +63,7 @@ class VolumeKeyAudioIntegrationTest {
                 outputMap = StepVolumeMap.linear(
                     basisSpan = indexSpan,
                     pressCount = 10,
+                    controlPointCount = 3,
                 ),
                 showSystemVolumeUi = false,
             )

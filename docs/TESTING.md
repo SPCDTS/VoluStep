@@ -16,14 +16,14 @@
 
 当前覆盖：
 
-- 固定均匀横轴、整数端点、严格单调 offset 与折线采样；
-- 点数变化、跨路由范围重投影、全局最小平方结果及确定性 tie-break；
+- 独立的按键次数 `K` / 控制点数 `P`、整数端点、严格单调 offset 与折线采样；
+- 单独修改 `K` 或 `P`、`P<K+1` / `P>K+1`、跨路由范围重投影、全局最小平方结果及确定性 tie-break；
 - 单点相邻约束与画笔拖动的最小推挤；
 - 精确状态短按、外部 index 的严格上下界选择、长按延迟、加速、repeat no-op、匹配/不匹配 UP、readback 同步与取消；
 - 单次大跨度积分与 50 ms 多次积分的一致性；
 - 非零 min、固定音量、0–15 与 0–150 路由绑定边界；
 - mapping state 为空、外部 index 变化、精确状态连续性和 active hold 步数余量边界；
-- DataStore 设置 round-trip、旧格式迁移和坏字段独立降级。
+- DataStore `v2` 独立 K/P round-trip、`v1` 无损迁移和坏字段独立降级。
 
 这些是 pure map/reducer/serialization 测试，不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也没有用 fake backend 覆盖 coordinator 的完整并发时序。
 
@@ -39,7 +39,7 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 
 仓库包含三项设备侧测试：
 
-- `MainActivityTest`：验证主导航、默认层的按键次数与曲线画布可达，并在展开“精确编辑”和“按键响应”后验证选中状态、整数输入、撤销/重做及低频设置；预设只验证可达，不在共享 DataStore 上写入测试配置；
+- `MainActivityTest`：验证主导航、默认层独立的 `K` / `P` 输入与曲线画布可达，实际修改 P、断言 K 不变，并通过撤销无损恢复完整折线与控制点选择；随后展开“精确编辑”和“按键响应”，验证整数输入、撤销/重做及低频设置；测试结束会恢复进入测试前的完整设置，预设只验证可达；
 - `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造完整 DOWN/UP，并验证真实 `STREAM_MUSIC` index 改变和最终清理。
 - `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并从通知 action 停止映射；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性离散状态表。
 
@@ -128,6 +128,7 @@ Android 17 还应使用系统支持的音频 hardening 调试命令（若该镜�
 - 一个 verification cycle 跟踪 latest expected；fresh mismatch 不重锚，成熟 mismatch 清 pending 并同步 observed，final mismatch 才计失败；
 - UP 必须刷新最终 reducer target；同一 route ID 的 min/max 变化必须取消手势，只有 dB 诊断元数据变化不能重建 reducer；
 - 三次连续读写/最终回读失败后新按键自动交还系统；
-- 设置中 `K` 次按键必须对应 `K+1` 个固定均匀状态，端点固定且 index 严格递增；
-- 当前路由跨度小于 `K` 时只临时降低有效次数，不能生成重复 index 或破坏保存的原始设置；
+- 设置中按键次数 `K` 与控制点数 `P` 必须独立；改 `K` 不改变控制折线，改 `P` 不改变 `K`；
+- `P` 个控制点与 `K+1` 个实际按键状态都固定端点，运行时 index 严格递增；
+- 当前路由跨度小于 `K` 时只临时降低有效按键次数；编辑 K 或 P 都不能顺带固化临时路由结果或破坏另一个参数；
 - 不读取窗口内容，不使用隐藏 API，不绕过系统安全音量。

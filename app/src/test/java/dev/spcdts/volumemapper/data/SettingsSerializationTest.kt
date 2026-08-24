@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
 import dev.spcdts.volumemapper.core.MappingCurve
 import dev.spcdts.volumemapper.core.MappingPoint
+import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,6 +21,7 @@ class SettingsSerializationTest {
     fun `settings round trip preserves step map and hold curve`() {
         val outputMap = StepVolumeMap(
             basisSpan = 150,
+            pressCount = 9,
             offsets = listOf(0, 1, 4, 17, 58, 150),
         )
         val holdCurve = MappingCurve(
@@ -53,24 +55,35 @@ class SettingsSerializationTest {
         assertEquals(settings, decoded)
         assertEquals(outputMap, decoded.outputMap)
         assertEquals(0.1, decoded.keyConfig.holdRampCurve.minimumXSpacing, TOLERANCE)
-        assertEquals("v1|150|0,1,4,17,58,150", preferences[outputMapKey])
+        assertEquals("v2|150|9|0,1,4,17,58,150", preferences[outputMapKey])
         assertEquals("INDEX", preferences[modeNameKey])
         assertNull(preferences[legacyModeKey])
     }
 
     @Test
-    fun `step map v1 codec round trips and rejects malformed payload`() {
+    fun `step map v2 codec round trips independent press and control counts`() {
         val map = StepVolumeMap(
             basisSpan = 12,
+            pressCount = 6,
             offsets = listOf(0, 1, 5, 12),
         )
         val encoded = SettingsSerialization.encodeStepVolumeMap(map)
 
-        assertEquals("v1|12|0,1,5,12", encoded)
+        assertEquals("v2|12|6|0,1,5,12", encoded)
         assertEquals(map, SettingsSerialization.decodeStepVolumeMap(encoded))
         assertThrowsIllegalArgument {
-            SettingsSerialization.decodeStepVolumeMap("v1|12|0,5,4,12")
+            SettingsSerialization.decodeStepVolumeMap("v2|12|6|0,5,4,12")
         }
+    }
+
+    @Test
+    fun `step map v1 migrates losslessly with every press state as a control point`() {
+        val migrated = SettingsSerialization.decodeStepVolumeMap("v1|12|0,1,5,12")
+
+        assertEquals(3, migrated.pressCount)
+        assertEquals(4, migrated.controlPointCount)
+        assertEquals(listOf(0, 1, 5, 12), migrated.offsets)
+        assertEquals(listOf(0, 1, 5, 12), migrated.bind(RouteVolumeRange(0, 12)).indices)
     }
 
     @Test
@@ -96,7 +109,7 @@ class SettingsSerializationTest {
     fun `malformed new step payload falls back to legacy curve and tap step`() {
         val encodedLegacyCurve = "v2|0.04|0.0,0.0;0.5,0.2;1.0,1.0"
         val preferences = mutablePreferencesOf(
-            stringPreferencesKey("output_step_map") to "v1|150|0,70,60,150",
+            stringPreferencesKey("output_step_map") to "v2|150|5|0,70,60,150",
             stringPreferencesKey("output_curve") to encodedLegacyCurve,
             doublePreferencesKey("tap_step") to 0.2,
         )
@@ -150,6 +163,7 @@ class SettingsSerializationTest {
     fun `encode keeps v2 curve and tap step shadow for downgraded builds`() {
         val outputMap = StepVolumeMap(
             basisSpan = 12,
+            pressCount = 6,
             offsets = listOf(0, 1, 5, 12),
         )
         val preferences = mutablePreferencesOf()
@@ -166,10 +180,40 @@ class SettingsSerializationTest {
         assertEquals(listOf(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0), decodedShadow.points.map { it.x })
         assertEquals(listOf(0.0, 1.0 / 12.0, 5.0 / 12.0, 1.0), decodedShadow.points.map { it.y })
         assertEquals(
-            1.0 / 3.0,
+            1.0 / 6.0,
             preferences[doublePreferencesKey("tap_step")] ?: error("Missing tap step shadow"),
             TOLERANCE,
         )
+    }
+
+    @Test
+    fun `downgrade shadow restores every supported press count without floating point overshoot`() {
+        val outputCurveKey = stringPreferencesKey("output_curve")
+        val tapStepKey = doublePreferencesKey("tap_step")
+
+        (1..150).forEach { pressCount ->
+            val encoded = mutablePreferencesOf()
+            SettingsSerialization.encode(
+                preferences = encoded,
+                settings = VolumeMapperSettings(
+                    outputMap = StepVolumeMap.linear(
+                        basisSpan = 150,
+                        pressCount = pressCount,
+                        controlPointCount = 2,
+                    ),
+                ),
+            )
+            val legacyOnly = mutablePreferencesOf(
+                outputCurveKey to requireNotNull(encoded[outputCurveKey]),
+                tapStepKey to requireNotNull(encoded[tapStepKey]),
+            )
+
+            assertEquals(
+                "pressCount=$pressCount",
+                pressCount,
+                SettingsSerialization.decode(legacyOnly).outputMap.pressCount,
+            )
+        }
     }
 
     @Test

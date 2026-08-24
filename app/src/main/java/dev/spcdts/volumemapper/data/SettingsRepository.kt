@@ -17,6 +17,7 @@ import dev.spcdts.volumemapper.core.MappingPreset
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import java.io.IOException
 import kotlin.math.ceil
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.Channel
@@ -35,6 +36,7 @@ data class VolumeMapperSettings(
         curve = MappingPreset.LOW_VOLUME_FINE.createCurve(),
         basisSpan = DEFAULT_OUTPUT_BASIS_SPAN,
         pressCount = DEFAULT_OUTPUT_PRESS_COUNT,
+        controlPointCount = DEFAULT_OUTPUT_CONTROL_POINT_COUNT,
     ),
     val keyConfig: KeyMappingConfig = KeyMappingConfig(
         holdDelayMillis = 350L,
@@ -49,6 +51,7 @@ data class VolumeMapperSettings(
 
 private const val DEFAULT_OUTPUT_BASIS_SPAN = 150
 private const val DEFAULT_OUTPUT_PRESS_COUNT = 50
+private const val DEFAULT_OUTPUT_CONTROL_POINT_COUNT = 5
 
 /** 单进程设置仓库。内存状态立即更新，DataStore 写入做短暂防抖以适配拖动曲线。 */
 @OptIn(FlowPreview::class)
@@ -63,6 +66,10 @@ class SettingsRepository(
     private val pendingTransforms = ArrayDeque<(VolumeMapperSettings) -> VolumeMapperSettings>()
     private val pendingWrites = Channel<PendingWrite>(Channel.CONFLATED)
     private var isLoaded = false
+
+    /** 供仪器测试等待 DataStore 初始值合并完成，避免把默认占位状态误当成用户配置。 */
+    internal val hasLoadedInitialSettings: Boolean
+        get() = synchronized(stateLock) { isLoaded }
 
     init {
         scope.launch {
@@ -91,8 +98,14 @@ class SettingsRepository(
             pendingWrites.receiveAsFlow()
                 .debounce { request -> if (request.immediate) 0L else WRITE_DEBOUNCE_MILLIS }
                 .collect { request ->
-                    dataStore.edit { preferences ->
-                        SettingsSerialization.encode(preferences, request.settings)
+                    try {
+                        dataStore.edit { preferences ->
+                            SettingsSerialization.encode(preferences, request.settings)
+                        }
+                        request.completion?.complete(Unit)
+                    } catch (throwable: Throwable) {
+                        request.completion?.completeExceptionally(throwable)
+                        throw throwable
                     }
                 }
         }
@@ -114,6 +127,24 @@ class SettingsRepository(
         current?.let { pendingWrites.trySend(PendingWrite(it, immediate = true)) }
     }
 
+    /** 仪器测试使用：原子替换完整设置，并等待同一串行写入流确认 DataStore 已落盘。 */
+    internal suspend fun replaceSettingsAndAwait(settings: VolumeMapperSettings) {
+        update { settings }
+        val completion = CompletableDeferred<Unit>()
+        val current = synchronized(stateLock) {
+            check(isLoaded) { "Initial settings have not loaded" }
+            _settings.value
+        }
+        pendingWrites.send(
+            PendingWrite(
+                settings = current,
+                immediate = true,
+                completion = completion,
+            ),
+        )
+        completion.await()
+    }
+
     private fun update(transform: VolumeMapperSettings.() -> VolumeMapperSettings) {
         val valueToPersist = synchronized(stateLock) {
             val updated = _settings.value.transform()
@@ -131,6 +162,7 @@ class SettingsRepository(
     private data class PendingWrite(
         val settings: VolumeMapperSettings,
         val immediate: Boolean,
+        val completion: CompletableDeferred<Unit>? = null,
     )
 
     private companion object {
@@ -178,7 +210,7 @@ internal object SettingsSerialization {
         preferences[Keys.OUTPUT_STEP_MAP] = encodeStepVolumeMap(settings.outputMap)
         // Keep a current v2 shadow payload so a downgraded build can still read the authored shape.
         preferences[Keys.OUTPUT_CURVE] = encodeCurve(settings.outputMap.toLegacyCurve())
-        preferences[Keys.TAP_STEP] = 1.0 / settings.outputMap.pressCount.toDouble()
+        preferences[Keys.TAP_STEP] = settings.outputMap.toLegacyTapStep()
         preferences[Keys.HOLD_DELAY] = settings.keyConfig.holdDelayMillis
         preferences[Keys.HOLD_SPEED] = settings.keyConfig.holdUnitsPerSecond
         preferences[Keys.RAMP_DURATION] = settings.keyConfig.holdRampDurationMillis
@@ -218,19 +250,35 @@ internal object SettingsSerialization {
     }
 
     fun encodeStepVolumeMap(map: StepVolumeMap): String = buildString {
-        append(STEP_MAP_FORMAT_V1)
+        append(STEP_MAP_FORMAT_V2)
         append('|')
         append(map.basisSpan)
+        append('|')
+        append(map.pressCount)
         append('|')
         append(map.offsets.joinToString(separator = ","))
     }
 
     fun decodeStepVolumeMap(encoded: String): StepVolumeMap {
-        val components = encoded.split('|', limit = 3)
-        require(components.size == 3 && components[0] == STEP_MAP_FORMAT_V1)
-        val basisSpan = components[1].toInt()
-        val offsets = components[2].split(',').map(String::toInt)
-        return StepVolumeMap(basisSpan = basisSpan, offsets = offsets)
+        val components = encoded.split('|', limit = 4)
+        return when (components.firstOrNull()) {
+            STEP_MAP_FORMAT_V2 -> {
+                require(components.size == 4)
+                StepVolumeMap(
+                    basisSpan = components[1].toInt(),
+                    pressCount = components[2].toInt(),
+                    offsets = components[3].split(',').map(String::toInt),
+                )
+            }
+            STEP_MAP_FORMAT_V1 -> {
+                require(components.size == 3)
+                StepVolumeMap(
+                    basisSpan = components[1].toInt(),
+                    offsets = components[2].split(',').map(String::toInt),
+                )
+            }
+            else -> throw IllegalArgumentException("Unsupported step-map format")
+        }
     }
 
     private fun Preferences.readStepVolumeMap(): StepVolumeMap? =
@@ -260,12 +308,16 @@ internal object SettingsSerialization {
     private fun StepVolumeMap.toLegacyCurve(): MappingCurve = MappingCurve(
         points = offsets.mapIndexed { index, offset ->
             MappingPoint(
-                x = index.toDouble() / pressCount.toDouble(),
+                x = index.toDouble() / controlSegmentCount.toDouble(),
                 y = offset.toDouble() / basisSpan.toDouble(),
             )
         },
-        minimumXSpacing = 1.0 / pressCount.toDouble(),
+        minimumXSpacing = 1.0 / controlSegmentCount.toDouble(),
     )
+
+    /** Avoids an old build's ceil(1 / tapStep) rounding K upward after a downgrade. */
+    private fun StepVolumeMap.toLegacyTapStep(): Double =
+        if (pressCount == 1) 1.0 else Math.nextUp(1.0 / pressCount.toDouble())
 
     private fun Preferences.readCurve(
         key: Preferences.Key<String>,
@@ -306,4 +358,5 @@ internal object SettingsSerialization {
 
     private const val CURVE_FORMAT_V2 = "v2"
     private const val STEP_MAP_FORMAT_V1 = "v1"
+    private const val STEP_MAP_FORMAT_V2 = "v2"
 }

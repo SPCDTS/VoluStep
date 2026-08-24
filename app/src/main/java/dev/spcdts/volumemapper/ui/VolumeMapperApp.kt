@@ -434,11 +434,7 @@ private fun CurveScreen(
     val editableSpan = runtime.snapshot?.range?.let { it.maxIndex - it.minIndex }
         ?.takeIf { it > 0 }
         ?: settings.outputMap.basisSpan
-    val editablePressCount = settings.outputMap.pressCount.coerceAtMost(editableSpan)
-    val editableMap = runtime.snapshot?.range
-        ?.takeIf { it.maxIndex > it.minIndex }
-        ?.let(settings.outputMap::rebase)
-        ?: settings.outputMap
+    val effectivePressCount = settings.outputMap.pressCount.coerceAtMost(editableSpan)
     val fullRangePresets = listOf(
         MappingPreset.LINEAR,
         MappingPreset.LOW_VOLUME_FINE,
@@ -455,12 +451,12 @@ private fun CurveScreen(
         item {
             Text("音量曲线", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text(
-                "横轴是均匀的按键次数，纵轴是媒体音量 index。",
+                "K 决定按键次数，P 决定搭建折线的控制点数量。",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (runtime.snapshot != null && editablePressCount < settings.outputMap.pressCount) {
+            if (runtime.snapshot != null && effectivePressCount < settings.outputMap.pressCount) {
                 Text(
-                    "当前路由只有 $editableSpan 个可区分区间，配置的 ${settings.outputMap.pressCount} 次已临时降为 $editablePressCount 次。",
+                    "当前路由只有 $editableSpan 个可区分区间，配置的 ${settings.outputMap.pressCount} 次已临时降为 $effectivePressCount 次。",
                     color = MaterialTheme.colorScheme.error,
                 )
             }
@@ -478,11 +474,12 @@ private fun CurveScreen(
                     items(fullRangePresets) { preset ->
                         val presetMap = StepVolumeMap.fromCurve(
                             curve = preset.createCurve(),
-                            basisSpan = editableSpan,
-                            pressCount = editablePressCount,
+                            basisSpan = settings.outputMap.basisSpan,
+                            pressCount = settings.outputMap.pressCount,
+                            controlPointCount = settings.outputMap.controlPointCount,
                         )
                         FilterChip(
-                            selected = editableMap == presetMap,
+                            selected = settings.outputMap == presetMap,
                             onClick = {
                                 graph.settingsRepository.updateOutputMap(presetMap)
                                 graph.settingsRepository.flushPendingWrite()
