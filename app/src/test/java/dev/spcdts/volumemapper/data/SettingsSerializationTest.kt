@@ -7,9 +7,16 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
 import dev.spcdts.volumemapper.core.MappingCurve
-import dev.spcdts.volumemapper.core.MappingPoint
 import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.StepVolumeMap
+import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -18,28 +25,47 @@ import org.junit.Test
 
 class SettingsSerializationTest {
     @Test
-    fun `settings round trip preserves step map and hold curve`() {
+    fun `current settings and v3 codec scenarios`() {
+        `settings round trip preserves free x step map and fixed hold interval`()
+        `step map v3 codec round trips free x and rejects malformed points`()
+        `settings write actor preserves fifo acknowledgements and survives one failure`()
+    }
+
+    @Test
+    fun `version migration and fallback scenarios`() {
+        `step map v2 migrates independent counts onto uniform x`()
+        `step map v1 migrates losslessly with every press state as a control point`()
+        `legacy v2 curve and point zero zero seven tap step migrate to 143 presses`()
+        `malformed new step payload falls back to legacy curve and tap step`()
+        `bad fields fall back independently while valid fields survive`()
+    }
+
+    @Test
+    fun `hold interval and downgrade shadow round trip scenarios`() {
+        `hold interval accepts both limits and rejects values outside them`()
+        `encode keeps true x v2 curve and tap step shadow for downgraded builds`()
+        `legacy shadow restores independent control count and true x`()
+    }
+
+    @Test
+    fun `downgrade boundaries and malformed legacy codec scenarios`() {
+        `downgrade shadow restores every supported press count without floating point overshoot`()
+        `maximum one hundred fifty press map keeps a valid downgrade shadow`()
+        `curve codec rejects malformed v2 without affecting legacy support`()
+    }
+
+    fun `settings round trip preserves free x step map and fixed hold interval`() {
         val outputMap = StepVolumeMap(
             basisSpan = 150,
             pressCount = 9,
+            normalizedXs = listOf(0.0, 0.08, 0.31, 0.72, 0.9, 1.0),
             offsets = listOf(0, 1, 4, 17, 58, 150),
-        )
-        val holdCurve = MappingCurve(
-            points = listOf(
-                MappingPoint(0.0, 0.0),
-                MappingPoint(0.5, 0.3),
-                MappingPoint(1.0, 1.0),
-            ),
-            minimumXSpacing = 0.1,
         )
         val settings = VolumeMapperSettings(
             outputMap = outputMap,
             keyConfig = VolumeMapperSettings().keyConfig.copy(
                 holdDelayMillis = 420L,
-                holdUnitsPerSecond = 0.22,
-                holdRampDurationMillis = 2_200L,
-                holdMaximumMultiplier = 5.5,
-                holdRampCurve = holdCurve,
+                holdStepIntervalMillis = 140L,
             ),
             showSystemVolumeUi = false,
             disclosureAccepted = true,
@@ -54,29 +80,121 @@ class SettingsSerializationTest {
 
         assertEquals(settings, decoded)
         assertEquals(outputMap, decoded.outputMap)
-        assertEquals(0.1, decoded.keyConfig.holdRampCurve.minimumXSpacing, TOLERANCE)
-        assertEquals("v2|150|9|0,1,4,17,58,150", preferences[outputMapKey])
+        assertEquals(140L, decoded.keyConfig.holdStepIntervalMillis)
+        assertEquals(
+            "v3|150|9|0.0,0;0.08,1;0.31,4;0.72,17;0.9,58;1.0,150",
+            preferences[outputMapKey],
+        )
         assertEquals("INDEX", preferences[modeNameKey])
         assertNull(preferences[legacyModeKey])
     }
 
-    @Test
-    fun `step map v2 codec round trips independent press and control counts`() {
+    fun `step map v3 codec round trips free x and rejects malformed points`() {
         val map = StepVolumeMap(
             basisSpan = 12,
             pressCount = 6,
+            normalizedXs = listOf(0.0, 0.15, 0.7, 1.0),
             offsets = listOf(0, 1, 5, 12),
         )
         val encoded = SettingsSerialization.encodeStepVolumeMap(map)
 
-        assertEquals("v2|12|6|0,1,5,12", encoded)
+        assertEquals("v3|12|6|0.0,0;0.15,1;0.7,5;1.0,12", encoded)
         assertEquals(map, SettingsSerialization.decodeStepVolumeMap(encoded))
+        assertThrowsIllegalArgument {
+            SettingsSerialization.decodeStepVolumeMap("v3|12|6|0.0,0;0.7,5;0.6,7;1.0,12")
+        }
+        assertThrowsIllegalArgument {
+            SettingsSerialization.decodeStepVolumeMap("v3|12|6|0.0,0;0.7,5;1.0")
+        }
+    }
+
+    fun `settings write actor preserves fifo acknowledgements and survives one failure`() =
+        runBlocking {
+            val base = VolumeMapperSettings()
+            val writes = Channel<SettingsWriteRequest>(Channel.UNLIMITED)
+            val persisted = mutableListOf<VolumeMapperSettings>()
+            val writer = launch {
+                collectSettingsWriteRequests(writes, debounceMillis = 10L) { request ->
+                    persisted += request.settings
+                }
+            }
+            val acknowledged = CompletableDeferred<Unit>()
+            val flushed = base.copy(showSystemVolumeUi = false)
+            val later = base.copy(disclosureAccepted = true)
+            writes.send(SettingsWriteRequest(base, immediate = false))
+            writes.send(SettingsWriteRequest(base.copy(keyConfig = base.keyConfig.copy(holdDelayMillis = 500L)), immediate = false))
+            writes.send(SettingsWriteRequest(flushed, immediate = true, completion = acknowledged))
+            writes.send(SettingsWriteRequest(later, immediate = false))
+
+            withTimeout(1_000L) { acknowledged.await() }
+            withTimeout(1_000L) {
+                while (persisted.size < 2) yield()
+            }
+            assertEquals(listOf(flushed, later), persisted)
+            writer.cancelAndJoin()
+
+            val staleWrites = Channel<SettingsWriteRequest>(Channel.UNLIMITED)
+            val stalePersisted = mutableListOf<VolumeMapperSettings>()
+            val staleWriter = launch {
+                collectSettingsWriteRequests(staleWrites, debounceMillis = 10_000L) { request ->
+                    stalePersisted += request.settings
+                }
+            }
+            val staleEnqueueTime = System.nanoTime() / 1_000_000L - 20_000L
+            staleWrites.send(
+                SettingsWriteRequest(
+                    base,
+                    immediate = false,
+                    enqueuedAtMillis = staleEnqueueTime,
+                ),
+            )
+            staleWrites.send(
+                SettingsWriteRequest(
+                    later,
+                    immediate = false,
+                    enqueuedAtMillis = staleEnqueueTime,
+                ),
+            )
+            withTimeout(1_000L) {
+                while (stalePersisted.isEmpty()) yield()
+            }
+            assertEquals(listOf(later), stalePersisted)
+            staleWriter.cancelAndJoin()
+
+            val retryWrites = Channel<SettingsWriteRequest>(Channel.UNLIMITED)
+            var attempts = 0
+            val retryWriter = launch {
+                collectSettingsWriteRequests(retryWrites, debounceMillis = 10L) { request ->
+                    attempts += 1
+                    if (attempts == 1) throw IOException("transient")
+                    persisted += request.settings
+                }
+            }
+            val failedAck = CompletableDeferred<Unit>()
+            val recoveredAck = CompletableDeferred<Unit>()
+            retryWrites.send(SettingsWriteRequest(base, immediate = true, completion = failedAck))
+            val failure = runCatching {
+                withTimeout(1_000L) { failedAck.await() }
+            }.exceptionOrNull()
+            assertTrue(failure is IOException)
+            retryWrites.send(SettingsWriteRequest(later, immediate = true, completion = recoveredAck))
+            withTimeout(1_000L) { recoveredAck.await() }
+            assertEquals(2, attempts)
+            assertEquals(later, persisted.last())
+            retryWriter.cancelAndJoin()
+        }
+
+    fun `step map v2 migrates independent counts onto uniform x`() {
+        val migrated = SettingsSerialization.decodeStepVolumeMap("v2|12|6|0,1,5,12")
+
+        assertEquals(6, migrated.pressCount)
+        assertEquals(listOf(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0), migrated.normalizedXs)
+        assertEquals(listOf(0, 1, 5, 12), migrated.offsets)
         assertThrowsIllegalArgument {
             SettingsSerialization.decodeStepVolumeMap("v2|12|6|0,5,4,12")
         }
     }
 
-    @Test
     fun `step map v1 migrates losslessly with every press state as a control point`() {
         val migrated = SettingsSerialization.decodeStepVolumeMap("v1|12|0,1,5,12")
 
@@ -86,7 +204,6 @@ class SettingsSerializationTest {
         assertEquals(listOf(0, 1, 5, 12), migrated.bind(RouteVolumeRange(0, 12)).indices)
     }
 
-    @Test
     fun `legacy v2 curve and point zero zero seven tap step migrate to 143 presses`() {
         val encodedCurve = "v2|0.02|0.0,0.0;0.3,0.08;0.7,0.45;1.0,1.0"
         val preferences = mutablePreferencesOf(
@@ -99,17 +216,18 @@ class SettingsSerializationTest {
             curve = SettingsSerialization.decodeCurve(encodedCurve),
             basisSpan = 150,
             pressCount = 143,
+            controlPointCount = 4,
         )
 
         assertEquals(143, decoded.outputMap.pressCount)
         assertEquals(expected, decoded.outputMap)
     }
 
-    @Test
     fun `malformed new step payload falls back to legacy curve and tap step`() {
         val encodedLegacyCurve = "v2|0.04|0.0,0.0;0.5,0.2;1.0,1.0"
         val preferences = mutablePreferencesOf(
-            stringPreferencesKey("output_step_map") to "v2|150|5|0,70,60,150",
+            stringPreferencesKey("output_step_map") to
+                "v3|150|5|0.0,0;0.5,70;0.6,60;1.0,150",
             stringPreferencesKey("output_curve") to encodedLegacyCurve,
             doublePreferencesKey("tap_step") to 0.2,
         )
@@ -119,19 +237,21 @@ class SettingsSerializationTest {
             curve = SettingsSerialization.decodeCurve(encodedLegacyCurve),
             basisSpan = 150,
             pressCount = 5,
+            controlPointCount = 3,
         )
 
         assertEquals(expected, decoded.outputMap)
     }
 
-    @Test
     fun `bad fields fall back independently while valid fields survive`() {
         val defaults = VolumeMapperSettings()
         val preferences = mutablePreferencesOf(
-            stringPreferencesKey("output_step_map") to "v1|150|broken",
+            stringPreferencesKey("output_step_map") to "v3|150|50|broken",
             stringPreferencesKey("output_curve") to "v2|NaN|0.0,0.0;1.0,1.0",
             stringPreferencesKey("tap_step") to "wrong preference type",
             longPreferencesKey("hold_delay") to -5L,
+            longPreferencesKey("hold_step_interval") to 59L,
+            // Valid obsolete ramp fields must not affect the fixed interval model.
             doublePreferencesKey("hold_speed") to 0.27,
             longPreferencesKey("ramp_duration") to 0L,
             doublePreferencesKey("ramp_multiplier") to 0.5,
@@ -144,29 +264,62 @@ class SettingsSerializationTest {
 
         assertEquals(defaults.outputMap, decoded.outputMap)
         assertEquals(defaults.keyConfig.holdDelayMillis, decoded.keyConfig.holdDelayMillis)
-        assertEquals(0.27, decoded.keyConfig.holdUnitsPerSecond, TOLERANCE)
         assertEquals(
-            defaults.keyConfig.holdRampDurationMillis,
-            decoded.keyConfig.holdRampDurationMillis,
+            defaults.keyConfig.holdStepIntervalMillis,
+            decoded.keyConfig.holdStepIntervalMillis,
         )
-        assertEquals(
-            defaults.keyConfig.holdMaximumMultiplier,
-            decoded.keyConfig.holdMaximumMultiplier,
-            TOLERANCE,
-        )
-        assertEquals(defaults.keyConfig.holdRampCurve, decoded.keyConfig.holdRampCurve)
         assertFalse(decoded.showSystemVolumeUi)
         assertTrue(decoded.disclosureAccepted)
     }
 
-    @Test
-    fun `encode keeps v2 curve and tap step shadow for downgraded builds`() {
+    fun `hold interval accepts both limits and rejects values outside them`() {
+        val intervalKey = longPreferencesKey("hold_step_interval")
+
+        assertEquals(
+            60L,
+            SettingsSerialization.decode(mutablePreferencesOf(intervalKey to 60L))
+                .keyConfig.holdStepIntervalMillis,
+        )
+        assertEquals(
+            500L,
+            SettingsSerialization.decode(mutablePreferencesOf(intervalKey to 500L))
+                .keyConfig.holdStepIntervalMillis,
+        )
+        assertEquals(
+            60L,
+            SettingsSerialization.decode(mutablePreferencesOf(intervalKey to 69L))
+                .keyConfig.holdStepIntervalMillis,
+        )
+        assertEquals(
+            80L,
+            SettingsSerialization.decode(mutablePreferencesOf(intervalKey to 70L))
+                .keyConfig.holdStepIntervalMillis,
+        )
+        assertEquals(
+            500L,
+            SettingsSerialization.decode(mutablePreferencesOf(intervalKey to 490L))
+                .keyConfig.holdStepIntervalMillis,
+        )
+        assertEquals(
+            VolumeMapperSettings().keyConfig.holdStepIntervalMillis,
+            SettingsSerialization.decode(mutablePreferencesOf(intervalKey to 501L))
+                .keyConfig.holdStepIntervalMillis,
+        )
+    }
+
+    fun `encode keeps true x v2 curve and tap step shadow for downgraded builds`() {
         val outputMap = StepVolumeMap(
             basisSpan = 12,
             pressCount = 6,
+            normalizedXs = listOf(0.0, 0.15, 0.7, 1.0),
             offsets = listOf(0, 1, 5, 12),
         )
-        val preferences = mutablePreferencesOf()
+        val preferences = mutablePreferencesOf(
+            doublePreferencesKey("hold_speed") to 0.27,
+            longPreferencesKey("ramp_duration") to 2_000L,
+            doublePreferencesKey("ramp_multiplier") to 4.0,
+            stringPreferencesKey("hold_curve") to "legacy",
+        )
 
         SettingsSerialization.encode(
             preferences = preferences,
@@ -176,17 +329,40 @@ class SettingsSerializationTest {
         val encodedShadow = requireNotNull(preferences[stringPreferencesKey("output_curve")])
         val decodedShadow = SettingsSerialization.decodeCurve(encodedShadow)
         assertTrue(encodedShadow.startsWith("v2|"))
-        assertEquals(1.0 / 3.0, decodedShadow.minimumXSpacing, TOLERANCE)
-        assertEquals(listOf(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0), decodedShadow.points.map { it.x })
+        assertEquals(0.02, decodedShadow.minimumXSpacing, TOLERANCE)
+        assertEquals(outputMap.normalizedXs, decodedShadow.points.map { it.x })
         assertEquals(listOf(0.0, 1.0 / 12.0, 5.0 / 12.0, 1.0), decodedShadow.points.map { it.y })
         assertEquals(
             1.0 / 6.0,
             preferences[doublePreferencesKey("tap_step")] ?: error("Missing tap step shadow"),
             TOLERANCE,
         )
+        assertEquals(120L, preferences[longPreferencesKey("hold_step_interval")])
+        assertNull(preferences[doublePreferencesKey("hold_speed")])
+        assertNull(preferences[longPreferencesKey("ramp_duration")])
+        assertNull(preferences[doublePreferencesKey("ramp_multiplier")])
+        assertNull(preferences[stringPreferencesKey("hold_curve")])
     }
 
-    @Test
+    fun `legacy shadow restores independent control count and true x`() {
+        val source = StepVolumeMap(
+            basisSpan = 150,
+            pressCount = 9,
+            normalizedXs = listOf(0.0, 0.07, 0.4, 0.83, 1.0),
+            offsets = listOf(0, 1, 20, 80, 150),
+        )
+        val encoded = mutablePreferencesOf()
+        SettingsSerialization.encode(encoded, VolumeMapperSettings(outputMap = source))
+        val legacyOnly = mutablePreferencesOf(
+            stringPreferencesKey("output_curve") to
+                requireNotNull(encoded[stringPreferencesKey("output_curve")]),
+            doublePreferencesKey("tap_step") to
+                requireNotNull(encoded[doublePreferencesKey("tap_step")]),
+        )
+
+        assertEquals(source, SettingsSerialization.decode(legacyOnly).outputMap)
+    }
+
     fun `downgrade shadow restores every supported press count without floating point overshoot`() {
         val outputCurveKey = stringPreferencesKey("output_curve")
         val tapStepKey = doublePreferencesKey("tap_step")
@@ -216,7 +392,6 @@ class SettingsSerializationTest {
         }
     }
 
-    @Test
     fun `maximum one hundred fifty press map keeps a valid downgrade shadow`() {
         val outputMap = StepVolumeMap.linear(basisSpan = 150, pressCount = 150)
         val preferences = mutablePreferencesOf()
@@ -237,7 +412,6 @@ class SettingsSerializationTest {
         assertEquals(1.0 / 150.0, shadow.minimumXSpacing, TOLERANCE)
     }
 
-    @Test
     fun `curve codec rejects malformed v2 without affecting legacy support`() {
         val curve = MappingCurve.linear()
         val encoded = SettingsSerialization.encodeCurve(curve)

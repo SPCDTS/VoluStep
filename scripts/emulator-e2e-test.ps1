@@ -200,6 +200,161 @@ function Get-UiTapPointByText {
     return [pscustomobject]@{ X = $x; Y = $y }
 }
 
+function Get-NotificationExpandPoint {
+    param(
+        [string]$Title,
+        [string]$ActionText = '停止映射',
+        [int]$TimeoutSeconds = 5
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $document = Get-WindowXml
+            $titleNode = Find-UiNodeByText -Document $document -Text $Title
+            $row = $titleNode
+            while (
+                $row -is [System.Xml.XmlElement] -and
+                -not $row.GetAttribute('resource-id').EndsWith(
+                    ':id/expandableNotificationRow',
+                    [StringComparison]::Ordinal
+                )
+            ) {
+                $row = $row.ParentNode
+            }
+            if ($row -is [System.Xml.XmlElement]) {
+                foreach ($node in $row.SelectNodes('.//node')) {
+                    if (
+                        $node.GetAttribute('text').IndexOf(
+                            $ActionText,
+                            [StringComparison]::Ordinal
+                        ) -ge 0 -or
+                        $node.GetAttribute('content-desc').IndexOf(
+                            $ActionText,
+                            [StringComparison]::Ordinal
+                        ) -ge 0
+                    ) {
+                        # action 已可见，不能再点击同一 id、语义为 Collapse 的按钮。
+                        return $null
+                    }
+                }
+                foreach ($node in $row.SelectNodes('.//node')) {
+                    $description = $node.GetAttribute('content-desc')
+                    if (
+                        $node.GetAttribute('resource-id').EndsWith(
+                            ':id/expand_button',
+                            [StringComparison]::Ordinal
+                        ) -and (
+                            $description.IndexOf(
+                                'Expand',
+                                [StringComparison]::OrdinalIgnoreCase
+                            ) -ge 0 -or
+                            $description.IndexOf(
+                                '展开',
+                                [StringComparison]::Ordinal
+                            ) -ge 0
+                        )
+                    ) {
+                        $match = [regex]::Match(
+                            $node.GetAttribute('bounds'),
+                            '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$'
+                        )
+                        if ($match.Success) {
+                            return [pscustomobject]@{
+                                X = [int]((
+                                    [int]$match.Groups[1].Value +
+                                    [int]$match.Groups[3].Value
+                                ) / 2)
+                                Y = [int]((
+                                    [int]$match.Groups[2].Value +
+                                    [int]$match.Groups[4].Value
+                                ) / 2)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch {
+            # SystemUI 正在重排时 XML 可能短暂不可读，继续轮询。
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $null
+}
+
+function Get-NotificationActionPoint {
+    param(
+        [string]$Title,
+        [string]$ActionText,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $document = Get-WindowXml
+            $titleNode = Find-UiNodeByText -Document $document -Text $Title
+            $row = $titleNode
+            while (
+                $row -is [System.Xml.XmlElement] -and
+                -not $row.GetAttribute('resource-id').EndsWith(
+                    ':id/expandableNotificationRow',
+                    [StringComparison]::Ordinal
+                )
+            ) {
+                $row = $row.ParentNode
+            }
+            if ($row -is [System.Xml.XmlElement]) {
+                foreach ($candidate in $row.SelectNodes('.//node')) {
+                    if (
+                        $candidate.GetAttribute('text').IndexOf(
+                            $ActionText,
+                            [StringComparison]::Ordinal
+                        ) -lt 0 -and
+                        $candidate.GetAttribute('content-desc').IndexOf(
+                            $ActionText,
+                            [StringComparison]::Ordinal
+                        ) -lt 0
+                    ) {
+                        continue
+                    }
+                    $node = $candidate
+                    while (
+                        $node -is [System.Xml.XmlElement] -and
+                        $node -ne $row -and
+                        $node.GetAttribute('clickable') -ne 'true'
+                    ) {
+                        $node = $node.ParentNode
+                    }
+                    if ($node -isnot [System.Xml.XmlElement] -or $node -eq $row) {
+                        continue
+                    }
+                    $match = [regex]::Match(
+                        $node.GetAttribute('bounds'),
+                        '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$'
+                    )
+                    if ($match.Success) {
+                        return [pscustomobject]@{
+                            X = [int]((
+                                [int]$match.Groups[1].Value +
+                                [int]$match.Groups[3].Value
+                            ) / 2)
+                            Y = [int]((
+                                [int]$match.Groups[2].Value +
+                                [int]$match.Groups[4].Value
+                            ) / 2)
+                        }
+                    }
+                }
+            }
+        } catch {
+            # SystemUI 展开动画期间重抓目标通知行。
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "目标通知中未找到 action：${ActionText}"
+}
+
 function Invoke-UiTapPoint {
     param([pscustomobject]$Point)
 
@@ -463,11 +618,10 @@ try {
 
     Invoke-Adb shell am start '-W' '-n' $activityComponent | Out-Null
 
-    # 先在目标服务尚未启用时取得按钮坐标，避免 uiautomator dump 注册的
-    # UiAutomation 与真实 AccessibilityService 反复断连/重绑。按钮此时虽禁用，
-    # 文本 bounds 仍位于按钮内部；服务 bound 后再点击缓存坐标。
+    # 先在目标服务尚未启用时取得主开关坐标，避免 uiautomator dump 注册的
+    # UiAutomation 与真实 AccessibilityService 反复断连/重绑。服务 bound 后再点击缓存坐标。
     $startButtonPoint = Get-UiTapPointByTextWithScroll `
-        -Text '启动映射' `
+        -Text '音量映射开关' `
         -AllowNonClickable
 
     $serviceEntries = @($originalServices.Split(':') | Where-Object { $_ -and $_ -ne 'null' })
@@ -531,13 +685,15 @@ try {
 
     Write-Host "[6/7] 从 SystemUI 常驻通知执行【停止映射】"
     Invoke-Adb shell cmd statusbar expand-notifications | Out-Null
-    try {
-        $expandButtonPoint = Get-UiTapPointByText -Text 'Expand' -TimeoutSeconds 3
+    $expandButtonPoint = Get-NotificationExpandPoint `
+        -Title '音量键映射正在运行' `
+        -TimeoutSeconds 3
+    if ($null -ne $expandButtonPoint) {
         Invoke-UiTapPoint -Point $expandButtonPoint
-    } catch {
-        # 某些 SystemUI 会直接显示 action，不需要展开通知。
     }
-    $stopButtonPoint = Get-UiTapPointByText -Text '停止映射'
+    $stopButtonPoint = Get-NotificationActionPoint `
+        -Title '音量键映射正在运行' `
+        -ActionText '停止映射'
     # XML dump 退出后等待目标无障碍服务重新绑定，再点击缓存的通知 action。
     Wait-ForCondition -FailureMessage '通知面板检查后 AccessibilityService 未重新绑定。' -Condition {
         Test-AccessibilityServiceBound

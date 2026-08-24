@@ -9,6 +9,12 @@ import org.w3c.dom.Element
 
 class BackupRulesResourceTest {
     @Test
+    fun `manifest and platform backup exclusion scenarios`() {
+        `manifest references backup rules for both platform generations`()
+        `legacy backup excludes the settings datastore`()
+        `api 31 rules exclude settings from cloud backup and device transfer`()
+    }
+
     fun `manifest references backup rules for both platform generations`() {
         val application = parse("src/main/AndroidManifest.xml")
             .getElementsByTagName("application")
@@ -19,7 +25,6 @@ class BackupRulesResourceTest {
         assertEquals("@xml/data_extraction_rules", application.androidAttribute("dataExtractionRules"))
     }
 
-    @Test
     fun `legacy backup excludes the settings datastore`() {
         val document = parse("src/main/res/xml/backup_rules.xml")
 
@@ -27,7 +32,6 @@ class BackupRulesResourceTest {
         assertHasDatastoreExclude(document.documentElement)
     }
 
-    @Test
     fun `api 31 rules exclude settings from cloud backup and device transfer`() {
         val root = parse("src/main/res/xml/data_extraction_rules.xml").documentElement
 

@@ -1,19 +1,22 @@
 # 本机验证记录
 
-## 2026-08-24 K/P 独立曲线模型
+## 2026-08-24 自由控制点与正式单页收口
 
-本轮把“从最小到最大需要的按键次数 `K`”与“搭建折线的控制点总数 `P`（含两端）”从模型到界面完全解耦。保存格式升级为 `v2|basisSpan|K|controlOffsets`；旧 `v1` 会无损解释为 `P=K+1`，降级 shadow 对 `K=1…150` 全部验证不会因浮点误差多恢复一次按键。
+本轮把“从最小到最大需要的按键次数 `K`”与“搭建折线的控制点总数 `P`（含两端）”完全解耦，并允许中间控制点保存自由 x。只有 `K+1` 个实际按键位置按 `n/K` 均匀分布；控制点在 x 轴吸附到邻近按键位置、在 y 轴吸附到整数 audio index。保存格式升级为 `v3|basisSpan|K|x,offset;…`，同时保留 `v1` / `v2` 和 legacy shadow 迁移。
 
 验证结果：
 
-- `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:lintRelease :app:assembleDebug :app:assembleRelease :app:bundleRelease`：通过；覆盖 `P<K+1`、`P>K+1`、单独修改 K/P、跨范围 rebase 保持实际按键目标、v2 round-trip、v1 迁移和全部 K 的降级恢复；
-- `:app:connectedDebugAndroidTest`：API 37 模拟器 3/3 通过，0 skip、0 failure；主界面测试实际修改 P、断言 K 不变，并通过撤销无损恢复完整折线与控制点选择；真实 `AudioManager` 集成使用 `K=10、P=3`；
+- `scripts/build.ps1 -Release` 与补充的 `:app:lintRelease`：通过；22/22 个 JVM 场景组无 failure、error 或 skip，Debug / Release lint 均无阻断项，R8/资源压缩后的未签名 Release APK 与 AAB 均成功生成；原细粒度断言保留在场景组内；
+- 最终 Release lint 为 0 error、3 个工具/依赖版本更新 warning、1 个 Compose 状态类型优化 hint；Debug APK、未签名 Release APK、Release AAB 的 SHA-256 依次为 `AEC89128D0AA16B5BC02746ECCD823F6A1024477C019C5C81A6E87EE46FB2B14`、`01922E018D74A203C0CF3FC589D8B5B757C8C6E8802737E113ED9A5CFE3CC8D9`、`4DCF3EF9383486EDADBDA1A9F7938D2D46104FEBC1C07298FB1E615BE88A334C`；
+- `:app:connectedDebugAndroidTest`：API 37 模拟器 8/8 通过，0 skip、0 failure；其中单页 UI 6 项，真实 `AudioManager` 集成 1 项，显著披露、真实 AccessibilityService、`specialUse` FGS 与通知停止 1 项；与 JVM 合计 30 个测试入口；
 - `scripts/emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild`：通过，真实 AccessibilityService、`specialUse` FGS 与 evdev 链路完成后台映射 `5 → 11 → 5`，通知停止后由系统接管；
-- 视觉与交互检查使用 1080×2400 的 `VolumeMapper_API_37`：默认 authored 配置为 `K=50、P=5、basis=150`，当前 0…15 路由只生成 15 次有效按键的小点预览；把 P 改为 3 后，界面与语义树均确认 K 仍保持 50。无效 P 输入会显示合法范围，K/P 输入、画布和底部操作没有横向溢出；截图保存在被 Git 忽略的 `artifacts/kp-*.png`。
+- 视觉与交互检查使用 Android CLI 和 1080×2400 的 `VolumeMapper_API_37`：全新数据默认 `basis=30、K=18、P=5`，0…15 路由按实际 index 显示；浅色与深色模式均确认正式版只有一个主界面，当前音量为绿色水平线、交点和“当前 n”标签，y 轴音量图标不与刻度重叠，`P` 位于图上、`K` 位于 x 轴下、长按间隔与折叠设备区均无裁切。截图保存在被 Git 忽略的 `app/build/verification/final-*.png`。
 
 本轮没有连接 Xiaomi 真机或蓝牙耳机，因此这里只确认模型、持久化、Android 公开音量链路和模拟器实体按键分派；耳机端可听档位仍需在目标设备上复测。
 
-## 2026-08-24 简约 UI 重构
+## 2026-08-24 简约 UI 中间阶段（历史）
+
+本节记录正式单页收口前的中间工作树；最终界面、测试数量和交互语义以上一节为准。
 
 本轮把高频操作留在默认层，把精确输入、按键响应、设备底层信息和后台排障建议改为按需展开；同时统一为单一蓝色强调色、中性 surface，并支持系统明暗模式。显著披露、fail-open、路由降级和固定音量提示没有因简化界面而删除。
 
@@ -28,7 +31,7 @@
 
 ## 2026-08-24 离散按键曲线重构
 
-本节对应从基线 `c96f32b` 开始、与本记录一同提交的离散曲线工作树。旧版的连续 `x → V`、短按百分比和 dB 量化已经改为固定均匀横轴与整数 index 状态表；下方更早记录中的“1% / 0.7% / 40% 短按步长”是当时安装包的历史配置名称，不代表当前界面仍提供这些选项。
+本节对应从基线 `c96f32b` 开始的早期离散曲线工作树。该中间阶段把连续 `x → V`、短按百分比和 dB 量化改为均匀控制点横轴与整数 index 状态表；最终版本已经继续演进为“控制点自由 x、只有按键位置均匀”，语义以上方最新记录和 [CURVE_EDITOR.md](CURVE_EDITOR.md) 为准。下方更早记录中的“1% / 0.7% / 40% 短按步长”是当时安装包的历史配置名称，不代表当前界面仍提供这些选项。
 
 ### 主机门禁
 

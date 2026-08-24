@@ -7,6 +7,21 @@ import org.junit.Test
 
 class AccessibilityKeyFreshnessTest {
     @Test
+    fun `event age boundaries classify freshness safely`() {
+        `event becomes expired at the AOSP dispatch deadline`()
+        `negative age is treated as fresh`()
+        `positive age subtraction overflow is treated as expired`()
+    }
+
+    @Test
+    fun `expired event ownership selects pass through drain or processing`() {
+        `expired initial down always passes through without ownership`()
+        `expired initial down never reuses an existing owner`()
+        `expired up drains its matching owner instead of reaching reducer`()
+        `expired unowned up passes through`()
+        `fresh down and up keep the existing handling path`()
+    }
+
     fun `event becomes expired at the AOSP dispatch deadline`() {
         assertFalse(
             isAccessibilityKeyEventExpired(
@@ -22,7 +37,6 @@ class AccessibilityKeyFreshnessTest {
         )
     }
 
-    @Test
     fun `negative age is treated as fresh`() {
         assertFalse(
             isAccessibilityKeyEventExpired(
@@ -32,7 +46,6 @@ class AccessibilityKeyFreshnessTest {
         )
     }
 
-    @Test
     fun `positive age subtraction overflow is treated as expired`() {
         assertTrue(
             isAccessibilityKeyEventExpired(
@@ -42,7 +55,6 @@ class AccessibilityKeyFreshnessTest {
         )
     }
 
-    @Test
     fun `expired initial down always passes through without ownership`() {
         assertEquals(
             ExpiredKeyEventDisposition.PASS_THROUGH,
@@ -54,7 +66,6 @@ class AccessibilityKeyFreshnessTest {
         )
     }
 
-    @Test
     fun `expired initial down never reuses an existing owner`() {
         assertEquals(
             ExpiredKeyEventDisposition.PASS_THROUGH,
@@ -66,7 +77,6 @@ class AccessibilityKeyFreshnessTest {
         )
     }
 
-    @Test
     fun `expired up drains its matching owner instead of reaching reducer`() {
         assertEquals(
             ExpiredKeyEventDisposition.DRAIN_OWNED_GESTURE,
@@ -78,7 +88,6 @@ class AccessibilityKeyFreshnessTest {
         )
     }
 
-    @Test
     fun `expired unowned up passes through`() {
         assertEquals(
             ExpiredKeyEventDisposition.PASS_THROUGH,
@@ -90,7 +99,6 @@ class AccessibilityKeyFreshnessTest {
         )
     }
 
-    @Test
     fun `fresh down and up keep the existing handling path`() {
         assertEquals(
             ExpiredKeyEventDisposition.PROCESS,

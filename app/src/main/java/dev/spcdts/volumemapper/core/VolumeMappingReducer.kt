@@ -8,23 +8,27 @@ enum class VolumeDirection(val sign: Double) {
     UP(1.0),
 }
 
-/** User-tunable key behaviour. The hold ramp is integrated exactly between timer ticks. */
+/** User-tunable key behaviour. A hold advances by one configured slot per fixed interval. */
 data class KeyMappingConfig(
     val holdDelayMillis: Long = 350L,
-    val holdUnitsPerSecond: Double = 0.12,
-    val holdRampDurationMillis: Long = 1_500L,
-    val holdMaximumMultiplier: Double = 4.0,
-    val holdRampCurve: MappingCurve = MappingCurve.linear(),
+    val holdStepIntervalMillis: Long = DEFAULT_HOLD_STEP_INTERVAL_MILLIS,
 ) {
     init {
         require(holdDelayMillis >= 0L) { "holdDelayMillis cannot be negative" }
-        require(holdUnitsPerSecond.isFinite() && holdUnitsPerSecond >= 0.0) {
-            "holdUnitsPerSecond must be finite and non-negative"
+        require(holdStepIntervalMillis in MIN_HOLD_STEP_INTERVAL_MILLIS..MAX_HOLD_STEP_INTERVAL_MILLIS) {
+            "holdStepIntervalMillis must be in " +
+                "$MIN_HOLD_STEP_INTERVAL_MILLIS..$MAX_HOLD_STEP_INTERVAL_MILLIS"
         }
-        require(holdRampDurationMillis > 0L) { "holdRampDurationMillis must be positive" }
-        require(holdMaximumMultiplier.isFinite() && holdMaximumMultiplier >= 1.0) {
-            "holdMaximumMultiplier must be finite and at least 1"
+        require(holdStepIntervalMillis % HOLD_STEP_INTERVAL_GRID_MILLIS == 0L) {
+            "holdStepIntervalMillis must align to the ${HOLD_STEP_INTERVAL_GRID_MILLIS} ms grid"
         }
+    }
+
+    companion object {
+        const val DEFAULT_HOLD_STEP_INTERVAL_MILLIS = 120L
+        const val MIN_HOLD_STEP_INTERVAL_MILLIS = 60L
+        const val MAX_HOLD_STEP_INTERVAL_MILLIS = 500L
+        const val HOLD_STEP_INTERVAL_GRID_MILLIS = 20L
     }
 }
 
@@ -80,21 +84,25 @@ data class VolumeMappingState(
 
     /** Derives the normalized editor position by inverting the route-bound piecewise-linear map. */
     fun logicalPosition(stepMap: BoundStepVolumeMap): Double {
+        val current = position
+        when (current) {
+            is VolumePosition.ExactStep -> require(current.stepIndex in stepMap.indices.indices) {
+                "Exact step is outside the bound map"
+            }
+            is VolumePosition.ObservedIndex -> require(stepMap.range.contains(current.index)) {
+                "Observed index is outside the bound route range"
+            }
+        }
+
         val pressCount = stepMap.effectivePressCount
         if (pressCount == 0) return 0.0
 
-        return when (val current = position) {
+        return when (current) {
             is VolumePosition.ExactStep -> {
-                require(current.stepIndex in stepMap.indices.indices) {
-                    "Exact step is outside the bound map"
-                }
                 current.stepIndex.toDouble() / pressCount.toDouble()
             }
 
             is VolumePosition.ObservedIndex -> {
-                require(stepMap.range.contains(current.index)) {
-                    "Observed index is outside the bound route range"
-                }
                 val searchResult = stepMap.indices.binarySearch(current.index)
                 if (searchResult >= 0) {
                     searchResult.toDouble() / pressCount.toDouble()
@@ -258,22 +266,19 @@ class VolumeMappingReducer(
         val nowMillis = max(requestedNowMillis, press.lastIntegratedAtMillis)
         val holdStartMillis = saturatedAdd(press.startedAtMillis, config.holdDelayMillis)
         val integrationStartMillis = max(press.lastIntegratedAtMillis, holdStartMillis)
-        val normalizedDisplacement = if (nowMillis > integrationStartMillis) {
-            holdDisplacement(
-                fromHeldMillis = integrationStartMillis - holdStartMillis,
-                toHeldMillis = nowMillis - holdStartMillis,
-            )
+        val stepDisplacement = if (nowMillis > integrationStartMillis) {
+            (nowMillis - integrationStartMillis).toDouble() /
+                config.holdStepIntervalMillis.toDouble()
         } else {
             0.0
         }
 
         val newPress = press.copy(lastIntegratedAtMillis = nowMillis)
-        if (normalizedDisplacement == 0.0 || stepMap.effectivePressCount == 0) {
+        if (stepDisplacement == 0.0 || stepMap.effectivePressCount == 0) {
             return state.copy(activePress = newPress)
         }
 
-        val displacementInSteps = normalizedDisplacement * stepMap.effectivePressCount.toDouble()
-        val accumulated = state.heldStepRemainder + displacementInSteps
+        val accumulated = state.heldStepRemainder + stepDisplacement
         val wholeSteps = when {
             !accumulated.isFinite() -> stepMap.effectivePressCount
             accumulated >= stepMap.effectivePressCount.toDouble() -> stepMap.effectivePressCount
@@ -288,19 +293,6 @@ class VolumeMappingReducer(
             activePress = newPress,
             heldStepRemainder = remainder,
         )
-    }
-
-    /** Returns normalized full-range displacement; callers convert it to configured slots. */
-    private fun holdDisplacement(fromHeldMillis: Long, toHeldMillis: Long): Double {
-        val durationSeconds = (toHeldMillis - fromHeldMillis) / MILLIS_PER_SECOND
-        val rampDurationMillis = config.holdRampDurationMillis.toDouble()
-        val normalizedFrom = fromHeldMillis / rampDurationMillis
-        val normalizedTo = toHeldMillis / rampDurationMillis
-        val rampAreaSeconds = config.holdRampCurve.integral(normalizedFrom, normalizedTo) *
-            rampDurationMillis / MILLIS_PER_SECOND
-        val multiplierAreaSeconds = durationSeconds +
-            (config.holdMaximumMultiplier - 1.0) * rampAreaSeconds
-        return config.holdUnitsPerSecond * multiplierAreaSeconds
     }
 
     private fun moveByWholeSteps(
@@ -345,7 +337,6 @@ class VolumeMappingReducer(
         if (left > Long.MAX_VALUE - nonNegativeRight) Long.MAX_VALUE else left + nonNegativeRight
 
     private companion object {
-        const val MILLIS_PER_SECOND: Double = 1_000.0
         const val STEP_EPSILON: Double = 1e-9
         const val MAX_STEP_REMAINDER: Double = 1.0 - STEP_EPSILON
     }

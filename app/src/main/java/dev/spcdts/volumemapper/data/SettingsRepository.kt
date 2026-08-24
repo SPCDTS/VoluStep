@@ -17,17 +17,18 @@ import dev.spcdts.volumemapper.core.MappingPreset
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import java.io.IOException
 import kotlin.math.ceil
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 private val Context.volumeMapperDataStore by preferencesDataStore(name = "volume_mapper")
 
@@ -40,21 +41,23 @@ data class VolumeMapperSettings(
     ),
     val keyConfig: KeyMappingConfig = KeyMappingConfig(
         holdDelayMillis = 350L,
-        holdUnitsPerSecond = 0.10,
-        holdRampDurationMillis = 1_500L,
-        holdMaximumMultiplier = 4.0,
-        holdRampCurve = MappingCurve.linear(),
+        holdStepIntervalMillis = KeyMappingConfig.DEFAULT_HOLD_STEP_INTERVAL_MILLIS,
     ),
     val showSystemVolumeUi: Boolean = true,
     val disclosureAccepted: Boolean = false,
 )
 
-private const val DEFAULT_OUTPUT_BASIS_SPAN = 150
-private const val DEFAULT_OUTPUT_PRESS_COUNT = 50
+data class SettingsRepositoryState(
+    val settings: VolumeMapperSettings,
+    val initialSettingsLoaded: Boolean,
+)
+
+private const val DEFAULT_OUTPUT_BASIS_SPAN = 30
+private const val DEFAULT_OUTPUT_PRESS_COUNT = 18
 private const val DEFAULT_OUTPUT_CONTROL_POINT_COUNT = 5
+private const val LEGACY_OUTPUT_BASIS_SPAN = 150
 
 /** 单进程设置仓库。内存状态立即更新，DataStore 写入做短暂防抖以适配拖动曲线。 */
-@OptIn(FlowPreview::class)
 class SettingsRepository(
     context: Context,
     private val scope: CoroutineScope,
@@ -62,52 +65,62 @@ class SettingsRepository(
     private val dataStore = context.volumeMapperDataStore
     private val _settings = MutableStateFlow(VolumeMapperSettings())
     val settings: StateFlow<VolumeMapperSettings> = _settings
+    private val _state = MutableStateFlow(
+        SettingsRepositoryState(
+            settings = _settings.value,
+            initialSettingsLoaded = false,
+        ),
+    )
+    val state: StateFlow<SettingsRepositoryState> = _state
     private val stateLock = Any()
     private val pendingTransforms = ArrayDeque<(VolumeMapperSettings) -> VolumeMapperSettings>()
-    private val pendingWrites = Channel<PendingWrite>(Channel.CONFLATED)
+    private val pendingWrites = Channel<SettingsWriteRequest>(Channel.UNLIMITED)
     private var isLoaded = false
 
     /** 供仪器测试等待 DataStore 初始值合并完成，避免把默认占位状态误当成用户配置。 */
     internal val hasLoadedInitialSettings: Boolean
-        get() = synchronized(stateLock) { isLoaded }
+        get() = _state.value.initialSettingsLoaded
 
     init {
+        val writerJob = scope.launch { collectPendingWrites() }
+        writerJob.invokeOnCompletion { cause ->
+            val failure = cause ?: CancellationException("Settings writer stopped")
+            pendingWrites.close(failure)
+            while (true) {
+                val request = pendingWrites.tryReceive().getOrNull() ?: break
+                request.completion?.completeExceptionally(failure)
+            }
+        }
+
         scope.launch {
-            val loaded = dataStore.data
-                .catch { throwable ->
-                    if (throwable is IOException) emit(androidx.datastore.preferences.core.emptyPreferences())
-                    else throw throwable
-                }
-                .first()
+            val loaded = try {
+                dataStore.data
+                    .catch { throwable ->
+                        if (throwable is IOException) {
+                            emit(androidx.datastore.preferences.core.emptyPreferences())
+                        } else {
+                            throw throwable
+                        }
+                    }
+                    .first()
+            } catch (throwable: Throwable) {
+                if (throwable is CancellationException || throwable !is Exception) throw throwable
+                // Stay operational with defaults after a one-off non-cancellation read failure.
+                androidx.datastore.preferences.core.emptyPreferences()
+            }
             val loadedSettings = SettingsSerialization.decode(loaded)
-            val mergedSettings: VolumeMapperSettings
-            val shouldPersistMergedSettings: Boolean
             synchronized(stateLock) {
                 var merged = loadedSettings
                 pendingTransforms.forEach { transform -> merged = transform(merged) }
-                shouldPersistMergedSettings = pendingTransforms.isNotEmpty()
+                val shouldPersistMergedSettings = pendingTransforms.isNotEmpty()
                 pendingTransforms.clear()
                 isLoaded = true
-                _settings.value = merged
-                mergedSettings = merged
-            }
-            if (shouldPersistMergedSettings) {
-                pendingWrites.trySend(PendingWrite(mergedSettings, immediate = false))
-            }
-
-            pendingWrites.receiveAsFlow()
-                .debounce { request -> if (request.immediate) 0L else WRITE_DEBOUNCE_MILLIS }
-                .collect { request ->
-                    try {
-                        dataStore.edit { preferences ->
-                            SettingsSerialization.encode(preferences, request.settings)
-                        }
-                        request.completion?.complete(Unit)
-                    } catch (throwable: Throwable) {
-                        request.completion?.completeExceptionally(throwable)
-                        throw throwable
-                    }
+                publishSettingsLocked(merged)
+                if (shouldPersistMergedSettings) {
+                    // The merged snapshot and its FIFO position form one linearized transition.
+                    enqueueLocked(SettingsWriteRequest(merged, immediate = false))
                 }
+            }
         }
     }
 
@@ -119,56 +132,148 @@ class SettingsRepository(
 
     fun acceptDisclosure() = update { copy(disclosureAccepted = true) }
 
-    /** 绕过拖动防抖，把当前完整设置交给同一个串行写入流立即持久化。 */
+    /** 绕过拖动防抖并立即入队；此非挂起 API 返回时不保证 DataStore 已经落盘。 */
     fun flushPendingWrite() {
-        val current = synchronized(stateLock) {
-            _settings.value.takeIf { isLoaded }
+        synchronized(stateLock) {
+            if (isLoaded) {
+                enqueueLocked(SettingsWriteRequest(_settings.value, immediate = true))
+            }
         }
-        current?.let { pendingWrites.trySend(PendingWrite(it, immediate = true)) }
     }
 
-    /** 仪器测试使用：原子替换完整设置，并等待同一串行写入流确认 DataStore 已落盘。 */
+    /**
+     * 仪器测试使用：原子替换完整设置，并等待非丢失的串行写入 actor 确认 DataStore 落盘。
+     * 回执带超时，应用作用域异常终止时也不会让测试清理永久挂起。
+     */
     internal suspend fun replaceSettingsAndAwait(settings: VolumeMapperSettings) {
-        update { settings }
         val completion = CompletableDeferred<Unit>()
-        val current = synchronized(stateLock) {
+        synchronized(stateLock) {
             check(isLoaded) { "Initial settings have not loaded" }
-            _settings.value
+            publishSettingsLocked(settings)
+            enqueueLocked(
+                SettingsWriteRequest(
+                    settings = settings,
+                    immediate = true,
+                    completion = completion,
+                ),
+            )
         }
-        pendingWrites.send(
-            PendingWrite(
-                settings = current,
-                immediate = true,
-                completion = completion,
-            ),
-        )
-        completion.await()
+        withTimeout(TEST_PERSISTENCE_TIMEOUT_MILLIS) {
+            completion.await()
+        }
     }
 
     private fun update(transform: VolumeMapperSettings.() -> VolumeMapperSettings) {
-        val valueToPersist = synchronized(stateLock) {
+        synchronized(stateLock) {
             val updated = _settings.value.transform()
-            _settings.value = updated
-            if (isLoaded) updated else {
+            publishSettingsLocked(updated)
+            if (isLoaded) {
+                enqueueLocked(SettingsWriteRequest(updated, immediate = false))
+            } else {
                 pendingTransforms.addLast { current -> current.transform() }
-                null
             }
-        }
-        valueToPersist?.let {
-            pendingWrites.trySend(PendingWrite(it, immediate = false))
         }
     }
 
-    private data class PendingWrite(
-        val settings: VolumeMapperSettings,
-        val immediate: Boolean,
-        val completion: CompletableDeferred<Unit>? = null,
-    )
+    /**
+     * Debounces ordinary drag updates but never drops an immediate/acknowledged request. All sends
+     * happen while [stateLock] is held, so channel order is identical to in-memory state order.
+     */
+    private suspend fun collectPendingWrites() {
+        collectSettingsWriteRequests(
+            pendingWrites = pendingWrites,
+            debounceMillis = WRITE_DEBOUNCE_MILLIS,
+        ) { request ->
+            dataStore.edit { preferences ->
+                SettingsSerialization.encode(preferences, request.settings)
+            }
+        }
+    }
+
+    /** Must be called while [stateLock] is held. */
+    private fun enqueueLocked(request: SettingsWriteRequest) {
+        check(Thread.holdsLock(stateLock)) { "Settings writes must be enqueued under stateLock" }
+        check(request.completion == null || request.immediate) {
+            "Acknowledged settings writes must be immediate"
+        }
+        val result = pendingWrites.trySend(request)
+        if (result.isFailure) {
+            request.completion?.completeExceptionally(
+                result.exceptionOrNull() ?: IllegalStateException("Settings writer is closed"),
+            )
+        }
+    }
+
+    /** Must be called while [stateLock] is held. UI observes both fields through one snapshot. */
+    private fun publishSettingsLocked(settings: VolumeMapperSettings) {
+        check(Thread.holdsLock(stateLock)) { "Settings state must be published under stateLock" }
+        _settings.value = settings
+        _state.value = SettingsRepositoryState(
+            settings = settings,
+            initialSettingsLoaded = isLoaded,
+        )
+    }
 
     private companion object {
         const val WRITE_DEBOUNCE_MILLIS = 180L
+        const val TEST_PERSISTENCE_TIMEOUT_MILLIS = 10_000L
     }
 }
+
+internal data class SettingsWriteRequest(
+    val settings: VolumeMapperSettings,
+    val immediate: Boolean,
+    val completion: CompletableDeferred<Unit>? = null,
+    val enqueuedAtMillis: Long = monotonicSettingsTimeMillis(),
+)
+
+/**
+ * Ordinary full-state snapshots use an enqueue-time trailing-edge debounce: every later ordinary
+ * request resets the deadline. An immediate request cuts the window short and is persisted in FIFO
+ * order. Only the selected request can carry an acknowledgement, which completes after persistence.
+ */
+internal suspend fun collectSettingsWriteRequests(
+    pendingWrites: ReceiveChannel<SettingsWriteRequest>,
+    debounceMillis: Long,
+    persist: suspend (SettingsWriteRequest) -> Unit,
+) {
+    require(debounceMillis >= 0L) { "debounceMillis must not be negative" }
+    while (true) {
+        var request = pendingWrites.receive()
+        if (!request.immediate) {
+            while (true) {
+                val alreadyQueued = pendingWrites.tryReceive().getOrNull()
+                if (alreadyQueued != null) {
+                    request = alreadyQueued
+                    if (request.immediate) break
+                    continue
+                }
+
+                val elapsedMillis = (monotonicSettingsTimeMillis() - request.enqueuedAtMillis)
+                    .coerceAtLeast(0L)
+                val remainingMillis = debounceMillis - elapsedMillis
+                if (remainingMillis <= 0L) break
+                val newer = withTimeoutOrNull(remainingMillis) {
+                    pendingWrites.receive()
+                } ?: break
+                request = newer
+                if (request.immediate) break
+            }
+        }
+
+        try {
+            persist(request)
+            request.completion?.complete(Unit)
+        } catch (throwable: Throwable) {
+            request.completion?.completeExceptionally(throwable)
+            if (throwable is CancellationException || throwable !is Exception) throw throwable
+            // A transient DataStore failure rejects only this acknowledged request. The actor
+            // remains alive, and a later full-state snapshot can persist the latest settings.
+        }
+    }
+}
+
+private fun monotonicSettingsTimeMillis(): Long = System.nanoTime() / 1_000_000L
 
 /** 可独立单测的 Preferences 编解码器；每个字段单独校验，单项损坏不会清空其他设置。 */
 internal object SettingsSerialization {
@@ -182,18 +287,9 @@ internal object SettingsSerialization {
                 holdDelayMillis = preferences.readLong(Keys.HOLD_DELAY)
                     ?.takeIf { it >= 0L }
                     ?: defaultKeyConfig.holdDelayMillis,
-                holdUnitsPerSecond = preferences.readDouble(Keys.HOLD_SPEED)
-                    ?.takeIf { it.isFinite() && it >= 0.0 }
-                    ?: defaultKeyConfig.holdUnitsPerSecond,
-                holdRampDurationMillis = preferences.readLong(Keys.RAMP_DURATION)
-                    ?.takeIf { it > 0L }
-                    ?: defaultKeyConfig.holdRampDurationMillis,
-                holdMaximumMultiplier = preferences.readDouble(Keys.RAMP_MULTIPLIER)
-                    ?.takeIf { it.isFinite() && it >= 1.0 }
-                    ?: defaultKeyConfig.holdMaximumMultiplier,
-                holdRampCurve = preferences.readCurve(
-                    Keys.HOLD_CURVE,
-                    defaultKeyConfig.holdRampCurve,
+                holdStepIntervalMillis = normalizePersistedHoldStepInterval(
+                    persistedValue = preferences.readLong(Keys.HOLD_STEP_INTERVAL),
+                    defaultValue = defaultKeyConfig.holdStepIntervalMillis,
                 ),
             ),
             showSystemVolumeUi = preferences.readBoolean(Keys.SHOW_SYSTEM_UI)
@@ -212,10 +308,13 @@ internal object SettingsSerialization {
         preferences[Keys.OUTPUT_CURVE] = encodeCurve(settings.outputMap.toLegacyCurve())
         preferences[Keys.TAP_STEP] = settings.outputMap.toLegacyTapStep()
         preferences[Keys.HOLD_DELAY] = settings.keyConfig.holdDelayMillis
-        preferences[Keys.HOLD_SPEED] = settings.keyConfig.holdUnitsPerSecond
-        preferences[Keys.RAMP_DURATION] = settings.keyConfig.holdRampDurationMillis
-        preferences[Keys.RAMP_MULTIPLIER] = settings.keyConfig.holdMaximumMultiplier
-        preferences[Keys.HOLD_CURVE] = encodeCurve(settings.keyConfig.holdRampCurve)
+        preferences[Keys.HOLD_STEP_INTERVAL] = settings.keyConfig.holdStepIntervalMillis
+        // These fields belonged to the superseded ramp-based hold model. Remove stale values so a
+        // later write cannot look as though the fixed interval is still affected by hidden tuning.
+        preferences.remove(Keys.HOLD_SPEED)
+        preferences.remove(Keys.RAMP_DURATION)
+        preferences.remove(Keys.RAMP_MULTIPLIER)
+        preferences.remove(Keys.HOLD_CURVE)
         preferences[Keys.QUANTIZATION_MODE_NAME] = "INDEX"
         preferences.remove(Keys.LEGACY_QUANTIZATION_MODE_ORDINAL)
         preferences[Keys.SHOW_SYSTEM_UI] = settings.showSystemVolumeUi
@@ -250,18 +349,36 @@ internal object SettingsSerialization {
     }
 
     fun encodeStepVolumeMap(map: StepVolumeMap): String = buildString {
-        append(STEP_MAP_FORMAT_V2)
+        append(STEP_MAP_FORMAT_V3)
         append('|')
         append(map.basisSpan)
         append('|')
         append(map.pressCount)
         append('|')
-        append(map.offsets.joinToString(separator = ","))
+        append(
+            map.normalizedXs.indices.joinToString(separator = ";") { index ->
+                "${java.lang.Double.toString(map.normalizedXs[index])},${map.offsets[index]}"
+            },
+        )
     }
 
     fun decodeStepVolumeMap(encoded: String): StepVolumeMap {
         val components = encoded.split('|', limit = 4)
         return when (components.firstOrNull()) {
+            STEP_MAP_FORMAT_V3 -> {
+                require(components.size == 4)
+                val points = components[3].split(';').map { encodedPoint ->
+                    val parts = encodedPoint.split(',', limit = 2)
+                    require(parts.size == 2)
+                    parts[0].toDouble() to parts[1].toInt()
+                }
+                StepVolumeMap(
+                    basisSpan = components[1].toInt(),
+                    pressCount = components[2].toInt(),
+                    normalizedXs = points.map { it.first },
+                    offsets = points.map { it.second },
+                )
+            }
             STEP_MAP_FORMAT_V2 -> {
                 require(components.size == 4)
                 StepVolumeMap(
@@ -296,35 +413,35 @@ internal object SettingsSerialization {
             ?.takeIf { it.isFinite() && it > 0.0 && it <= 1.0 }
         val pressCount = legacyTapStep
             ?.let { ceil(1.0 / it).toInt() }
-            ?.coerceIn(1, DEFAULT_OUTPUT_BASIS_SPAN)
+            ?.coerceIn(1, LEGACY_OUTPUT_BASIS_SPAN)
             ?: default.pressCount
         return StepVolumeMap.fromCurve(
             curve = legacyCurve,
-            basisSpan = DEFAULT_OUTPUT_BASIS_SPAN,
+            basisSpan = LEGACY_OUTPUT_BASIS_SPAN,
             pressCount = pressCount,
+            controlPointCount = minOf(
+                legacyCurve.points.size,
+                LEGACY_OUTPUT_BASIS_SPAN + 1,
+            ),
         )
     }
 
     private fun StepVolumeMap.toLegacyCurve(): MappingCurve = MappingCurve(
         points = offsets.mapIndexed { index, offset ->
             MappingPoint(
-                x = index.toDouble() / controlSegmentCount.toDouble(),
+                x = normalizedXs[index],
                 y = offset.toDouble() / basisSpan.toDouble(),
             )
         },
-        minimumXSpacing = 1.0 / controlSegmentCount.toDouble(),
+        minimumXSpacing = minOf(
+            MappingCurve.DEFAULT_MINIMUM_X_SPACING,
+            normalizedXs.zipWithNext { left, right -> right - left }.min(),
+        ),
     )
 
     /** Avoids an old build's ceil(1 / tapStep) rounding K upward after a downgrade. */
     private fun StepVolumeMap.toLegacyTapStep(): Double =
         if (pressCount == 1) 1.0 else Math.nextUp(1.0 / pressCount.toDouble())
-
-    private fun Preferences.readCurve(
-        key: Preferences.Key<String>,
-        default: MappingCurve,
-    ): MappingCurve = readString(key)
-        ?.let { encoded -> runCatching { decodeCurve(encoded) }.getOrNull() }
-        ?: default
 
     private fun Preferences.readBoolean(key: Preferences.Key<Boolean>): Boolean? =
         asMap()[key] as? Boolean
@@ -341,11 +458,30 @@ internal object SettingsSerialization {
     private fun Preferences.readString(key: Preferences.Key<String>): String? =
         asMap()[key] as? String
 
+    /** In-range legacy values snap to the nearest grid point; exact ties round upward. */
+    private fun normalizePersistedHoldStepInterval(
+        persistedValue: Long?,
+        defaultValue: Long,
+    ): Long {
+        val value = persistedValue
+            ?.takeIf {
+                it in KeyMappingConfig.MIN_HOLD_STEP_INTERVAL_MILLIS..
+                    KeyMappingConfig.MAX_HOLD_STEP_INTERVAL_MILLIS
+            }
+            ?: return defaultValue
+        val grid = KeyMappingConfig.HOLD_STEP_INTERVAL_GRID_MILLIS
+        val offset = value - KeyMappingConfig.MIN_HOLD_STEP_INTERVAL_MILLIS
+        val roundedSteps = (offset + grid / 2L) / grid
+        return KeyMappingConfig.MIN_HOLD_STEP_INTERVAL_MILLIS + roundedSteps * grid
+    }
+
     private object Keys {
         val OUTPUT_STEP_MAP = stringPreferencesKey("output_step_map")
         val OUTPUT_CURVE = stringPreferencesKey("output_curve")
         val TAP_STEP = doublePreferencesKey("tap_step")
         val HOLD_DELAY = longPreferencesKey("hold_delay")
+        val HOLD_STEP_INTERVAL = longPreferencesKey("hold_step_interval")
+        // Kept only to remove obsolete values written by ramp-based releases.
         val HOLD_SPEED = doublePreferencesKey("hold_speed")
         val RAMP_DURATION = longPreferencesKey("ramp_duration")
         val RAMP_MULTIPLIER = doublePreferencesKey("ramp_multiplier")
@@ -359,4 +495,5 @@ internal object SettingsSerialization {
     private const val CURVE_FORMAT_V2 = "v2"
     private const val STEP_MAP_FORMAT_V1 = "v1"
     private const val STEP_MAP_FORMAT_V2 = "v2"
+    private const val STEP_MAP_FORMAT_V3 = "v3"
 }

@@ -28,6 +28,58 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+internal const val COORDINATOR_TICK_INTERVAL_MILLIS = 50L
+
+// A 60 ms configured hold can advance on adjacent 50 ms ticks because fractional time is retained.
+// The write gate therefore cannot exceed one tick, or a newer target could overwrite an unwritten
+// adjacent slot before the gate opens.
+internal const val COORDINATOR_MIN_WRITE_INTERVAL_MILLIS = COORDINATOR_TICK_INTERVAL_MILLIS
+
+/**
+ * Actor-owned FIFO that separates write-attempt throttling from post-write verification time.
+ * A Binder call may finish well after its attempt began; using completion time for both concerns
+ * shifts the gate into the next ticker slot and can make a newer target replace an older one.
+ */
+internal class CoordinatorWriteQueue<T>(
+    private val minimumIntervalMillis: Long = COORDINATOR_MIN_WRITE_INTERVAL_MILLIS,
+) {
+    private val pending = ArrayDeque<T>()
+    private var lastAttemptStartedAtMillis = Long.MIN_VALUE
+
+    init {
+        require(minimumIntervalMillis >= 0L) { "minimumIntervalMillis must not be negative" }
+    }
+
+    val hasPending: Boolean
+        get() = pending.isNotEmpty()
+
+    fun canStartAttempt(nowMillis: Long): Boolean =
+        lastAttemptStartedAtMillis == Long.MIN_VALUE ||
+            nowMillis - lastAttemptStartedAtMillis >= minimumIntervalMillis
+
+    fun recordAttemptStarted(nowMillis: Long) {
+        lastAttemptStartedAtMillis = nowMillis
+    }
+
+    fun enqueue(value: T) {
+        pending.addLast(value)
+    }
+
+    fun takeNextIfReady(nowMillis: Long): T? {
+        if (pending.isEmpty() || !canStartAttempt(nowMillis)) return null
+        return pending.removeFirst()
+    }
+
+    fun clearPending() {
+        pending.clear()
+    }
+
+    fun reset() {
+        pending.clear()
+        lastAttemptStartedAtMillis = Long.MIN_VALUE
+    }
+}
+
 data class ControllerRuntimeState(
     val isArmed: Boolean = false,
     val isForegroundServiceRunning: Boolean = false,
@@ -145,9 +197,8 @@ class MappingCoordinator(
     private var reducer = VolumeMappingReducer(boundStepMap, settings.keyConfig)
     private var mappingState: VolumeMappingState? = null
     private var activeGesture: ActiveGesture? = null
-    private var lastWriteAtMillis = Long.MIN_VALUE
     private var lastEnvironmentGuardAtMillis = Long.MIN_VALUE
-    private var pendingWrite: PendingWrite? = null
+    private val writeQueue = CoordinatorWriteQueue<PendingWrite>()
     private var verificationCycle: VerificationCycle? = null
     private var nextVerificationId = 0L
 
@@ -547,12 +598,12 @@ class MappingCoordinator(
         mappingState = reduction.state
         cancelTicker()
         activeGesture = null
-        pendingWrite = null
+        writeQueue.clearPending()
         publish { copy(logicalPosition = reducer.logicalPosition(reduction.state)) }
 
         // Always converge to the reducer's final integer. The latest tick may already have moved
         // state while its write was throttled; in that case UP itself need not create a new
-        // reduction, but it must still flush the pending target. applyTarget is a no-op when the
+        // reduction, but it must still supersede queued targets. applyTarget is a no-op when the
         // expected index is already current.
         applyTarget(reduction.targetIndex, force = true, context = gesture.writeContext)
     }
@@ -574,13 +625,8 @@ class MappingCoordinator(
             applyTarget(reduction.targetIndex, force = false, context = gesture.writeContext)
         }
 
-        val pending = pendingWrite
-        if (
-            pending != null &&
-            pending.context == gesture.writeContext &&
-            isWriteIntervalElapsed(command.nowMillis)
-        ) {
-            pendingWrite = null
+        val pending = writeQueue.takeNextIfReady(SystemClock.uptimeMillis())
+        if (pending != null && pending.context == gesture.writeContext) {
             writeTarget(pending.targetIndex, pending.context)
         }
     }
@@ -795,12 +841,19 @@ class MappingCoordinator(
         context: WriteContext,
     ) {
         if (!isWriteContextCurrent(context)) return
-        val now = SystemClock.uptimeMillis()
-        if (!force && !isWriteIntervalElapsed(now)) {
-            pendingWrite = PendingWrite(targetIndex, context)
+        if (force) {
+            writeQueue.clearPending()
+            writeTarget(targetIndex, context)
             return
         }
-        pendingWrite = null
+
+        val now = SystemClock.uptimeMillis()
+        if (writeQueue.hasPending || !writeQueue.canStartAttempt(now)) {
+            // Keep every reducer target in FIFO order. A newer adjacent tick must never replace an
+            // older target merely because the Binder call shifted the throttle phase.
+            writeQueue.enqueue(PendingWrite(targetIndex, context))
+            return
+        }
         writeTarget(targetIndex, context)
     }
 
@@ -813,22 +866,22 @@ class MappingCoordinator(
 
         // Epoch/route check immediately before the blocking write.
         if (!isWriteContextCurrent(context)) return
-        lastWriteAtMillis = SystemClock.uptimeMillis()
+        writeQueue.recordAttemptStarted(SystemClock.uptimeMillis())
         val result = backend.setMediaVolume(targetIndex, settings.showSystemVolumeUi)
         // A transition racing the Binder call makes its result stale, regardless of success/failure.
         if (!isWriteContextCurrent(context)) return
 
         result.onSuccess {
             // The settle window starts after the blocking Binder call completes, not when it
-            // begins. Keep the pre-call timestamp only as an attempt throttle on failures.
-            lastWriteAtMillis = SystemClock.uptimeMillis()
+            // begins. The write queue deliberately retains the pre-call timestamp for throttling.
+            val writtenAtMillis = SystemClock.uptimeMillis()
             publish {
                 copy(
                     expectedIndex = targetIndex,
                     statusMessage = "已请求 $targetIndex/${snapshot.range.maxIndex}",
                 )
             }
-            scheduleVerification(context, targetIndex, lastWriteAtMillis)
+            scheduleVerification(context, targetIndex, writtenAtMillis)
         }.onFailure {
             registerFailure(
                 "系统拒绝修改音量：${it.message ?: it.javaClass.simpleName}",
@@ -964,7 +1017,7 @@ class MappingCoordinator(
 
     private fun synchronizeMappingToObserved(observed: RouteVolumeSnapshot) {
         // A mature mismatch makes every throttled target derived from the old anchor stale.
-        pendingWrite = null
+        writeQueue.clearPending()
         ensureReducerBound(observed.range)
         val state = mappingState
         mappingState = if (state == null) {
@@ -1025,8 +1078,7 @@ class MappingCoordinator(
     private fun cancelActorWork(resetMapping: Boolean) {
         cancelTicker()
         cancelVerification()
-        pendingWrite = null
-        lastWriteAtMillis = Long.MIN_VALUE
+        writeQueue.reset()
         lastEnvironmentGuardAtMillis = Long.MIN_VALUE
         activeGesture = null
         mappingState = if (resetMapping) {
@@ -1038,7 +1090,7 @@ class MappingCoordinator(
 
     private fun cancelActiveGesture(resetMapping: Boolean) {
         cancelTicker()
-        pendingWrite = null
+        writeQueue.clearPending()
         activeGesture = null
         mappingState = if (resetMapping) {
             null
@@ -1051,7 +1103,7 @@ class MappingCoordinator(
         cancelTicker()
         val job = scope.launch {
             while (isActive) {
-                delay(TICK_INTERVAL_MILLIS)
+                delay(COORDINATOR_TICK_INTERVAL_MILLIS)
                 if (gestureOwner.get() != gesture.token) break
 
                 val now = SystemClock.uptimeMillis()
@@ -1155,10 +1207,6 @@ class MappingCoordinator(
     }
 
     private fun currentStamp(): EpochStamp = EpochStamp(controlEpoch.get(), routeEpoch.get())
-
-    private fun isWriteIntervalElapsed(nowMillis: Long): Boolean =
-        lastWriteAtMillis == Long.MIN_VALUE ||
-            nowMillis - lastWriteAtMillis >= MIN_WRITE_INTERVAL_MILLIS
 
     private fun isStampCurrent(stamp: EpochStamp): Boolean =
         actorControlEpoch == stamp.controlEpoch &&
@@ -1300,10 +1348,8 @@ class MappingCoordinator(
 
     private companion object {
         const val COMMAND_BUFFER_CAPACITY = 64
-        const val TICK_INTERVAL_MILLIS = 50L
         const val LOST_UP_WATCHDOG_MILLIS = 2_000L
         const val ENVIRONMENT_GUARD_INTERVAL_MILLIS = 500L
-        const val MIN_WRITE_INTERVAL_MILLIS = 70L
         const val FIRST_VERIFY_DELAY_MILLIS = 80L
         const val FINAL_VERIFY_DELAY_MILLIS = 380L
         const val FAILURE_LIMIT = 3

@@ -1,24 +1,43 @@
 package dev.spcdts.volumemapper.core
 
 import kotlin.math.abs
-import kotlin.math.floor
 
 /**
  * An immutable output map authored against an integer reference range.
  *
  * [basisSpan] is the reference route's `maxIndex - minIndex`. [pressCount] is the number of short
- * presses from minimum to maximum. [offsets] are independently configurable control-point values;
- * their x coordinates are implicit, uniform and include both endpoints. Integer control offsets
- * are strictly increasing, while the K + 1 runtime press states are sampled from their polyline.
+ * presses from minimum to maximum. The K + 1 runtime press positions are always uniform. The
+ * independently configurable control points use [normalizedXs] for free horizontal placement and
+ * [offsets] for integer y values; both axes remain strictly ordered between fixed endpoints.
  */
 class StepVolumeMap(
     val basisSpan: Int,
     val pressCount: Int,
+    normalizedXs: List<Double>,
     offsets: List<Int>,
 ) {
+    val normalizedXs: List<Double> = normalizedXs.mapIndexed { index, value ->
+        when {
+            index == 0 && abs(value) <= CONTROL_X_EPSILON -> 0.0
+            index == normalizedXs.lastIndex && abs(value - 1.0) <= CONTROL_X_EPSILON -> 1.0
+            else -> value
+        }
+    }
     val offsets: List<Int> = offsets.toList()
     val controlPointCount: Int = this.offsets.size
     val controlSegmentCount: Int = this.offsets.lastIndex
+
+    /** Source-compatible constructor for v2 maps, whose control points were uniformly spaced. */
+    constructor(
+        basisSpan: Int,
+        pressCount: Int,
+        offsets: List<Int>,
+    ) : this(
+        basisSpan = basisSpan,
+        pressCount = pressCount,
+        normalizedXs = uniformNormalizedXs(offsets.size),
+        offsets = offsets,
+    )
 
     /** Source-compatible constructor for v1 maps, where every press state was a control point. */
     constructor(
@@ -35,8 +54,25 @@ class StepVolumeMap(
         require(pressCount > 0) { "pressCount must be positive" }
         require(pressCount <= basisSpan) { "pressCount cannot exceed basisSpan" }
         require(controlPointCount >= 2) { "A step map needs at least two control points" }
+        require(this.normalizedXs.size == controlPointCount) {
+            "normalizedXs and offsets must have the same size"
+        }
         require(controlSegmentCount <= basisSpan) {
             "controlPointCount cannot exceed basisSpan + 1"
+        }
+        require(abs(this.normalizedXs.first()) <= CONTROL_X_EPSILON) {
+            "The first normalized x must be 0"
+        }
+        require(abs(this.normalizedXs.last() - 1.0) <= CONTROL_X_EPSILON) {
+            "The last normalized x must be 1"
+        }
+        require(this.normalizedXs.all { it.isFinite() && it in 0.0..1.0 }) {
+            "normalized x values must be finite and inside 0..1"
+        }
+        require(this.normalizedXs.zipWithNext().all { (left, right) ->
+            right - left >= MINIMUM_CONTROL_X_SPACING
+        }) {
+            "normalized x values must be strictly increasing"
         }
         require(this.offsets.first() == 0) { "The first offset must be 0" }
         require(this.offsets.last() == basisSpan) { "The last offset must equal basisSpan" }
@@ -45,12 +81,12 @@ class StepVolumeMap(
         }
     }
 
-    /** Returns the implicit normalized x coordinate for [controlPointIndex]. */
+    /** Returns the authored normalized x coordinate for [controlPointIndex]. */
     fun normalizedXAt(controlPointIndex: Int): Double {
         require(controlPointIndex in 0..controlSegmentCount) {
             "controlPointIndex is outside this map"
         }
-        return controlPointIndex.toDouble() / controlSegmentCount.toDouble()
+        return normalizedXs[controlPointIndex]
     }
 
     /** Evaluates the authored curve in reference-range offset units. */
@@ -59,12 +95,21 @@ class StepVolumeMap(
         if (normalizedX <= 0.0) return 0.0
         if (normalizedX >= 1.0) return basisSpan.toDouble()
 
-        val scaled = normalizedX * controlSegmentCount.toDouble()
-        val leftIndex = floor(scaled).toInt().coerceIn(0, controlSegmentCount - 1)
-        val fraction = scaled - leftIndex.toDouble()
+        val rightIndex = firstControlPointAtOrAfter(normalizedX)
+        val leftIndex = rightIndex - 1
+        val leftX = normalizedXs[leftIndex]
+        val rightX = normalizedXs[rightIndex]
+        val fraction = (normalizedX - leftX) / (rightX - leftX)
         val left = offsets[leftIndex].toDouble()
-        val right = offsets[leftIndex + 1].toDouble()
+        val right = offsets[rightIndex].toDouble()
         return left + (right - left) * fraction
+    }
+
+    /** Finds the authored control point nearest to [normalizedX]. */
+    fun closestControlPointIndex(normalizedX: Double): Int {
+        require(normalizedX.isFinite()) { "normalizedX must be finite" }
+        val constrained = normalizedX.coerceIn(0.0, 1.0)
+        return normalizedXs.indices.minBy { index -> abs(normalizedXs[index] - constrained) }
     }
 
     /** Moves one authored y value while keeping endpoints fixed and all offsets strict. */
@@ -81,7 +126,27 @@ class StepVolumeMap(
         return StepVolumeMap(
             basisSpan = basisSpan,
             pressCount = pressCount,
+            normalizedXs = normalizedXs,
             offsets = offsets.toMutableList().apply { this[controlPointIndex] = constrained },
+        )
+    }
+
+    /** Moves one interior control point horizontally while preserving strict x ordering. */
+    fun withNormalizedX(controlPointIndex: Int, requestedNormalizedX: Double): StepVolumeMap {
+        require(controlPointIndex in 0..controlSegmentCount) {
+            "controlPointIndex is outside this map"
+        }
+        require(requestedNormalizedX.isFinite()) { "requestedNormalizedX must be finite" }
+        if (controlPointIndex == 0 || controlPointIndex == controlSegmentCount) return this
+        val constrained = constrainNormalizedX(controlPointIndex, requestedNormalizedX)
+        if (constrained == normalizedXs[controlPointIndex]) return this
+        return StepVolumeMap(
+            basisSpan = basisSpan,
+            pressCount = pressCount,
+            normalizedXs = normalizedXs.toMutableList().apply {
+                this[controlPointIndex] = constrained
+            },
+            offsets = offsets,
         )
     }
 
@@ -108,7 +173,55 @@ class StepVolumeMap(
         for (index in controlPointIndex + 1 until controlSegmentCount) {
             pushed[index] = maxOf(pushed[index], pushed[index - 1] + 1)
         }
-        return StepVolumeMap(basisSpan = basisSpan, pressCount = pressCount, offsets = pushed)
+        return StepVolumeMap(
+            basisSpan = basisSpan,
+            pressCount = pressCount,
+            normalizedXs = normalizedXs,
+            offsets = pushed,
+        )
+    }
+
+    /** Moves an interior control point on both axes; y crossings minimally push neighbours. */
+    fun moveControlPointPushing(
+        controlPointIndex: Int,
+        requestedNormalizedX: Double,
+        requestedOffset: Int,
+    ): StepVolumeMap {
+        require(controlPointIndex in 0..controlSegmentCount) {
+            "controlPointIndex is outside this map"
+        }
+        require(requestedNormalizedX.isFinite()) { "requestedNormalizedX must be finite" }
+        if (controlPointIndex == 0 || controlPointIndex == controlSegmentCount) return this
+
+        val constrainedX = constrainNormalizedX(controlPointIndex, requestedNormalizedX)
+        val constrainedOffset = requestedOffset.coerceIn(
+            minimumValue = controlPointIndex,
+            maximumValue = basisSpan - (controlSegmentCount - controlPointIndex),
+        )
+        if (
+            constrainedX == normalizedXs[controlPointIndex] &&
+            constrainedOffset == offsets[controlPointIndex]
+        ) {
+            return this
+        }
+
+        val movedXs = normalizedXs.toMutableList().apply {
+            this[controlPointIndex] = constrainedX
+        }
+        val pushedOffsets = offsets.toMutableList()
+        pushedOffsets[controlPointIndex] = constrainedOffset
+        for (index in controlPointIndex - 1 downTo 1) {
+            pushedOffsets[index] = minOf(pushedOffsets[index], pushedOffsets[index + 1] - 1)
+        }
+        for (index in controlPointIndex + 1 until controlSegmentCount) {
+            pushedOffsets[index] = maxOf(pushedOffsets[index], pushedOffsets[index - 1] + 1)
+        }
+        return StepVolumeMap(
+            basisSpan = basisSpan,
+            pressCount = pressCount,
+            normalizedXs = movedXs,
+            offsets = pushedOffsets,
+        )
     }
 
     /** Changes only K; the authored control-point polyline remains exactly the same. */
@@ -119,26 +232,31 @@ class StepVolumeMap(
         return StepVolumeMap(
             basisSpan = basisSpan,
             pressCount = newPressCount,
+            normalizedXs = normalizedXs,
             offsets = offsets,
         )
     }
 
-    /** Resamples the authored polyline to a different number of uniformly spaced control points. */
+    /**
+     * Changes P without changing K. New points retain all existing x coordinates and normally
+     * split a line segment exactly; removals pick the interior point with the smallest integrated
+     * shape error.
+     */
     fun resampleControlPoints(newControlPointCount: Int): StepVolumeMap {
         require(newControlPointCount >= 2) { "newControlPointCount must be at least 2" }
         require(newControlPointCount <= basisSpan + 1) {
             "newControlPointCount cannot exceed basisSpan + 1"
         }
         if (newControlPointCount == controlPointCount) return this
-        val newSegmentCount = newControlPointCount - 1
-        val targets = List(newControlPointCount) { pointIndex ->
-            evaluateOffset(pointIndex.toDouble() / newSegmentCount.toDouble())
+
+        var result = this
+        while (result.controlPointCount < newControlPointCount) {
+            result = result.insertControlPoint()
         }
-        return StepVolumeMap(
-            basisSpan = basisSpan,
-            pressCount = pressCount,
-            offsets = StrictIntegerProjection.project(targets, basisSpan),
-        )
+        while (result.controlPointCount > newControlPointCount) {
+            result = result.removeLeastSignificantControlPoint()
+        }
+        return result
     }
 
     /**
@@ -181,14 +299,18 @@ class StepVolumeMap(
         val previouslyBound = bind(range)
         val rebasedPressCount = minOf(pressCount, routeSpan)
         val rebasedControlPointCount = minOf(controlPointCount, routeSpan + 1)
-        val rebasedSegmentCount = rebasedControlPointCount - 1
-        val targets = List(rebasedControlPointCount) { pointIndex ->
-            val normalizedX = pointIndex.toDouble() / rebasedSegmentCount.toDouble()
-            evaluateOffset(normalizedX) * routeSpan.toDouble() / basisSpan.toDouble()
+        val shapeSource = if (rebasedControlPointCount == controlPointCount) {
+            this
+        } else {
+            resampleControlPoints(rebasedControlPointCount)
+        }
+        val targets = shapeSource.offsets.map { offset ->
+            offset.toDouble() * routeSpan.toDouble() / basisSpan.toDouble()
         }
         val shapePreservingCandidate = StepVolumeMap(
             basisSpan = routeSpan,
             pressCount = rebasedPressCount,
+            normalizedXs = shapeSource.normalizedXs,
             offsets = StrictIntegerProjection.project(targets, routeSpan),
         )
         if (shapePreservingCandidate.bind(range).indices == previouslyBound.indices) {
@@ -210,18 +332,131 @@ class StepVolumeMap(
             evaluateOffset(normalizedX) * outputSpan.toDouble() / basisSpan.toDouble()
         }
 
+    private fun constrainNormalizedX(controlPointIndex: Int, requested: Double): Double =
+        requested.coerceIn(
+            normalizedXs[controlPointIndex - 1] + MINIMUM_CONTROL_X_SPACING,
+            normalizedXs[controlPointIndex + 1] - MINIMUM_CONTROL_X_SPACING,
+        )
+
+    private fun firstControlPointAtOrAfter(normalizedX: Double): Int {
+        var low = 1
+        var high = controlSegmentCount
+        while (low < high) {
+            val middle = (low + high) ushr 1
+            if (normalizedXs[middle] >= normalizedX) high = middle else low = middle + 1
+        }
+        return low
+    }
+
+    private fun insertControlPoint(): StepVolumeMap {
+        var bestSegment = -1
+        var bestScore = Double.NEGATIVE_INFINITY
+        for (segment in 0 until controlSegmentCount) {
+            val offsetGap = offsets[segment + 1] - offsets[segment]
+            val xGap = normalizedXs[segment + 1] - normalizedXs[segment]
+            if (offsetGap < 2) continue
+            val insertedOffset = offsets[segment] + offsetGap / 2
+            val fraction = (insertedOffset - offsets[segment]).toDouble() / offsetGap.toDouble()
+            if (
+                xGap * fraction < MINIMUM_CONTROL_X_SPACING ||
+                xGap * (1.0 - fraction) < MINIMUM_CONTROL_X_SPACING
+            ) {
+                continue
+            }
+            val score = xGap * offsetGap.toDouble()
+            if (score > bestScore + CONTROL_X_EPSILON) {
+                bestSegment = segment
+                bestScore = score
+            }
+        }
+        if (bestSegment >= 0) {
+            val leftOffset = offsets[bestSegment]
+            val rightOffset = offsets[bestSegment + 1]
+            val insertedOffset = (leftOffset + (rightOffset - leftOffset) / 2)
+                .coerceIn(leftOffset + 1, rightOffset - 1)
+            val fraction =
+                (insertedOffset - leftOffset).toDouble() / (rightOffset - leftOffset).toDouble()
+            val insertedX = normalizedXs[bestSegment] +
+                (normalizedXs[bestSegment + 1] - normalizedXs[bestSegment]) * fraction
+            return StepVolumeMap(
+                basisSpan = basisSpan,
+                pressCount = pressCount,
+                normalizedXs = normalizedXs.toMutableList().apply {
+                    add(bestSegment + 1, insertedX)
+                },
+                offsets = offsets.toMutableList().apply {
+                    add(bestSegment + 1, insertedOffset)
+                },
+            )
+        }
+
+        // There may be integer y room only in a segment whose x gap is already at the minimum.
+        // Keep every authored x in place, split the widest x segment, and re-project only y. This
+        // rare fallback is intentionally local in x: changing P must never replace free x values
+        // with a uniform grid.
+        bestSegment = (0 until controlSegmentCount).maxBy { segment ->
+            normalizedXs[segment + 1] - normalizedXs[segment]
+        }
+        val leftX = normalizedXs[bestSegment]
+        val rightX = normalizedXs[bestSegment + 1]
+        require(rightX - leftX >= 2.0 * MINIMUM_CONTROL_X_SPACING) {
+            "There is no horizontal room for another control point"
+        }
+        val insertedX = (leftX + rightX) / 2.0
+        val insertedXs = normalizedXs.toMutableList().apply {
+            add(bestSegment + 1, insertedX)
+        }
+        return StepVolumeMap(
+            basisSpan = basisSpan,
+            pressCount = pressCount,
+            normalizedXs = insertedXs,
+            offsets = StrictIntegerProjection.project(insertedXs.map(::evaluateOffset), basisSpan),
+        )
+    }
+
+    private fun removeLeastSignificantControlPoint(): StepVolumeMap {
+        check(controlPointCount > 2)
+        var removalIndex = 1
+        var smallestError = Double.POSITIVE_INFINITY
+        for (index in 1 until controlSegmentCount) {
+            val leftX = normalizedXs[index - 1]
+            val rightX = normalizedXs[index + 1]
+            val fraction = (normalizedXs[index] - leftX) / (rightX - leftX)
+            val interpolatedOffset = offsets[index - 1] +
+                (offsets[index + 1] - offsets[index - 1]) * fraction
+            val verticalError = offsets[index] - interpolatedOffset
+            val integratedError = verticalError * verticalError * (rightX - leftX)
+            if (integratedError < smallestError - CONTROL_X_EPSILON) {
+                removalIndex = index
+                smallestError = integratedError
+            }
+        }
+        return StepVolumeMap(
+            basisSpan = basisSpan,
+            pressCount = pressCount,
+            normalizedXs = normalizedXs.toMutableList().apply { removeAt(removalIndex) },
+            offsets = offsets.toMutableList().apply { removeAt(removalIndex) },
+        )
+    }
+
     override fun equals(other: Any?): Boolean =
         other is StepVolumeMap &&
             basisSpan == other.basisSpan &&
             pressCount == other.pressCount &&
+            normalizedXs == other.normalizedXs &&
             offsets == other.offsets
 
-    override fun hashCode(): Int = 31 * (31 * basisSpan + pressCount) + offsets.hashCode()
+    override fun hashCode(): Int =
+        31 * (31 * (31 * basisSpan + pressCount) + normalizedXs.hashCode()) + offsets.hashCode()
 
     override fun toString(): String =
-        "StepVolumeMap(basisSpan=$basisSpan, pressCount=$pressCount, offsets=$offsets)"
+        "StepVolumeMap(basisSpan=$basisSpan, pressCount=$pressCount, " +
+            "normalizedXs=$normalizedXs, offsets=$offsets)"
 
     companion object {
+        const val MINIMUM_CONTROL_X_SPACING: Double = 1e-6
+        private const val CONTROL_X_EPSILON: Double = 1e-12
+
         /** Creates the closest strict integer projection of a linear curve. */
         fun linear(
             basisSpan: Int,
@@ -241,14 +476,16 @@ class StepVolumeMap(
             return StepVolumeMap(
                 basisSpan = basisSpan,
                 pressCount = pressCount,
+                normalizedXs = uniformNormalizedXs(controlPointCount),
                 offsets = StrictIntegerProjection.project(targets, basisSpan),
             )
         }
 
         /**
-         * Samples a legacy continuous curve at uniform key positions and authors it on
-         * [basisSpan]. A legacy non-zero floor/safety cap is affinely expanded to the required
-         * 0..basisSpan endpoints. A completely flat legacy curve falls back to a linear shape.
+         * Authors a legacy continuous curve on [basisSpan]. When its point count already matches
+         * [controlPointCount], its free x coordinates are retained; otherwise it is sampled at
+         * uniform x positions. A legacy non-zero floor/safety cap is affinely expanded to the
+         * required 0..basisSpan endpoints. A flat curve falls back to a linear shape.
          */
         fun fromCurve(
             curve: MappingCurve,
@@ -263,10 +500,12 @@ class StepVolumeMap(
                 "controlPointCount must be between 2 and basisSpan + 1"
             }
 
-            val segmentCount = controlPointCount - 1
-            val sampled = List(controlPointCount) { pointIndex ->
-                curve.evaluate(pointIndex.toDouble() / segmentCount.toDouble())
+            val xs = if (curve.points.size == controlPointCount) {
+                curve.points.map { it.x }
+            } else {
+                uniformNormalizedXs(controlPointCount)
             }
+            val sampled = xs.map(curve::evaluate)
             val floor = sampled.first()
             val cap = sampled.last()
             if (abs(cap - floor) <= FLAT_OUTPUT_EPSILON) {
@@ -279,8 +518,15 @@ class StepVolumeMap(
             return StepVolumeMap(
                 basisSpan = basisSpan,
                 pressCount = pressCount,
+                normalizedXs = xs,
                 offsets = StrictIntegerProjection.project(targets, basisSpan),
             )
+        }
+
+        private fun uniformNormalizedXs(count: Int): List<Double> = when {
+            count <= 0 -> emptyList()
+            count == 1 -> listOf(0.0)
+            else -> List(count) { index -> index.toDouble() / (count - 1).toDouble() }
         }
 
         private const val FLAT_OUTPUT_EPSILON = 1e-12

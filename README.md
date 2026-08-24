@@ -4,15 +4,15 @@
 
 项目当前实现：
 
-- `K` 次短按与 `P` 个均匀控制点独立配置，纵轴直接对应整数 audio index；运行时生成 `K+1` 个严格递增状态；
-- 可分别配置按键次数与折线控制点数，以画笔式拖动、单点 index 输入、`±1`、撤销/重做和 `Δindex` 预览精调曲线；
-- 线性、低音量精细与 S 曲线预设，以及可调长按延迟、速度和加速曲线；
+- `K` 次短按与 `P` 个自由控制点独立配置；`K+1` 个按键位置始终均匀采样，控制点可在横轴和整数 audio index 纵轴上分别吸附；
+- 正式版只有一个简约主界面：直接拖动折线、调整 `K` / `P`、查看当前音量水平标记，并设置固定长按步进间隔；
+- 控制点横坐标与整数 index 一并持久化，修改 `K` 不改变折线，修改 `P` 也不会把已有控制点重新均匀排布；
 - 曲线按当前路由实际 min/max 投影；较小范围只临时减少有效按键次数，不覆盖完整 K/P 作者配置；
 - AccessibilityService 全局过滤音量键，以 `(deviceId, keyCode, downTime)` 标识一次手势；repeat 只刷新心跳，长按才启动 50 ms ticker；
 - Android 17 所需、由可见 Activity 显式启动的 `specialUse` 前台服务；
 - 音量写入后的单周期两阶段回读、control/route epoch 失效、路由切换重置和连续失败自动放行；
 - A2DP、LE Audio、USB、HDMI、有线与扬声器的运行时能力探测，并区分 `CONFIRMED` 与 `HEURISTIC` 路由；
-- 显著披露、持续通知停止开关、跨 OEM 后台/省电诊断与公开应用详情入口；
+- 显著披露、持续通知停止开关，以及收纳在“设备”折叠区中的跨 OEM 状态与公开应用详情入口；
 - JVM 单元测试、Android instrumentation 测试、API 28/36/37 模拟器 E2E、真机诊断采集和 Release/AAB 流程。
 
 ## 本机环境
@@ -80,8 +80,8 @@
 1. 在开发者选项开启 USB 调试，连接后运行 `adb devices -l`。
 2. 安装 Debug APK，打开应用并阅读、勾选显著披露。
 3. 进入“无障碍设置”，启用“音量键映射服务”。
-4. 回到应用，点击“启动映射”；Android 17 必须由这个可见界面启动前台服务。
-5. 在诊断页确认蓝牙路由、系统 min/max、dB 样本和回读状态。
+4. 回到应用，打开顶部“控制”开关；Android 17 必须由这个可见界面启动前台服务。
+5. 在主界面的“设备”折叠区确认蓝牙路由、系统 min/max 和运行状态。
 6. HyperOS 若连续回读失败，检查“调节媒体音量”权限、后台运行和省电限制。
 
 真机测试流程见 [docs/TESTING.md](docs/TESTING.md)，离散曲线与开源交互调研见 [docs/CURVE_EDITOR.md](docs/CURVE_EDITOR.md)，架构与厂商适配见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 和 [docs/OEM_COMPATIBILITY.md](docs/OEM_COMPATIBILITY.md)。

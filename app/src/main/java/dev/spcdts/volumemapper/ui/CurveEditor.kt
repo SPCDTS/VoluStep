@@ -1,63 +1,72 @@
 package dev.spcdts.volumemapper.ui
 
+import android.graphics.Paint as AndroidPaint
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.error
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
 import dev.spcdts.volumemapper.core.StepVolumeMap
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * Edits a control-point polyline and its independent runtime sampling count. P control points are
- * uniformly spaced across the same x axis on which K short presses produce K + 1 sampled states.
- * Only completed gestures/actions are published to the repository.
+ * Piecewise-linear volume map editor.
+ *
+ * P authored control points are free on both axes. K + 1 short-press positions stay uniformly
+ * distributed over the x axis. X softly snaps to those positions; y always snaps to an integer
+ * Audio volume index.
  */
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun MappingCurveEditor(
     outputMap: StepVolumeMap,
@@ -66,990 +75,670 @@ fun MappingCurveEditor(
     onMapCommitted: (StepVolumeMap) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var editorMap by remember { mutableStateOf(outputMap) }
+    var selectedControlPoint by remember {
+        mutableStateOf((outputMap.controlPointCount / 2).coerceIn(outputMap.normalizedXs.indices))
+    }
+    var gestureInProgress by remember { mutableStateOf(false) }
+    var xSnapGuide by remember { mutableStateOf<Double?>(null) }
+    var ySnapGuide by remember { mutableStateOf<Int?>(null) }
+    var expectedCommittedMap by remember { mutableStateOf<StepVolumeMap?>(null) }
+    var expectedCommitSourceMap by remember { mutableStateOf<StepVolumeMap?>(null) }
+
+    val latestEditorMap by rememberUpdatedState(editorMap)
+    val latestOutputMap by rememberUpdatedState(outputMap)
+    val latestOnMapCommitted by rememberUpdatedState(onMapCommitted)
+    val externalSourceToken = remember(outputMap) { Any() }
+    val latestExternalSourceToken by rememberUpdatedState(externalSourceToken)
+
+    LaunchedEffect(
+        outputMap,
+        gestureInProgress,
+        expectedCommittedMap,
+        expectedCommitSourceMap,
+    ) {
+        if (gestureInProgress) return@LaunchedEffect
+        val expected = expectedCommittedMap
+        val waitingForOwnCommit = expected != null &&
+            outputMap == expectedCommitSourceMap &&
+            outputMap != expected
+        if (waitingForOwnCommit) return@LaunchedEffect
+
+        expectedCommittedMap = null
+        expectedCommitSourceMap = null
+        if (outputMap != editorMap) {
+            val previousX = editorMap.normalizedXAt(
+                selectedControlPoint.coerceIn(editorMap.normalizedXs.indices),
+            )
+            editorMap = outputMap
+            selectedControlPoint = outputMap.closestControlPointIndex(previousX)
+        }
+    }
+
+    // Capture one immutable map for this composition. Draw callbacks may run while repository
+    // state is changing; mixing a new map with control-point lists from the previous composition
+    // can otherwise address a point that no longer exists.
+    val renderedMap = editorMap
     val routeMinimum = snapshot?.range?.minIndex
     val routeMaximum = snapshot?.range?.maxIndex
-    val incomingMap = outputMap
-    val incomingSource = remember(incomingMap, routeMinimum, routeMaximum) {
-        EditorSource(incomingMap, routeMinimum, routeMaximum)
-    }
-    val latestOnMapCommitted by rememberUpdatedState(onMapCommitted)
-
-    var editorMap by remember { mutableStateOf(incomingMap) }
-    var selectedControlPoint by remember {
-        mutableIntStateOf(1.coerceAtMost(incomingMap.controlSegmentCount))
-    }
-    var undoStack by remember { mutableStateOf(emptyList<EditorHistoryEntry>()) }
-    var redoStack by remember { mutableStateOf(emptyList<EditorHistoryEntry>()) }
-    var pressCountText by remember { mutableStateOf(incomingMap.pressCount.toString()) }
-    var controlPointCountText by remember {
-        mutableStateOf(incomingMap.controlPointCount.toString())
-    }
-    var indexText by remember {
-        mutableStateOf(
-            (
-                incomingMap.displayIndexBase(routeMinimum, routeMaximum) +
-                    incomingMap.offsets[selectedControlPoint]
-                ).toString(),
-        )
-    }
-    var detailsExpanded by rememberSaveable { mutableStateOf(false) }
-    var canvasGestureInProgress by remember { mutableStateOf(false) }
-    var pendingExternalSource by remember { mutableStateOf<EditorSource?>(null) }
-    var lastExternalSource by remember { mutableStateOf(incomingSource) }
-
-    val synchronizeFromExternal: (StepVolumeMap) -> Unit = { synchronizedMap ->
-        val oldSegmentCount = editorMap.controlSegmentCount.coerceAtLeast(1)
-        val logicalSelection = selectedControlPoint.toDouble() / oldSegmentCount.toDouble()
-        val synchronizedSelection =
-            (logicalSelection * synchronizedMap.controlSegmentCount).roundToInt()
-                .coerceIn(0, synchronizedMap.controlSegmentCount)
-        editorMap = synchronizedMap
-        selectedControlPoint = synchronizedSelection
-        pressCountText = synchronizedMap.pressCount.toString()
-        controlPointCountText = synchronizedMap.controlPointCount.toString()
-        indexText = (
-            synchronizedMap.displayIndexBase(routeMinimum, routeMaximum) +
-                synchronizedMap.offsets[synchronizedSelection]
-            ).toString()
-        undoStack = emptyList()
-        redoStack = emptyList()
-    }
-
-    val publishCompletedAction: (StepVolumeMap, StepVolumeMap, Int, Int) -> Unit =
-        { before, after, previousSelection, requestedSelection ->
-            val nextSelection = requestedSelection.coerceIn(0, after.controlSegmentCount)
-            editorMap = after
-            selectedControlPoint = nextSelection
-            pressCountText = after.pressCount.toString()
-            controlPointCountText = after.controlPointCount.toString()
-            indexText = (
-                after.displayIndexBase(routeMinimum, routeMaximum) + after.offsets[nextSelection]
-                ).toString()
-            if (after != before) {
-                undoStack = undoStack.appendHistory(
-                    EditorHistoryEntry(
-                        map = before,
-                        selectedControlPoint = previousSelection.coerceIn(
-                            0,
-                            before.controlSegmentCount,
-                        ),
-                    ),
-                )
-                redoStack = emptyList()
-                latestOnMapCommitted(after)
-            }
-        }
-
-    LaunchedEffect(incomingSource) {
-        val previousSource = lastExternalSource
-        if (incomingSource == previousSource) return@LaunchedEffect
-        lastExternalSource = incomingSource
-        val routeFrameChanged =
-            previousSource.routeMinimum != incomingSource.routeMinimum ||
-                previousSource.routeMaximum != incomingSource.routeMaximum
-        if (canvasGestureInProgress) {
-            pendingExternalSource = incomingSource
-        } else if (routeFrameChanged || incomingMap != editorMap) {
-            synchronizeFromExternal(incomingMap)
-        }
-    }
-
-    val routeSpan = snapshot?.range?.let { it.maxIndex - it.minIndex }
-    val routeMatchesBasis = routeSpan == null || routeSpan == editorMap.basisSpan
-    val displayUsesReferenceBasis =
-        snapshot != null && routeSpan != null && routeSpan > 0 && !routeMatchesBasis
-    val displayMinimum = if (displayUsesReferenceBasis) 0 else routeMinimum.orZero()
-    val displayMaximum = if (displayUsesReferenceBasis) {
-        editorMap.basisSpan
+    val routeSpan = if (routeMinimum != null && routeMaximum != null) {
+        routeMaximum - routeMinimum
     } else {
-        routeMaximum ?: editorMap.basisSpan
+        null
     }
-    val editorReady = when {
-        snapshot == null -> true
-        routeSpan == null || routeSpan <= 0 -> false
-        else -> true
-    }
-    val maximumPressCount = editorMap.basisSpan
-    val maximumControlPointCount = editorMap.basisSpan + 1
-    val actualControlIndices = editorMap.displayControlIndices(snapshot)
-    val actualPressIndices = editorMap.actualPressIndices(snapshot)
-    val displayedPressIndices = actualPressIndices.map { actualIndex ->
-        if (!displayUsesReferenceBasis) {
-            actualIndex.toDouble()
+    val displayMinimum = routeMinimum ?: 0
+    val displayMaximum = routeMaximum ?: renderedMap.basisSpan
+    val displaySpan = displayMaximum - displayMinimum
+    val displayDenominator = displaySpan.coerceAtLeast(1)
+    val editorReady = routeSpan?.let { it > 0 } ?: true
+
+    fun displayIndexForOffset(map: StepVolumeMap, offset: Int): Int = if (routeSpan != null) {
+        if (routeSpan == 0) {
+            displayMinimum
         } else {
-            (actualIndex - routeMinimum.orZero()).toDouble() * editorMap.basisSpan.toDouble() /
-                routeSpan.toDouble()
+            displayMinimum + (
+                offset.toDouble() * routeSpan.toDouble() / map.basisSpan.toDouble()
+                ).roundToInt()
         }
+    } else {
+        offset
     }
-    val visiblePressCount = actualPressIndices.lastIndex
-    val safeSelectedControlPoint = selectedControlPoint.coerceIn(
-        0,
-        editorMap.controlSegmentCount,
+
+    fun referenceOffsetForDisplayIndex(map: StepVolumeMap, displayIndex: Int): Int =
+        if (routeSpan != null && routeSpan > 0) {
+            (
+                (displayIndex - displayMinimum).toDouble() * map.basisSpan.toDouble() /
+                    routeSpan.toDouble()
+                ).roundToInt().coerceIn(0, map.basisSpan)
+        } else {
+            (displayIndex - displayMinimum).coerceIn(0, map.basisSpan)
+        }
+
+    val displayedControlIndices = renderedMap.offsets.map { offset ->
+        displayIndexForOffset(renderedMap, offset)
+    }
+    val currentDisplayIndex = snapshot?.currentIndex?.toDouble()
+    val currentIndexLabel = snapshot?.currentIndex?.toString()
+    val currentX = currentDisplayIndex?.let { index ->
+        renderedMap.normalizedXForDisplayedIndex(displayedControlIndices, index)
+    }
+    val runtimePreview = renderedMap.bind(
+        snapshot?.range ?: RouteVolumeRange(0, renderedMap.basisSpan),
     )
-    val selectedActualIndex = actualControlIndices[safeSelectedControlPoint]
-    val selectedIsEndpoint =
-        safeSelectedControlPoint == 0 ||
-            safeSelectedControlPoint == editorMap.controlSegmentCount
-    val selectedMinimumIndex = if (selectedIsEndpoint || !editorReady) {
-        selectedActualIndex
-    } else {
-        displayMinimum + editorMap.offsets[safeSelectedControlPoint - 1] + 1
-    }
-    val selectedMaximumIndex = if (selectedIsEndpoint || !editorReady) {
-        selectedActualIndex
-    } else {
-        displayMinimum + editorMap.offsets[safeSelectedControlPoint + 1] - 1
-    }
-    val selectedCanMove =
-        editorReady && !selectedIsEndpoint && selectedMinimumIndex < selectedMaximumIndex
 
-    LaunchedEffect(editorMap.controlSegmentCount) {
-        if (selectedControlPoint > editorMap.controlSegmentCount) {
-            selectedControlPoint = editorMap.controlSegmentCount
-        }
-    }
-    LaunchedEffect(editorMap.pressCount) {
-        pressCountText = editorMap.pressCount.toString()
-    }
-    LaunchedEffect(editorMap.controlPointCount) {
-        controlPointCountText = editorMap.controlPointCount.toString()
-    }
-    LaunchedEffect(safeSelectedControlPoint, actualControlIndices, displayMinimum) {
-        indexText = selectedActualIndex.toString()
-    }
-
-    val applyPressCount: () -> Unit = {
-        val requested = pressCountText.toIntOrNull()
-        if (editorReady && requested != null && requested in 1..maximumPressCount) {
-            val before = editorMap
-            val after = before.withPressCount(requested)
-            publishCompletedAction(
-                before,
-                after,
-                safeSelectedControlPoint,
-                safeSelectedControlPoint,
-            )
-        }
-    }
-    val applyControlPointCount: () -> Unit = {
-        val requested = controlPointCountText.toIntOrNull()
-        if (
-            editorReady &&
-            requested != null &&
-            requested in 2..maximumControlPointCount
-        ) {
-            val before = editorMap
-            val logicalSelection =
-                selectedControlPoint.toDouble() / before.controlSegmentCount.toDouble()
-            val after = before.resampleControlPoints(requested)
-            val nextSelection =
-                (logicalSelection * after.controlSegmentCount).roundToInt()
-            publishCompletedAction(
-                before,
-                after,
-                safeSelectedControlPoint,
-                nextSelection,
-            )
-        }
-    }
-    val applyIndexText: () -> Unit = {
-        val requestedIndex = indexText.toIntOrNull()
-        if (
-            editorReady &&
-            !selectedIsEndpoint &&
-            requestedIndex != null &&
-            requestedIndex in selectedMinimumIndex..selectedMaximumIndex
-        ) {
-            val before = editorMap
-            val after = before.withOffset(
-                safeSelectedControlPoint,
-                requestedIndex - displayMinimum,
-            )
-            publishCompletedAction(
-                before,
-                after,
-                safeSelectedControlPoint,
-                safeSelectedControlPoint,
-            )
-        }
-    }
-
+    val selectedIndex = selectedControlPoint.coerceIn(renderedMap.normalizedXs.indices)
+    val maximumControlPointCount = renderedMap.basisSpan + 1
     val density = LocalDensity.current
-    val horizontalPaddingPx = with(density) { 24.dp.toPx() }
-    val topPaddingPx = with(density) { 18.dp.toPx() }
-    val chartToDeltaGapPx = with(density) { 16.dp.toPx() }
-    val deltaBandHeightPx = with(density) { 38.dp.toPx() }
-    val bottomPaddingPx = with(density) { 8.dp.toPx() }
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val selectedColor = MaterialTheme.colorScheme.tertiary
-    val gridColor = MaterialTheme.colorScheme.onSurface
-    val deltaColor = MaterialTheme.colorScheme.secondary
-    val pointFillColor = MaterialTheme.colorScheme.surface
-    val maximumActualPressDelta = actualPressIndices.zipWithNext { left, right -> right - left }
-        .maxOrNull()
+    val leftPaddingPx = with(density) { 36.dp.toPx() }
+    val rightPaddingPx = with(density) { 10.dp.toPx() }
+    val topPaddingPx = with(density) { 24.dp.toPx() }
+    val bottomPaddingPx = with(density) { 28.dp.toPx() }
+    val hitRadiusPx = with(density) { 22.dp.toPx() }
+    val xSnapDistancePx = with(density) { 11.dp.toPx() }
 
-    val canvasStateDescription = buildString {
-        append("配置从最小到最大需要 ")
-        append(editorMap.pressCount)
-        append(" 次短按；当前路由有 ")
-        append(visiblePressCount)
-        append(" 次有效短按，共 ")
-        append(visiblePressCount + 1)
-        append(" 个状态；折线由 ")
-        append(editorMap.controlPointCount)
-        append(" 个控制点搭建，当前选择第 ")
-        append(safeSelectedControlPoint + 1)
-        append(" 个控制点，")
-        append(if (displayUsesReferenceBasis) "配置基准 index 为 " else "Audio volume index 为 ")
-        append(selectedActualIndex)
-        maximumActualPressDelta?.let { delta ->
-            append("；当前路由最大单次 index 跨度为 ")
-            append(delta)
-        }
+    val primary = MaterialTheme.colorScheme.primary
+    val surface = MaterialTheme.colorScheme.surface
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    val tick = MaterialTheme.colorScheme.onSurfaceVariant
+    val snap = MaterialTheme.colorScheme.tertiary
+    val darkTheme = isSystemInDarkTheme()
+    val current = if (darkTheme) Color(0xFF8ED4A5) else Color(0xFF2D7A4B)
+    val currentContent = if (darkTheme) Color(0xFF14351F) else Color.White
+
+    fun publish(next: StepVolumeMap, preferredX: Double) {
+        if (next == editorMap) return
+        editorMap = next
+        selectedControlPoint = next.closestControlPointIndex(preferredX)
+        latestOnMapCommitted(next)
     }
-    val requestedPressCount = pressCountText.toIntOrNull()
-    val pressCountIsValid =
-        requestedPressCount != null && requestedPressCount in 1..maximumPressCount
-    val showPressCountApply = pressCountIsValid && requestedPressCount != editorMap.pressCount
-    val requestedControlPointCount = controlPointCountText.toIntOrNull()
-    val controlPointCountIsValid =
-        requestedControlPointCount != null &&
-            requestedControlPointCount in 2..maximumControlPointCount
-    val showControlPointCountApply =
-        controlPointCountIsValid && requestedControlPointCount != editorMap.controlPointCount
 
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    fun moveSelectedControlPoint(
+        pressDelta: Int = 0,
+        displayIndexDelta: Int = 0,
+    ): Boolean {
+        val before = editorMap
+        val pointIndex = selectedControlPoint.coerceIn(before.normalizedXs.indices)
+        if (!editorReady || pointIndex == 0 || pointIndex == before.controlSegmentCount) {
+            return false
+        }
+
+        val currentX = before.normalizedXAt(pointIndex)
+        val requestedX = if (pressDelta == 0) {
+            currentX
+        } else {
+            val candidate = currentX + pressDelta.toDouble() / before.pressCount.toDouble()
+            val minimumX = before.normalizedXAt(pointIndex - 1) +
+                StepVolumeMap.MINIMUM_CONTROL_X_SPACING
+            val maximumX = before.normalizedXAt(pointIndex + 1) -
+                StepVolumeMap.MINIMUM_CONTROL_X_SPACING
+            if (candidate !in minimumX..maximumX) return false
+            candidate
+        }
+
+        val currentOffset = before.offsets[pointIndex]
+        val currentIndex = displayIndexForOffset(before, currentOffset)
+        val requestedOffset = when {
+            displayIndexDelta > 0 -> {
+                val maximumOffset = before.basisSpan -
+                    (before.controlSegmentCount - pointIndex)
+                (currentOffset + 1..maximumOffset).firstOrNull { candidate ->
+                    displayIndexForOffset(before, candidate) > currentIndex
+                } ?: return false
+            }
+
+            displayIndexDelta < 0 -> {
+                val minimumOffset = pointIndex
+                (currentOffset - 1 downTo minimumOffset).firstOrNull { candidate ->
+                    displayIndexForOffset(before, candidate) < currentIndex
+                } ?: return false
+            }
+
+            else -> currentOffset
+        }
+        val after = before.moveControlPointPushing(
+            controlPointIndex = pointIndex,
+            requestedNormalizedX = requestedX,
+            requestedOffset = requestedOffset,
+        )
+        if (after == before) return false
+        val movedIndex = displayIndexForOffset(after, after.offsets[pointIndex])
+        if (
+            (displayIndexDelta > 0 && movedIndex <= currentIndex) ||
+            (displayIndexDelta < 0 && movedIndex >= currentIndex)
         ) {
-            Text(
-                text = "按键次数",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleSmall,
-            )
-            IconButton(
-                onClick = {
-                    pressCountText = (editorMap.pressCount - 1).toString()
-                    applyPressCount()
-                },
-                enabled = editorReady && editorMap.pressCount > 1,
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .testTag(CurveEditorTestTags.PRESS_COUNT_DECREMENT)
-                    .semantics { contentDescription = "按键次数减少 1" },
-            ) {
-                Text("−", style = MaterialTheme.typography.titleLarge)
-            }
-            OutlinedTextField(
-                value = pressCountText,
-                onValueChange = { value ->
-                    if (value.isEmpty() || value.all(Char::isDigit)) pressCountText = value
-                },
-                enabled = editorReady,
-                singleLine = true,
-                isError = !pressCountIsValid,
-                label = { Text("K") },
-                trailingIcon = if (showPressCountApply) {
-                    {
-                        IconButton(
-                            onClick = applyPressCount,
-                            modifier = Modifier
-                                .testTag(CurveEditorTestTags.PRESS_COUNT_APPLY)
-                                .semantics { contentDescription = "应用按键次数" },
-                        ) {
-                            Text("✓")
-                        }
-                    }
-                } else {
-                    null
-                },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
-                    imeAction = ImeAction.Done,
-                ),
-                keyboardActions = KeyboardActions(onDone = { applyPressCount() }),
-                modifier = Modifier
-                    .width(104.dp)
-                    .testTag(CurveEditorTestTags.PRESS_COUNT_INPUT)
-                    .semantics {
-                        contentDescription = "按键次数 K，可用范围 1 到 $maximumPressCount"
-                        if (!pressCountIsValid) {
-                            error("请输入 1 到 $maximumPressCount 之间的整数")
-                        }
-                    },
-            )
-            IconButton(
-                onClick = {
-                    pressCountText = (editorMap.pressCount + 1).toString()
-                    applyPressCount()
-                },
-                enabled = editorReady && editorMap.pressCount < maximumPressCount,
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .testTag(CurveEditorTestTags.PRESS_COUNT_INCREMENT)
-                    .semantics { contentDescription = "按键次数增加 1" },
-            ) {
-                Text("+", style = MaterialTheme.typography.titleLarge)
-            }
+            return false
         }
+        editorMap = after
+        selectedControlPoint = pointIndex
+        latestOnMapCommitted(after)
+        return true
+    }
 
-        if (editorReady && !pressCountIsValid) {
-            Text(
-                text = "请输入 1…$maximumPressCount 之间的整数",
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "控制点（含两端）",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleSmall,
-            )
-            IconButton(
-                onClick = {
-                    controlPointCountText = (editorMap.controlPointCount - 1).toString()
-                    applyControlPointCount()
-                },
-                enabled = editorReady && editorMap.controlPointCount > 2,
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .testTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
-                    .semantics { contentDescription = "控制点数量减少 1" },
-            ) {
-                Text("−", style = MaterialTheme.typography.titleLarge)
-            }
-            OutlinedTextField(
-                value = controlPointCountText,
-                onValueChange = { value ->
-                    if (value.isEmpty() || value.all(Char::isDigit)) {
-                        controlPointCountText = value
-                    }
-                },
-                enabled = editorReady,
-                singleLine = true,
-                isError = !controlPointCountIsValid,
-                label = { Text("P") },
-                trailingIcon = if (showControlPointCountApply) {
-                    {
-                        IconButton(
-                            onClick = applyControlPointCount,
-                            modifier = Modifier
-                                .testTag(CurveEditorTestTags.CONTROL_POINT_COUNT_APPLY)
-                                .semantics { contentDescription = "应用控制点数量" },
-                        ) {
-                            Text("✓")
-                        }
-                    }
-                } else {
-                    null
-                },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
-                    imeAction = ImeAction.Done,
-                ),
-                keyboardActions = KeyboardActions(onDone = { applyControlPointCount() }),
-                modifier = Modifier
-                    .width(104.dp)
-                    .testTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT)
-                    .semantics {
-                        contentDescription =
-                            "控制点数量 P，包含两个端点，可用范围 2 到 $maximumControlPointCount"
-                        if (!controlPointCountIsValid) {
-                            error("请输入 2 到 $maximumControlPointCount 之间的整数")
-                        }
-                    },
-            )
-            IconButton(
-                onClick = {
-                    controlPointCountText = (editorMap.controlPointCount + 1).toString()
-                    applyControlPointCount()
-                },
-                enabled =
-                    editorReady && editorMap.controlPointCount < maximumControlPointCount,
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .testTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
-                    .semantics { contentDescription = "控制点数量增加 1" },
-            ) {
-                Text("+", style = MaterialTheme.typography.titleLarge)
-            }
-        }
-
-        if (editorReady && !controlPointCountIsValid) {
-            Text(
-                text = "请输入 2…$maximumControlPointCount 之间的整数",
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        if (editorReady && editorMap.pressCount == editorMap.basisSpan) {
-            Text(
-                text = "每次固定 +1；减小 K 后可调整不同区段的步幅。",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        Text(
-            text = if (displayUsesReferenceBasis) {
-                "配置 K=${editorMap.pressCount}  ·  ${editorMap.controlPointCount} 个控制点  ·  基准 index 0…${editorMap.basisSpan}"
+    val selectedDisplayIndex = displayIndexForOffset(
+        renderedMap,
+        renderedMap.offsets[selectedIndex],
+    )
+    val chartCustomActions = listOf(
+        CustomAccessibilityAction("选择上一个控制点") {
+            if (selectedControlPoint <= 0) {
+                false
             } else {
-                "按键 0…${editorMap.pressCount}  ·  ${editorMap.controlPointCount} 个均匀控制点  ·  Audio index $displayMinimum…$displayMaximum"
+                selectedControlPoint -= 1
+                true
+            }
+        },
+        CustomAccessibilityAction("选择下一个控制点") {
+            if (selectedControlPoint >= editorMap.controlSegmentCount) {
+                false
+            } else {
+                selectedControlPoint += 1
+                true
+            }
+        },
+        CustomAccessibilityAction("控制点左移一个按键位置") {
+            moveSelectedControlPoint(pressDelta = -1)
+        },
+        CustomAccessibilityAction("控制点右移一个按键位置") {
+            moveSelectedControlPoint(pressDelta = 1)
+        },
+        CustomAccessibilityAction("控制点上移一个可表示档位") {
+            moveSelectedControlPoint(displayIndexDelta = 1)
+        },
+        CustomAccessibilityAction("控制点下移一个可表示档位") {
+            moveSelectedControlPoint(displayIndexDelta = -1)
+        },
+    )
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        CompactCurveStepper(
+            label = "控制点 P",
+            value = renderedMap.controlPointCount,
+            minimum = 2,
+            maximum = maximumControlPointCount,
+            enabled = editorReady,
+            onValueChange = { requested ->
+                val oldX = renderedMap.normalizedXAt(selectedIndex)
+                publish(renderedMap.resampleControlPoints(requested), oldX)
             },
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.labelMedium,
+            valueTag = CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT,
+            decrementTag = CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT,
+            incrementTag = CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT,
         )
 
-        if (displayUsesReferenceBasis) {
-            Text(
-                text =
-                    "小点按当前路由 index ${routeMinimum.orZero()}…${routeMaximum.orZero()} 归一化显示；完整 K/P 配置不会被临时路由覆盖。",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        if (editorReady && editorMap.controlPointCount > editorMap.pressCount + 1) {
-            Text(
-                text = "控制点多于按键状态；额外细节会在整数按键位置采样。",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        Canvas(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(260.dp)
-                .testTag(CurveEditorTestTags.CANVAS)
+                .height(246.dp)
+                .testTag(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
                 .semantics {
-                    contentDescription = if (displayUsesReferenceBasis) {
-                        "音量映射曲线。横轴是配置按键进度，纵轴是可移植配置基准 index；大点是可编辑控制点，小点是当前路由实际按键状态的归一化位置。TalkBack 用户可使用下方精确编辑"
-                    } else {
-                        "音量映射曲线。横轴是按键进度，纵轴是整数 Audio volume index；大点是可编辑控制点，小点是实际按键状态。TalkBack 用户可使用下方精确编辑"
-                    }
-                    stateDescription = canvasStateDescription
-                }
-                .pointerInput(
-                    editorReady,
-                    displayMinimum,
-                    displayMaximum,
-                    editorMap.controlPointCount,
-                ) {
-                    if (!editorReady) return@pointerInput
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val left = horizontalPaddingPx
-                        val right = size.width - horizontalPaddingPx
-                        val deltaBottom = size.height - bottomPaddingPx
-                        val deltaTop = deltaBottom - deltaBandHeightPx
-                        val plotTop = topPaddingPx
-                        val plotBottom = deltaTop - chartToDeltaGapPx
-                        if (
-                            down.position.y < plotTop - topPaddingPx ||
-                            down.position.y > plotBottom + chartToDeltaGapPx / 2f
-                        ) {
-                            return@awaitEachGesture
-                        }
-
-                        val plotWidth = (right - left).coerceAtLeast(1f)
-                        val plotHeight = (plotBottom - plotTop).coerceAtLeast(1f)
-                        fun controlPointAt(position: Offset): Int =
-                            ((((position.x - left) / plotWidth).coerceIn(0f, 1f)) *
-                                editorMap.controlSegmentCount.toFloat())
-                                .roundToInt()
-                                .coerceIn(0, editorMap.controlSegmentCount)
-
-                        fun offsetAt(y: Float): Int =
-                            ((((plotBottom - y) / plotHeight).coerceIn(0f, 1f)) *
-                                editorMap.basisSpan.toFloat())
-                                .roundToInt()
-                                .coerceIn(0, editorMap.basisSpan)
-
-                        fun paintSegment(from: Offset?, to: Offset) {
-                            val toControlPoint = controlPointAt(to)
-                            var paintedMap = editorMap
-                            if (from == null) {
-                                paintedMap = paintedMap.withOffsetPushing(
-                                    toControlPoint,
-                                    offsetAt(to.y),
-                                )
-                            } else {
-                                val fromControlPoint = controlPointAt(from)
-                                if (fromControlPoint == toControlPoint) {
-                                    paintedMap = paintedMap.withOffsetPushing(
-                                        toControlPoint,
-                                        offsetAt(to.y),
-                                    )
-                                } else {
-                                    val traversedControlPoints =
-                                        if (fromControlPoint < toControlPoint) {
-                                            fromControlPoint..toControlPoint
-                                        } else {
-                                            fromControlPoint downTo toControlPoint
-                                        }
-                                    traversedControlPoints.forEach { controlPoint ->
-                                        val fraction =
-                                            (controlPoint - fromControlPoint).toFloat() /
-                                                (toControlPoint - fromControlPoint).toFloat()
-                                        val interpolatedY = from.y + (to.y - from.y) * fraction
-                                        paintedMap = paintedMap.withOffsetPushing(
-                                            controlPoint,
-                                            offsetAt(interpolatedY),
-                                        )
-                                    }
-                                }
-                            }
-                            editorMap = paintedMap
-                            selectedControlPoint = toControlPoint
-                            indexText = (
-                                displayMinimum + paintedMap.offsets[toControlPoint]
-                                ).toString()
-                        }
-
-                        val beforeGesture = editorMap
-                        val beforeGestureSelection = selectedControlPoint
-                        var previousPosition: Offset? = null
-                        var gestureCompleted = false
-                        canvasGestureInProgress = true
-                        down.consume()
-                        try {
-                            paintSegment(null, down.position)
-                            previousPosition = down.position
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!change.pressed) {
-                                    gestureCompleted = true
-                                    break
-                                }
-                                paintSegment(previousPosition, change.position)
-                                previousPosition = change.position
-                                change.consume()
-                            }
-                        } finally {
-                            canvasGestureInProgress = false
-                            val pendingSource = pendingExternalSource
-                            pendingExternalSource = null
-                            when {
-                                pendingSource != null -> synchronizeFromExternal(pendingSource.map)
-                                gestureCompleted -> publishCompletedAction(
-                                    beforeGesture,
-                                    editorMap,
-                                    beforeGestureSelection,
-                                    selectedControlPoint,
-                                )
-                                else -> {
-                                    editorMap = beforeGesture
-                                    selectedControlPoint = beforeGestureSelection
-                                    pressCountText = beforeGesture.pressCount.toString()
-                                    controlPointCountText =
-                                        beforeGesture.controlPointCount.toString()
-                                    indexText = (
-                                        beforeGesture.displayIndexBase(
-                                            routeMinimum,
-                                            routeMaximum,
-                                        ) + beforeGesture.offsets[beforeGestureSelection]
-                                        ).toString()
-                                }
-                            }
-                        }
-                    }
-                },
-        ) {
-            val left = horizontalPaddingPx
-            val right = size.width - horizontalPaddingPx
-            val deltaBottom = size.height - bottomPaddingPx
-            val deltaTop = deltaBottom - deltaBandHeightPx
-            val plotTop = topPaddingPx
-            val plotBottom = deltaTop - chartToDeltaGapPx
-            val plotWidth = (right - left).coerceAtLeast(1f)
-            val plotHeight = (plotBottom - plotTop).coerceAtLeast(1f)
-            val indexSpan = (displayMaximum - displayMinimum).coerceAtLeast(0)
-
-            fun pointFor(normalizedX: Float, index: Double): Offset {
-                val yFraction = if (indexSpan == 0) {
-                    0.5f
-                } else {
-                    ((index - displayMinimum.toDouble()) / indexSpan.toDouble()).toFloat()
-                }
-                return Offset(
-                    x = left + normalizedX * plotWidth,
-                    y = plotBottom - yFraction * plotHeight,
-                )
-            }
-
-            repeat(5) { gridIndex ->
-                val fraction = gridIndex / 4f
-                val alpha = if (gridIndex == 0 || gridIndex == 4) 0.22f else 0.09f
-                drawLine(
-                    color = gridColor.copy(alpha = alpha),
-                    start = Offset(left, plotTop + fraction * plotHeight),
-                    end = Offset(right, plotTop + fraction * plotHeight),
-                )
-                drawLine(
-                    color = gridColor.copy(alpha = alpha),
-                    start = Offset(left + fraction * plotWidth, plotTop),
-                    end = Offset(left + fraction * plotWidth, plotBottom),
-                )
-            }
-
-            val controlPath = Path()
-            actualControlIndices.forEachIndexed { controlPoint, index ->
-                val normalizedX =
-                    controlPoint.toFloat() / editorMap.controlSegmentCount.toFloat()
-                val point = pointFor(normalizedX, index.toDouble())
-                if (controlPoint == 0) controlPath.moveTo(point.x, point.y)
-                else controlPath.lineTo(point.x, point.y)
-            }
-            drawPath(
-                path = controlPath,
-                color = primaryColor,
-                style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round),
-            )
-
-            currentLogicalPosition?.takeIf { it.isFinite() }?.let { logicalPosition ->
-                val lineX = left + logicalPosition.coerceIn(0.0, 1.0).toFloat() * plotWidth
-                drawLine(
-                    color = selectedColor,
-                    start = Offset(lineX, plotTop),
-                    end = Offset(lineX, plotBottom),
-                    strokeWidth = 2.dp.toPx(),
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(8.dp.toPx(), 6.dp.toPx())),
-                )
-            }
-
-            val pressSpacing = plotWidth / visiblePressCount.coerceAtLeast(1).toFloat()
-            displayedPressIndices.forEachIndexed { step, displayIndex ->
-                val showState =
-                    pressSpacing >= 8.dp.toPx() || step == 0 || step == visiblePressCount
-                if (!showState) return@forEachIndexed
-                val normalizedX = step.toFloat() / visiblePressCount.coerceAtLeast(1).toFloat()
-                drawCircle(
-                    color = deltaColor.copy(alpha = 0.62f),
-                    radius = 2.5.dp.toPx(),
-                    center = pointFor(normalizedX, displayIndex),
-                )
-            }
-
-            val controlSpacing =
-                plotWidth / editorMap.controlSegmentCount.coerceAtLeast(1).toFloat()
-            val controlRadius = (controlSpacing / 4f).coerceIn(2.dp.toPx(), 7.dp.toPx())
-            actualControlIndices.forEachIndexed { controlPoint, index ->
-                val selected = controlPoint == safeSelectedControlPoint
-                val showControlPoint =
-                    controlSpacing >= 8.dp.toPx() ||
-                        controlPoint == 0 ||
-                        controlPoint == editorMap.controlSegmentCount ||
-                        selected
-                if (!showControlPoint) return@forEachIndexed
-                val normalizedX =
-                    controlPoint.toFloat() / editorMap.controlSegmentCount.toFloat()
-                val point = pointFor(normalizedX, index.toDouble())
-                drawCircle(
-                    color = if (selected) selectedColor else primaryColor,
-                    radius = if (selected) 9.dp.toPx() else controlRadius,
-                    center = point,
-                )
-                drawCircle(
-                    color = pointFillColor,
-                    radius = if (selected) 4.dp.toPx() else controlRadius / 2f,
-                    center = point,
-                )
-            }
-
-            val deltas = actualPressIndices.zipWithNext { leftIndex, rightIndex ->
-                rightIndex - leftIndex
-            }
-            val largestDelta = deltas.maxOrNull()?.coerceAtLeast(1) ?: 1
-            deltas.forEachIndexed { step, delta ->
-                val segmentLeft = left + step.toFloat() / visiblePressCount * plotWidth
-                val segmentRight = left + (step + 1).toFloat() / visiblePressCount * plotWidth
-                val barHeight = deltaBandHeightPx * delta.toFloat() / largestDelta.toFloat()
-                drawRect(
-                    color = deltaColor.copy(
-                        alpha = 0.28f + 0.62f * delta.toFloat() / largestDelta.toFloat(),
-                    ),
-                    topLeft = Offset(segmentLeft + 1f, deltaBottom - barHeight),
-                    size = Size(
-                        width = (segmentRight - segmentLeft - 2f).coerceAtLeast(1f),
-                        height = barHeight.coerceAtLeast(1f),
-                    ),
-                )
-            }
-            drawLine(
-                color = gridColor.copy(alpha = 0.22f),
-                start = Offset(left, deltaBottom),
-                end = Offset(right, deltaBottom),
-            )
-        }
-
-        val selectedPressPosition =
-            safeSelectedControlPoint.toDouble() * editorMap.pressCount.toDouble() /
-                editorMap.controlSegmentCount.toDouble()
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = buildString {
-                    append(
-                        "控制点 ${safeSelectedControlPoint + 1} / ${editorMap.controlPointCount}",
-                    )
-                    append(
-                        "  ·  x ${selectedPressPosition.formatAxisPosition()} / ${editorMap.pressCount}",
-                    )
-                    append("  ·  index $selectedActualIndex")
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag(CurveEditorTestTags.SELECTED_CONTROL_POINT_VALUE),
-                style = MaterialTheme.typography.titleSmall,
-            )
-            IconButton(
-                onClick = {
-                    val current = editorMap
-                    val currentSelection = safeSelectedControlPoint
-                    val previous = undoStack.last()
-                    undoStack = undoStack.dropLast(1)
-                    redoStack = redoStack.appendHistory(
-                        EditorHistoryEntry(current, currentSelection),
-                    )
-                    editorMap = previous.map
-                    selectedControlPoint = previous.selectedControlPoint
-                    pressCountText = previous.map.pressCount.toString()
-                    controlPointCountText = previous.map.controlPointCount.toString()
-                    indexText = (
-                        previous.map.displayIndexBase(routeMinimum, routeMaximum) +
-                            previous.map.offsets[previous.selectedControlPoint]
-                        ).toString()
-                    latestOnMapCommitted(previous.map)
-                },
-                enabled = editorReady && undoStack.isNotEmpty(),
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .testTag(CurveEditorTestTags.UNDO)
-                    .semantics { contentDescription = "撤销曲线编辑" },
-            ) {
-                Text("↶", style = MaterialTheme.typography.titleLarge)
-            }
-            IconButton(
-                onClick = {
-                    val current = editorMap
-                    val currentSelection = safeSelectedControlPoint
-                    val next = redoStack.last()
-                    redoStack = redoStack.dropLast(1)
-                    undoStack = undoStack.appendHistory(
-                        EditorHistoryEntry(current, currentSelection),
-                    )
-                    editorMap = next.map
-                    selectedControlPoint = next.selectedControlPoint
-                    pressCountText = next.map.pressCount.toString()
-                    controlPointCountText = next.map.controlPointCount.toString()
-                    indexText = (
-                        next.map.displayIndexBase(routeMinimum, routeMaximum) +
-                            next.map.offsets[next.selectedControlPoint]
-                        ).toString()
-                    latestOnMapCommitted(next.map)
-                },
-                enabled = editorReady && redoStack.isNotEmpty(),
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .testTag(CurveEditorTestTags.REDO)
-                    .semantics { contentDescription = "重做曲线编辑" },
-            ) {
-                Text("↷", style = MaterialTheme.typography.titleLarge)
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = if (selectedIsEndpoint) "端点固定" else "微调 index",
-                modifier = Modifier.weight(1f),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            IconButton(
-                onClick = {
-                    val before = editorMap
-                    val after = before.withOffset(
-                        safeSelectedControlPoint,
-                        selectedActualIndex - 1 - displayMinimum,
-                    )
-                    publishCompletedAction(
-                        before,
-                        after,
-                        safeSelectedControlPoint,
-                        safeSelectedControlPoint,
-                    )
-                },
-                enabled = editorReady &&
-                    !selectedIsEndpoint &&
-                    selectedActualIndex > selectedMinimumIndex,
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .testTag(CurveEditorTestTags.INDEX_DECREMENT)
-                    .semantics { contentDescription = "Audio volume index 减少 1" },
-            ) {
-                Text("−1", style = MaterialTheme.typography.titleMedium)
-            }
-            IconButton(
-                onClick = {
-                    val before = editorMap
-                    val after = before.withOffset(
-                        safeSelectedControlPoint,
-                        selectedActualIndex + 1 - displayMinimum,
-                    )
-                    publishCompletedAction(
-                        before,
-                        after,
-                        safeSelectedControlPoint,
-                        safeSelectedControlPoint,
-                    )
-                },
-                enabled = editorReady &&
-                    !selectedIsEndpoint &&
-                    selectedActualIndex < selectedMaximumIndex,
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .testTag(CurveEditorTestTags.INDEX_INCREMENT)
-                    .semantics { contentDescription = "Audio volume index 增加 1" },
-            ) {
-                Text("+1", style = MaterialTheme.typography.titleMedium)
-            }
-        }
-
-        OutlinedButton(
-            onClick = { detailsExpanded = !detailsExpanded },
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 48.dp)
-                .testTag(CurveEditorTestTags.DETAILS_TOGGLE)
-                .semantics {
-                    contentDescription = "精确编辑"
-                    stateDescription = if (detailsExpanded) "已展开" else "已折叠"
-                },
-        ) {
-            Text(if (detailsExpanded) "收起精确编辑 ︿" else "精确编辑 ﹀")
-        }
-
-        if (detailsExpanded) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text =
-                        "选择控制点：${safeSelectedControlPoint + 1} / ${editorMap.controlPointCount}",
-                    style = MaterialTheme.typography.labelLarge,
-                )
-                Slider(
-                    value = safeSelectedControlPoint.toFloat(),
-                    onValueChange = { value ->
-                        val nextControlPoint = value.roundToInt().coerceIn(
-                            0,
-                            editorMap.controlSegmentCount,
+                    contentDescription = buildString {
+                        append(
+                            "音量映射图。横轴是均匀按键位置，纵轴是整数音量 index；" +
+                                "可通过更多操作选择和移动控制点。",
                         )
-                        selectedControlPoint = nextControlPoint
-                        indexText = actualControlIndices[nextControlPoint].toString()
-                    },
-                    enabled = editorReady,
-                    valueRange = 0f..editorMap.controlSegmentCount.coerceAtLeast(1).toFloat(),
-                    steps = (editorMap.controlPointCount - 2).coerceAtLeast(0),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .testTag(CurveEditorTestTags.CONTROL_POINT_SELECTOR)
-                        .semantics {
-                            contentDescription = "选择曲线控制点"
-                            stateDescription =
-                                "第 ${safeSelectedControlPoint + 1} 个，共 ${editorMap.controlPointCount} 个"
-                        },
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OutlinedTextField(
-                        value = indexText,
-                        onValueChange = { value ->
-                            if (
-                                value.isEmpty() ||
-                                value == "-" ||
-                                value.removePrefix("-").all(Char::isDigit)
-                            ) {
-                                indexText = value
-                            }
-                        },
-                        enabled = selectedCanMove,
-                        singleLine = true,
-                        isError = selectedCanMove && indexText.toIntOrNull()?.let {
-                            it !in selectedMinimumIndex..selectedMaximumIndex
-                        } != false,
-                        label = {
-                            Text(
-                                if (displayUsesReferenceBasis) {
-                                    "配置基准 index"
-                                } else {
-                                    "Audio volume index"
-                                },
-                            )
-                        },
-                        supportingText = {
-                            Text(
-                                if (selectedIsEndpoint) {
-                                    "端点固定为${if (safeSelectedControlPoint == 0) "最小" else "最大"}音量"
-                                } else if (!selectedCanMove) {
-                                    "相邻控制点已占满；可减少 P 或在画布上推挤"
-                                } else {
-                                    "可用范围 $selectedMinimumIndex…$selectedMaximumIndex"
-                                },
-                            )
-                        },
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Number,
-                            imeAction = ImeAction.Done,
-                        ),
-                        keyboardActions = KeyboardActions(onDone = { applyIndexText() }),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag(CurveEditorTestTags.INDEX_INPUT),
-                    )
-                    Button(
-                        onClick = applyIndexText,
-                        enabled = editorReady &&
-                            !selectedIsEndpoint &&
-                            indexText.toIntOrNull()?.let {
-                                it in selectedMinimumIndex..selectedMaximumIndex &&
-                                    it != selectedActualIndex
-                            } == true,
-                        modifier = Modifier
-                            .heightIn(min = 48.dp)
-                            .testTag(CurveEditorTestTags.APPLY),
-                        contentPadding = PaddingValues(horizontal = 14.dp),
+                        snapshot?.let { append("当前音量水平线 ${it.currentIndex}。") }
+                    }
+                    stateDescription = buildString {
+                        append("K ${renderedMap.pressCount}，P ${renderedMap.controlPointCount}")
+                        append("，已选第 ${selectedIndex + 1} 个控制点")
+                        append(
+                            "，x ${(
+                                renderedMap.normalizedXAt(selectedIndex) *
+                                    renderedMap.pressCount
+                                ).formatAxisPosition()}",
+                        )
+                        append("，index $selectedDisplayIndex")
+                        append("，上下操作按当前路由可表示档位移动")
+                        snapshot?.let { append("，当前音量 ${it.currentIndex}") }
+                    }
+                    customActions = chartCustomActions
+                }
+                .focusable(),
+        ) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag(CurveEditorTestTags.CANVAS)
+                    .pointerInput(
+                        editorReady,
+                        renderedMap.basisSpan,
+                        renderedMap.pressCount,
+                        displayMinimum,
+                        displayMaximum,
                     ) {
-                        Text("确定")
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            if (!editorReady) return@awaitEachGesture
+                            val startMap = latestEditorMap
+                            val plotLeft = leftPaddingPx
+                            val plotRight = size.width.toFloat() - rightPaddingPx
+                            val plotTop = topPaddingPx
+                            val plotBottom = size.height.toFloat() - bottomPaddingPx
+                            val plotWidth = (plotRight - plotLeft).coerceAtLeast(1f)
+                            val plotHeight = (plotBottom - plotTop).coerceAtLeast(1f)
+
+                            fun pointFor(map: StepVolumeMap, index: Int): Offset {
+                                val displayedIndex = displayIndexForOffset(map, map.offsets[index])
+                                val normalizedY =
+                                    (displayedIndex - displayMinimum).toFloat() /
+                                        displayDenominator.toFloat()
+                                return Offset(
+                                    x = plotLeft + map.normalizedXAt(index).toFloat() * plotWidth,
+                                    y = plotBottom - normalizedY * plotHeight,
+                                )
+                            }
+
+                            fun squaredDistance(left: Offset, right: Offset): Float {
+                                val dx = left.x - right.x
+                                val dy = left.y - right.y
+                                return dx * dx + dy * dy
+                            }
+
+                            val hitRadiusSquared = hitRadiusPx * hitRadiusPx
+                            val hitIndex = startMap.normalizedXs.indices
+                                .minBy { squaredDistance(pointFor(startMap, it), down.position) }
+                                .takeIf {
+                                    squaredDistance(pointFor(startMap, it), down.position) <=
+                                        hitRadiusSquared
+                                }
+                                ?: return@awaitEachGesture
+
+                            selectedControlPoint = hitIndex
+                            if (hitIndex == 0 || hitIndex == startMap.controlSegmentCount) {
+                                return@awaitEachGesture
+                            }
+                            val currentX = startMap.normalizedXAt(hitIndex)
+                            val canMoveX =
+                                currentX > startMap.normalizedXAt(hitIndex - 1) +
+                                StepVolumeMap.MINIMUM_CONTROL_X_SPACING ||
+                                    currentX < startMap.normalizedXAt(hitIndex + 1) -
+                                    StepVolumeMap.MINIMUM_CONTROL_X_SPACING
+                            val minimumOffset = hitIndex
+                            val maximumOffset = startMap.basisSpan -
+                                (startMap.controlSegmentCount - hitIndex)
+                            val canMoveY = startMap.offsets[hitIndex] > minimumOffset ||
+                                startMap.offsets[hitIndex] < maximumOffset
+                            if (!canMoveX && !canMoveY) return@awaitEachGesture
+
+                            val gestureSourceMap = latestOutputMap
+                            val gestureSourceToken = latestExternalSourceToken
+                            gestureInProgress = true
+                            down.consume()
+                            val beforeGesture = startMap
+                            var gestureMap = startMap
+                            var completedWithNormalUp = false
+                            try {
+                                completedWithNormalUp = drag(down.id) { change ->
+                                        val rawX = ((change.position.x - plotLeft) / plotWidth)
+                                            .coerceIn(0f, 1f)
+                                            .toDouble()
+                                        val nearestPressX =
+                                            (rawX * gestureMap.pressCount).roundToInt().toDouble() /
+                                                gestureMap.pressCount.toDouble()
+                                        val shouldSnapX =
+                                            abs(nearestPressX - rawX) * plotWidth <= xSnapDistancePx
+                                        val requestedX = if (shouldSnapX) nearestPressX else rawX
+                                        val rawDisplayIndex = displayMinimum +
+                                            (plotBottom - change.position.y) / plotHeight *
+                                            displaySpan.toFloat()
+                                        val minimumDisplayIndex = displayIndexForOffset(
+                                            gestureMap,
+                                            gestureMap.offsets[hitIndex - 1],
+                                        ) + 1
+                                        val maximumDisplayIndex = displayIndexForOffset(
+                                            gestureMap,
+                                            gestureMap.offsets[hitIndex + 1],
+                                        ) - 1
+                                        val requestedDisplayIndex = if (
+                                            minimumDisplayIndex <= maximumDisplayIndex
+                                        ) {
+                                            rawDisplayIndex.roundToInt().coerceIn(
+                                                minimumDisplayIndex,
+                                                maximumDisplayIndex,
+                                            )
+                                        } else {
+                                            displayIndexForOffset(
+                                                gestureMap,
+                                                gestureMap.offsets[hitIndex],
+                                            )
+                                        }
+                                        val requestedOffset = referenceOffsetForDisplayIndex(
+                                            gestureMap,
+                                            requestedDisplayIndex,
+                                        )
+                                        val moved = gestureMap.moveControlPointPushing(
+                                            controlPointIndex = hitIndex,
+                                            requestedNormalizedX = requestedX,
+                                            requestedOffset = requestedOffset,
+                                        )
+                                        gestureMap = moved
+                                        editorMap = moved
+                                        selectedControlPoint = hitIndex
+                                        val actualX = moved.normalizedXAt(hitIndex)
+                                        xSnapGuide = nearestPressX.takeIf {
+                                            shouldSnapX && abs(actualX - nearestPressX) < 1e-5
+                                        }
+                                        ySnapGuide = displayIndexForOffset(
+                                            moved,
+                                            moved.offsets[hitIndex],
+                                        )
+                                    change.consume()
+                                }
+                            } finally {
+                                val sourceUnchanged =
+                                    latestExternalSourceToken === gestureSourceToken
+                                if (completedWithNormalUp && sourceUnchanged) {
+                                    if (gestureMap != beforeGesture) {
+                                        expectedCommitSourceMap = gestureSourceMap
+                                        expectedCommittedMap = gestureMap
+                                        latestOnMapCommitted(gestureMap)
+                                    }
+                                } else {
+                                    val replacement = latestOutputMap
+                                    val previousX = gestureMap.normalizedXAt(
+                                        hitIndex.coerceIn(gestureMap.normalizedXs.indices),
+                                    )
+                                    expectedCommittedMap = null
+                                    expectedCommitSourceMap = null
+                                    editorMap = replacement
+                                    selectedControlPoint =
+                                        replacement.closestControlPointIndex(previousX)
+                                }
+                                gestureInProgress = false
+                                xSnapGuide = null
+                                ySnapGuide = null
+                            }
+                        }
+                    },
+            ) {
+                val plotLeft = leftPaddingPx
+                val plotRight = size.width - rightPaddingPx
+                val plotTop = topPaddingPx
+                val plotBottom = size.height - bottomPaddingPx
+                val plotWidth = (plotRight - plotLeft).coerceAtLeast(1f)
+                val plotHeight = (plotBottom - plotTop).coerceAtLeast(1f)
+
+                fun pointFor(normalizedX: Double, index: Double): Offset {
+                    val normalizedY = ((index - displayMinimum) / displayDenominator.toDouble())
+                        .coerceIn(0.0, 1.0)
+                    return Offset(
+                        x = plotLeft + normalizedX.toFloat() * plotWidth,
+                        y = plotBottom - normalizedY.toFloat() * plotHeight,
+                    )
+                }
+
+                val tickPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                    color = tick.copy(alpha = 0.86f).toArgb()
+                    textSize = 10.sp.toPx()
+                    textAlign = AndroidPaint.Align.RIGHT
+                }
+                val axisFractions = listOf(0f, 1f / 3f, 2f / 3f, 1f)
+                axisFractions.forEach { fraction ->
+                    val y = plotBottom - fraction * plotHeight
+                    drawLine(
+                        color = grid.copy(alpha = if (fraction == 0f) 0.72f else 0.48f),
+                        start = Offset(plotLeft, y),
+                        end = Offset(plotRight, y),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                    val value = displayMinimum + (displaySpan * fraction).roundToInt()
+                    drawContext.canvas.nativeCanvas.drawText(
+                        value.toString(),
+                        plotLeft - 7.dp.toPx(),
+                        y - (tickPaint.ascent() + tickPaint.descent()) / 2f,
+                        tickPaint,
+                    )
+                }
+
+                val xTickPaint = AndroidPaint(tickPaint).apply {
+                    textAlign = AndroidPaint.Align.CENTER
+                }
+                listOf(0f, 0.5f, 1f).forEachIndexed { tickIndex, fraction ->
+                    val x = plotLeft + fraction * plotWidth
+                    drawLine(
+                        color = grid.copy(alpha = 0.65f),
+                        start = Offset(x, plotBottom),
+                        end = Offset(x, plotBottom + 4.dp.toPx()),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                    val value = when (tickIndex) {
+                        0 -> "0"
+                        1 -> (renderedMap.pressCount / 2.0).formatAxisPosition()
+                        else -> renderedMap.pressCount.toString()
+                    }
+                    drawContext.canvas.nativeCanvas.drawText(
+                        value,
+                        x,
+                        plotBottom + 17.dp.toPx(),
+                        xTickPaint,
+                    )
+                }
+
+                val controlPoints = displayedControlIndices.mapIndexed { index, displayIndex ->
+                    pointFor(renderedMap.normalizedXAt(index), displayIndex.toDouble())
+                }
+                val area = Path().apply {
+                    moveTo(controlPoints.first().x, plotBottom)
+                    lineTo(controlPoints.first().x, controlPoints.first().y)
+                    controlPoints.drop(1).forEach { lineTo(it.x, it.y) }
+                    lineTo(controlPoints.last().x, plotBottom)
+                    close()
+                }
+                drawPath(area, color = primary.copy(alpha = 0.075f))
+
+                ySnapGuide?.let { displayIndex ->
+                    val guideY = pointFor(0.0, displayIndex.toDouble()).y
+                    drawLine(
+                        color = snap.copy(alpha = 0.55f),
+                        start = Offset(plotLeft, guideY),
+                        end = Offset(plotRight, guideY),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                }
+                xSnapGuide?.let { normalizedX ->
+                    val guideX = plotLeft + normalizedX.toFloat() * plotWidth
+                    drawLine(
+                        color = snap.copy(alpha = 0.55f),
+                        start = Offset(guideX, plotTop),
+                        end = Offset(guideX, plotBottom),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                }
+
+                val currentY = currentDisplayIndex?.let { pointFor(0.0, it).y }
+                if (currentY != null) {
+                    drawLine(
+                        color = current.copy(alpha = 0.88f),
+                        start = Offset(plotLeft, currentY),
+                        end = Offset(plotRight, currentY),
+                        strokeWidth = 1.5.dp.toPx(),
+                    )
+                }
+
+                val controlPath = Path().apply {
+                    controlPoints.forEachIndexed { index, point ->
+                        if (index == 0) moveTo(point.x, point.y) else lineTo(point.x, point.y)
                     }
                 }
+                drawPath(
+                    path = controlPath,
+                    color = primary,
+                    style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round),
+                )
+
+                val sampleRadius = 1.8.dp.toPx()
+                runtimePreview.indices.forEachIndexed { step, displayIndex ->
+                    val normalizedX = if (runtimePreview.effectivePressCount == 0) {
+                        0.0
+                    } else {
+                        step.toDouble() / runtimePreview.effectivePressCount.toDouble()
+                    }
+                    drawCircle(
+                        color = primary.copy(alpha = 0.68f),
+                        radius = sampleRadius,
+                        center = pointFor(normalizedX, displayIndex.toDouble()),
+                    )
+                }
+
+                controlPoints.forEachIndexed { index, point ->
+                    val isSelected = index == selectedIndex
+                    if (isSelected) {
+                        drawCircle(
+                            color = primary.copy(alpha = 0.13f),
+                            radius = 10.dp.toPx(),
+                            center = point,
+                        )
+                    }
+                    drawCircle(
+                        color = if (isSelected) primary else surface,
+                        radius = if (isSelected) 5.5.dp.toPx() else 4.2.dp.toPx(),
+                        center = point,
+                    )
+                    if (!isSelected) {
+                        drawCircle(
+                            color = primary,
+                            radius = 4.2.dp.toPx(),
+                            center = point,
+                            style = Stroke(width = 1.6.dp.toPx()),
+                        )
+                    }
+                }
+
+                if (currentY != null && currentX != null && currentIndexLabel != null) {
+                    val intersection = Offset(
+                        x = plotLeft + currentX.toFloat() * plotWidth,
+                        y = currentY,
+                    )
+                    drawCircle(
+                        color = surface,
+                        radius = 5.dp.toPx(),
+                        center = intersection,
+                    )
+                    drawCircle(
+                        color = current,
+                        radius = 3.2.dp.toPx(),
+                        center = intersection,
+                    )
+
+                    val tagText = "当前 $currentIndexLabel"
+                    val tagPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                        color = currentContent.toArgb()
+                        textSize = 10.sp.toPx()
+                        textAlign = AndroidPaint.Align.CENTER
+                        typeface = android.graphics.Typeface.create(
+                            android.graphics.Typeface.DEFAULT,
+                            android.graphics.Typeface.BOLD,
+                        )
+                    }
+                    val fontMetrics = tagPaint.fontMetrics
+                    val tagHorizontalPadding = 8.dp.toPx()
+                    val tagVerticalPadding = 3.dp.toPx()
+                    val tagWidth = maxOf(
+                        48.dp.toPx(),
+                        tagPaint.measureText(tagText) + 2f * tagHorizontalPadding,
+                    ).coerceAtMost(plotWidth)
+                    val textHeight = fontMetrics.descent - fontMetrics.ascent
+                    val tagHeight = maxOf(
+                        20.dp.toPx(),
+                        textHeight + 2f * tagVerticalPadding,
+                    ).coerceAtMost(plotHeight)
+                    val tagLeft = if (currentX > 0.7) {
+                        plotLeft
+                    } else {
+                        (plotRight - tagWidth).coerceAtLeast(plotLeft)
+                    }
+                    val tagTop = (currentY - tagHeight / 2f).coerceIn(
+                        plotTop,
+                        plotBottom - tagHeight,
+                    )
+                    drawRoundRect(
+                        color = current,
+                        topLeft = Offset(tagLeft, tagTop),
+                        size = Size(tagWidth, tagHeight),
+                        cornerRadius = CornerRadius(10.dp.toPx()),
+                    )
+                    drawContext.canvas.nativeCanvas.drawText(
+                        tagText,
+                        tagLeft + tagWidth / 2f,
+                        tagTop + (tagHeight - textHeight) / 2f - fontMetrics.ascent,
+                        tagPaint,
+                    )
+                }
             }
+
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                contentDescription = null,
+                tint = tick,
+                modifier = Modifier
+                    .padding(start = 2.dp, top = 1.dp)
+                    .size(16.dp),
+            )
         }
 
-        if (snapshot != null && routeSpan == 0) {
+        CompactCurveStepper(
+            label = "按键 K",
+            value = renderedMap.pressCount,
+            minimum = 1,
+            maximum = renderedMap.basisSpan,
+            enabled = editorReady,
+            onValueChange = { requested ->
+                publish(
+                    renderedMap.withPressCount(requested),
+                    renderedMap.normalizedXAt(selectedIndex),
+                )
+            },
+            valueTag = CurveEditorTestTags.PRESS_COUNT_INPUT,
+            decrementTag = CurveEditorTestTags.PRESS_COUNT_DECREMENT,
+            incrementTag = CurveEditorTestTags.PRESS_COUNT_INCREMENT,
+        )
+
+        if (snapshot != null && snapshot.range.minIndex == snapshot.range.maxIndex) {
             Text(
-                text = "当前路由只有一个固定 volume index，无法建立严格递增的按键映射。",
+                text = "当前输出设备不提供可调音量档位",
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -1057,61 +746,109 @@ fun MappingCurveEditor(
     }
 }
 
-private data class EditorSource(
-    val map: StepVolumeMap,
-    val routeMinimum: Int?,
-    val routeMaximum: Int?,
-)
-
-private fun StepVolumeMap.displayIndexBase(routeMinimum: Int?, routeMaximum: Int?): Int {
-    val minimum = routeMinimum ?: return 0
-    val maximum = routeMaximum ?: return minimum
-    val routeSpan = maximum - minimum
-    return if (routeSpan == 0 || routeSpan == basisSpan) minimum else 0
-}
-
-private fun StepVolumeMap.displayControlIndices(snapshot: RouteVolumeSnapshot?): List<Int> {
-    val range = snapshot?.range ?: return offsets
-    val routeSpan = range.maxIndex - range.minIndex
-    if (routeSpan == 0) return List(controlPointCount) { range.minIndex }
-    return if (basisSpan == routeSpan) {
-        offsets.map { range.minIndex + it }
-    } else {
-        offsets
+@Composable
+private fun CompactCurveStepper(
+    label: String,
+    value: Int,
+    minimum: Int,
+    maximum: Int,
+    enabled: Boolean,
+    onValueChange: (Int) -> Unit,
+    valueTag: String,
+    decrementTag: String,
+    incrementTag: String,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        IconButton(
+            onClick = { onValueChange((value - 1).coerceAtLeast(minimum)) },
+            enabled = enabled && value > minimum,
+            modifier = Modifier
+                .size(40.dp)
+                .testTag(decrementTag),
+        ) {
+            Icon(
+                Icons.Default.Remove,
+                contentDescription = "$label 减少",
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Text(
+            text = value.toString(),
+            modifier = Modifier
+                .testTag(valueTag)
+                .semantics {
+                    contentDescription = label
+                    stateDescription = value.toString()
+                }
+                .padding(horizontal = 8.dp),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Medium,
+        )
+        IconButton(
+            onClick = { onValueChange((value + 1).coerceAtMost(maximum)) },
+            enabled = enabled && value < maximum,
+            modifier = Modifier
+                .size(40.dp)
+                .testTag(incrementTag),
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = "$label 增加",
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
 }
 
-private fun StepVolumeMap.actualPressIndices(snapshot: RouteVolumeSnapshot?): List<Int> =
-    bind(snapshot?.range ?: RouteVolumeRange(minIndex = 0, maxIndex = basisSpan)).indices
-
-private data class EditorHistoryEntry(
-    val map: StepVolumeMap,
-    val selectedControlPoint: Int,
-)
-
-private fun List<EditorHistoryEntry>.appendHistory(
-    entry: EditorHistoryEntry,
-): List<EditorHistoryEntry> = (this + entry).takeLast(HISTORY_LIMIT)
-
-private fun Int?.orZero(): Int = this ?: 0
+private fun StepVolumeMap.normalizedXForDisplayedIndex(
+    displayedIndices: List<Int>,
+    requestedIndex: Double,
+): Double {
+    require(displayedIndices.size == controlPointCount)
+    if (!requestedIndex.isFinite() || requestedIndex <= displayedIndices.first()) return 0.0
+    if (requestedIndex >= displayedIndices.last()) return 1.0
+    val rightIndex = displayedIndices.indexOfFirst { it.toDouble() >= requestedIndex }
+        .coerceIn(1, controlSegmentCount)
+    val leftIndex = rightIndex - 1
+    val leftIndexValue = displayedIndices[leftIndex].toDouble()
+    val rightIndexValue = displayedIndices[rightIndex].toDouble()
+    if (rightIndexValue == leftIndexValue) {
+        return (normalizedXs[leftIndex] + normalizedXs[rightIndex]) / 2.0
+    }
+    val fraction = (requestedIndex - leftIndexValue) / (rightIndexValue - leftIndexValue)
+    return normalizedXs[leftIndex] +
+        (normalizedXs[rightIndex] - normalizedXs[leftIndex]) * fraction
+}
 
 private fun Double.formatAxisPosition(): String {
-    val tenths = (this * 10.0).roundToInt()
-    return if (tenths % 10 == 0) (tenths / 10).toString() else "${tenths / 10}.${tenths % 10}"
+    val doubled = (this * 2.0).roundToInt()
+    return if (doubled % 2 == 0) (doubled / 2).toString() else "${doubled / 2}.5"
 }
-
-private const val HISTORY_LIMIT = 50
 
 object CurveEditorTestTags {
     const val CANVAS = "mapping_curve_canvas"
+    const val CURRENT_VOLUME_MARKER = "mapping_curve_current_volume"
     const val PRESS_COUNT_INPUT = "mapping_curve_press_count_input"
     const val PRESS_COUNT_DECREMENT = "mapping_curve_press_count_decrement"
     const val PRESS_COUNT_INCREMENT = "mapping_curve_press_count_increment"
-    const val PRESS_COUNT_APPLY = "mapping_curve_press_count_apply"
-    const val PRESS_COUNT_PRESETS = "mapping_curve_press_count_presets"
     const val CONTROL_POINT_COUNT_INPUT = "mapping_curve_control_point_count_input"
     const val CONTROL_POINT_COUNT_DECREMENT = "mapping_curve_control_point_count_decrement"
     const val CONTROL_POINT_COUNT_INCREMENT = "mapping_curve_control_point_count_increment"
+
+    // Source-compatible aliases for older test clients. These controls are intentionally absent.
+    const val PRESS_COUNT_APPLY = "mapping_curve_press_count_apply"
+    const val PRESS_COUNT_PRESETS = "mapping_curve_press_count_presets"
     const val CONTROL_POINT_COUNT_APPLY = "mapping_curve_control_point_count_apply"
     const val CONTROL_POINT_SELECTOR = "mapping_curve_control_point_selector"
     const val SELECTED_CONTROL_POINT_VALUE = "mapping_curve_selected_control_point_value"
@@ -1124,8 +861,6 @@ object CurveEditorTestTags {
     const val REDO = "mapping_curve_redo"
     const val RESET_LINEAR = "mapping_curve_reset_linear"
     const val DETAILS_TOGGLE = "mapping_curve_details_toggle"
-
-    // Kept as source-compatible aliases while existing UI tests migrate.
     const val STEP_SELECTOR = CONTROL_POINT_SELECTOR
     const val SELECTED_STEP_VALUE = SELECTED_CONTROL_POINT_VALUE
     const val POINT_SELECTOR = CONTROL_POINT_SELECTOR

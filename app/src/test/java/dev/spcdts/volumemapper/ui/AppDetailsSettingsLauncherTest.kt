@@ -8,6 +8,13 @@ import org.junit.Test
 
 class AppDetailsSettingsLauncherTest {
     @Test
+    fun `settings candidates and fallback scenarios`() {
+        `application details is preferred before generic settings`()
+        `first available candidate is launched`()
+        `unavailable details falls back to generic settings`()
+        `no available candidate reports failure`()
+    }
+
     fun `application details is preferred before generic settings`() {
         val candidates = AppDetailsSettingsLauncher.intentCandidates("dev.example.volume")
 
@@ -22,7 +29,6 @@ class AppDetailsSettingsLauncherTest {
         assertEquals(null, candidates.last().dataUri)
     }
 
-    @Test
     fun `first available candidate is launched`() {
         val launched = mutableListOf<String>()
 
@@ -38,7 +44,6 @@ class AppDetailsSettingsLauncherTest {
         assertEquals(listOf("details"), launched)
     }
 
-    @Test
     fun `unavailable details falls back to generic settings`() {
         val launched = mutableListOf<String>()
 
@@ -54,7 +59,6 @@ class AppDetailsSettingsLauncherTest {
         assertEquals(listOf("details", "settings"), launched)
     }
 
-    @Test
     fun `no available candidate reports failure`() {
         val result = AppDetailsSettingsLauncher.launchFirstAvailable(
             candidates = listOf("details", "settings"),

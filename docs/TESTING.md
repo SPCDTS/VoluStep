@@ -2,7 +2,7 @@
 
 ## 结果记录原则
 
-仓库包含测试源码、AVD 定义和辅助脚本，但“可以编译”“存在测试”“AVD 已创建”都不等于设备测试已经执行通过。提交测试结论时必须记录 commit/工作区状态、日期、API、镜像或 ROM build、设备/耳机、执行命令以及 pass/fail/skip；本文只描述覆盖和运行方法，不声明任何 API 或真机的当前通过状态。2026-08-22 和历史本机执行结果单独记录在 [VERIFICATION.md](VERIFICATION.md)。
+仓库包含测试源码、AVD 定义和辅助脚本，但“可以编译”“存在测试”“AVD 已创建”都不等于设备测试已经执行通过。提交测试结论时必须记录 commit/工作区状态、日期、API、镜像或 ROM build、设备/耳机、执行命令以及 pass/fail/skip；本文只描述覆盖和运行方法，不声明任何 API 或真机的当前通过状态。每轮本机执行结果单独记录在 [VERIFICATION.md](VERIFICATION.md)。
 
 ## 自动测试层次
 
@@ -16,16 +16,17 @@
 
 当前覆盖：
 
-- 独立的按键次数 `K` / 控制点数 `P`、整数端点、严格单调 offset 与折线采样；
-- 单独修改 `K` 或 `P`、`P<K+1` / `P>K+1`、跨路由范围重投影、全局最小平方结果及确定性 tie-break；
-- 单点相邻约束与画笔拖动的最小推挤；
-- 精确状态短按、外部 index 的严格上下界选择、长按延迟、加速、repeat no-op、匹配/不匹配 UP、readback 同步与取消；
-- 单次大跨度积分与 50 ms 多次积分的一致性；
+- 独立的按键次数 `K` / 控制点数 `P`、自由且严格递增的控制点 x、整数端点与折线采样；
+- `K+1` 个均匀按键位置、单独修改 `K` 或 `P`、`P<K+1` / `P>K+1`、跨路由范围重投影、全局最小平方结果及确定性 tie-break；
+- x/y 联合编辑、相邻约束、端点固定与拖动越界时的最小推挤；
+- 精确状态短按、外部 index 的严格上下界选择、固定长按间隔、repeat no-op、匹配/不匹配 UP、readback 同步与取消；
+- 不同 50 ms ticker 节奏下固定间隔积分的一致性，以及 `60…500 ms`、20 ms 网格配置边界；
 - 非零 min、固定音量、0–15 与 0–150 路由绑定边界；
 - mapping state 为空、外部 index 变化、精确状态连续性和 active hold 步数余量边界；
-- DataStore `v2` 独立 K/P round-trip、`v1` 无损迁移和坏字段独立降级。
+- DataStore `v3` 自由 x round-trip、`v1` / `v2` 无损迁移、legacy shadow 恢复、旧间隔对齐与坏字段独立降级；
+- 设置写入 actor 的 FIFO immediate barrier、普通快照防抖、回执顺序和单次持久化失败后继续工作。
 
-这些是 pure map/reducer/serialization 测试，不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也没有用 fake backend 覆盖 coordinator 的完整并发时序。
+上述细粒度断言合并在 22 个 JVM 场景组内；加上 8 个 Android instrumentation，仓库共保留 30 个测试入口。UI 在 DataStore 初始快照原子发布前禁用配置写入口，避免默认占位值覆盖已保存设置。JVM 测试不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也没有用 fake backend 覆盖 coordinator 的完整并发时序。
 
 ### Lint 与构建
 
@@ -37,11 +38,11 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 
 ### Android instrumentation
 
-仓库包含三项设备侧测试：
+仓库包含三个设备侧测试类：
 
-- `MainActivityTest`：验证主导航、默认层独立的 `K` / `P` 输入与曲线画布可达，实际修改 P、断言 K 不变，并通过撤销无损恢复完整折线与控制点选择；随后展开“精确编辑”和“按键响应”，验证整数输入、撤销/重做及低频设置；测试结束会恢复进入测试前的完整设置，预设只验证可达；
+- `MainActivityTest`：共 6 项，验证正式单页只保留核心控件、当前音量水平线语义、`K` / `P` 独立步进、控制点 x/y 拖动与吸附、图表无障碍选择/移动操作、`60…500 ms` 长按间隔边界，以及默认折叠的设备区；测试结束会恢复进入测试前的完整设置；
 - `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造完整 DOWN/UP，并验证真实 `STREAM_MUSIC` index 改变和最终清理。
-- `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并从通知 action 停止映射；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性离散状态表。
+- `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并只在本应用通知行内展开和点击停止 action；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性自由控制点映射。
 
 第二项测试不会启动真实 AccessibilityService，也不会验证系统是否把物理按键分派给服务。第三项的 instrumentation 阶段不能独自证明按键分派，因为 UiAutomation 注入会绕过 Accessibility input filter；实体按键链路由下述宿主 E2E 使用内核 evdev 事件验证。模拟器结果仍不能替代 OEM、蓝牙耳机和真实系统授权页测试。编译测试 APK 与实际执行应区分：
 
@@ -61,7 +62,7 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 .\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild
 ```
 
-`emulator-e2e-test.ps1` 只允许 `emulator-*`。它从空白应用数据开始，完成真实披露 UI，绑定目标无障碍服务，从可见 Activity 启动控制器，验证前台通知，退到后台后从 Linux evdev 注入音量加/减键，并从 SystemUI 通知停止服务后验证 fail-open。脚本会临时把可调试模拟器的 adbd 切到 root，并在 `finally` 中恢复原无障碍配置、媒体/铃声音量和 adbd 身份，同时收起通知面板；任何清理失败都会使脚本失败。应用数据会在测试开始和结束时被清空，不能恢复测试前内容。
+`emulator-e2e-test.ps1` 只允许 `emulator-*`。它从空白应用数据开始，完成真实披露 UI，绑定目标无障碍服务，从可见 Activity 启动控制器，验证前台通知，退到后台后从 Linux evdev 注入音量加/减键，并在本应用标题所属的 SystemUI 通知行内执行停止 action 后验证 fail-open。脚本会临时把可调试模拟器的 adbd 切到 root，并在 `finally` 中恢复原无障碍配置、媒体/铃声音量和 adbd 身份，同时收起通知面板；任何清理失败都会使脚本失败。应用数据会在测试开始和结束时被清空，不能恢复测试前内容。
 
 普通 `connectedDebugAndroidTest` 重复运行时会保留 Debug 应用数据，因此已接受披露的 AVD 可能跳过披露页面。需要确定性验证首次披露时，应运行宿主 E2E；它会在安装测试 APK 后清空应用数据，再执行定向 instrumentation。
 
@@ -122,7 +123,7 @@ Android 17 还应使用系统支持的音频 hardening 调试命令（若该镜�
 - 新手势只在 FGS、无障碍、media-safe、路由和后端全部健康，且有界队列接受 DOWN 时消费；
 - 每次手势只允许一个 `(deviceId, keyCode, downTime)` owner；repeat 只刷新 heartbeat，绝不入队或重启取消后的手势；
 - 一旦消费 DOWN，普通失效仍消费到同 token 的 UP；Accessibility 断连清 owner，丢 UP 在约 2 秒 watchdog 后可恢复；
-- 只有 active press 存在 50 ms ticker，结束后无常驻 tick；连续长按写入稳态不超过约 14 次/秒；
+- 只有 active press 存在 50 ms ticker，结束后无常驻 tick；写入门限不超过一个 tick，最短 60 ms 长按配置不能因限流合并相邻状态；
 - disarm、FGS stop、settings、手动刷新和 route/environment 变化先原子失效 control epoch；route 变化还失效 route epoch，旧 I/O 结果不能复活；
 - active hold 每约 500 ms 核对 mode、route ID、范围与 fixed-volume，且 guard 不覆盖 active logical/expected index；
 - 一个 verification cycle 跟踪 latest expected；fresh mismatch 不重锚，成熟 mismatch 清 pending 并同步 observed，final mismatch 才计失败；

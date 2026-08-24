@@ -10,6 +10,7 @@ import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.MappingCoordinator
 import kotlin.math.max
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeFalse
@@ -31,6 +32,9 @@ class VolumeKeyAudioIntegrationTest {
         val graph = application.graph
         val coordinator = graph.mappingCoordinator
         val repository = graph.settingsRepository
+        composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
+            repository.hasLoadedInitialSettings
+        }
         val audioManager = composeRule.activity.getSystemService(AudioManager::class.java)
         val originalSettings = repository.settings.value
         val originalIndex = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -57,14 +61,20 @@ class VolumeKeyAudioIntegrationTest {
 
             val readySnapshot = checkNotNull(coordinator.runtime.value.snapshot)
             val indexSpan = readySnapshot.range.maxIndex - readySnapshot.range.minIndex
-            assumeTrue("媒体音量档位过少，无法配置 10 次按键的线性映射", indexSpan >= 10)
+            assumeTrue("媒体音量档位过少，无法配置自由 X 集成映射", indexSpan >= 10)
 
+            val initialOffset = indexSpan / 3
+            val mappedUpOffset = ((initialOffset.toDouble() / indexSpan + 0.4) * indexSpan + 0.5)
+                .toInt()
+            val freeXMap = StepVolumeMap(
+                basisSpan = indexSpan,
+                pressCount = 5,
+                normalizedXs = listOf(0.0, 0.4, 0.6, 1.0),
+                offsets = listOf(0, initialOffset, mappedUpOffset, indexSpan),
+            )
+            val boundMap = freeXMap.bind(readySnapshot.range)
             val testSettings = originalSettings.copy(
-                outputMap = StepVolumeMap.linear(
-                    basisSpan = indexSpan,
-                    pressCount = 10,
-                    controlPointCount = 3,
-                ),
+                outputMap = freeXMap,
                 showSystemVolumeUi = false,
             )
             repository.updateOutputMap(testSettings.outputMap)
@@ -72,7 +82,8 @@ class VolumeKeyAudioIntegrationTest {
             repository.updateShowSystemUi(testSettings.showSystemVolumeUi)
             awaitCoordinatorSettings(coordinator, testSettings)
 
-            val initialIndex = readySnapshot.range.minIndex + indexSpan / 2
+            val initialIndex = boundMap.indices[2]
+            val expectedIndex = boundMap.indices[3]
             val initialWrite = graph.volumeBackend.setMediaVolume(
                 index = initialIndex,
                 showSystemUi = false,
@@ -116,34 +127,56 @@ class VolumeKeyAudioIntegrationTest {
             composeRule.waitUntil(VOLUME_TIMEOUT_MILLIS) {
                 val runtime = coordinator.runtime.value
                 val actualIndex = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                actualIndex > initialIndex &&
-                    (runtime.expectedIndex ?: initialIndex) > initialIndex &&
+                actualIndex == expectedIndex &&
+                    runtime.expectedIndex == expectedIndex &&
                     runtime.consecutiveWriteFailures == 0
             }
         } finally {
             // 若断言在 DOWN 与 UP 之间失败，仍先排空 owner，再恢复全局音量和应用状态。
-            activeDownEvent?.let { downEvent ->
-                coordinator.handleAccessibilityKey(keyUpFor(downEvent))
-            }
-            coordinator.disarm()
-            coordinator.onForegroundServiceStopped()
-            coordinator.setAccessibilityConnected(false)
+            runCleanupSteps(
+                {
+                    activeDownEvent?.let { downEvent ->
+                        coordinator.handleAccessibilityKey(keyUpFor(downEvent))
+                    }
+                },
+                { coordinator.disarm() },
+                { coordinator.onForegroundServiceStopped() },
+                { coordinator.setAccessibilityConnected(false) },
+                { runBlocking { repository.replaceSettingsAndAwait(originalSettings) } },
+                {
+                    val currentMin = audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
+                    val currentMax = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    val restoredIndex = originalIndex.coerceIn(currentMin, currentMax)
+                    audioManager.setStreamVolume(
+                        AudioManager.STREAM_MUSIC,
+                        restoredIndex,
+                        0,
+                    )
+                    composeRule.waitUntil(VOLUME_TIMEOUT_MILLIS) {
+                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) == restoredIndex
+                    }
+                    assertEquals(
+                        "测试结束后必须恢复媒体音量",
+                        restoredIndex,
+                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC),
+                    )
+                },
+            )
+        }
+    }
 
-            repository.updateOutputMap(originalSettings.outputMap)
-            repository.updateKeyConfig(originalSettings.keyConfig)
-            repository.updateShowSystemUi(originalSettings.showSystemVolumeUi)
-            repository.flushPendingWrite()
-
-            runCatching {
-                val currentMin = audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC)
-                val currentMax = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                audioManager.setStreamVolume(
-                    AudioManager.STREAM_MUSIC,
-                    originalIndex.coerceIn(currentMin, currentMax),
-                    0,
-                )
+    private fun runCleanupSteps(vararg steps: () -> Unit) {
+        var firstFailure: Throwable? = null
+        steps.forEach { step ->
+            runCatching(step).onFailure { failure ->
+                if (firstFailure == null) {
+                    firstFailure = failure
+                } else {
+                    firstFailure.addSuppressed(failure)
+                }
             }
         }
+        firstFailure?.let { throw it }
     }
 
     private fun keyUpFor(downEvent: KeyEvent): KeyEvent =

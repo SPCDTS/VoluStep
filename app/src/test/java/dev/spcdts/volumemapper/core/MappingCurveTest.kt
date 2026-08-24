@@ -7,13 +7,28 @@ import org.junit.Test
 
 class MappingCurveTest {
     @Test
+    fun `validation evaluation and inverse scenarios`() {
+        `point rejects non-finite and out-of-range coordinates`()
+        `curve validates endpoints ordering spacing and monotonicity`()
+        `evaluate interpolates each segment and clamps inputs`()
+        `inverse interpolates and applies requested plateau bias`()
+    }
+
+    @Test
+    fun `editing integration and preset scenarios`() {
+        `movePoint constrains interior x and y without breaking neighbours`()
+        `movePoint fixes endpoint x but allows constrained floor and cap`()
+        `add and remove point preserve a monotonic curve`()
+        `integral is exact across segments tails and reversed bounds`()
+        `all presets are valid and communicate distinct intentions`()
+    }
+
     fun `point rejects non-finite and out-of-range coordinates`() {
         expectIllegalArgument { MappingPoint(-0.01, 0.0) }
         expectIllegalArgument { MappingPoint(0.0, 1.01) }
         expectIllegalArgument { MappingPoint(Double.NaN, 0.0) }
     }
 
-    @Test
     fun `curve validates endpoints ordering spacing and monotonicity`() {
         expectIllegalArgument {
             MappingCurve(listOf(MappingPoint(0.1, 0.0), MappingPoint(1.0, 1.0)))
@@ -42,7 +57,6 @@ class MappingCurveTest {
         }
     }
 
-    @Test
     fun `evaluate interpolates each segment and clamps inputs`() {
         val curve = MappingCurve(
             listOf(
@@ -59,7 +73,6 @@ class MappingCurveTest {
         expectIllegalArgument { curve.evaluate(Double.NaN) }
     }
 
-    @Test
     fun `inverse interpolates and applies requested plateau bias`() {
         val curve = MappingCurve(
             listOf(
@@ -78,7 +91,6 @@ class MappingCurveTest {
         assertEquals(1.0, curve.inverse(2.0), TOLERANCE)
     }
 
-    @Test
     fun `movePoint constrains interior x and y without breaking neighbours`() {
         val curve = MappingCurve(
             points = listOf(
@@ -99,7 +111,6 @@ class MappingCurveTest {
         assertEquals(0.2, movedLeft.points[2].y, TOLERANCE)
     }
 
-    @Test
     fun `movePoint fixes endpoint x but allows constrained floor and cap`() {
         val curve = MappingCurve(
             listOf(
@@ -119,7 +130,6 @@ class MappingCurveTest {
         assertEquals(0.4, constrained.points.first().y, TOLERANCE)
     }
 
-    @Test
     fun `add and remove point preserve a monotonic curve`() {
         val original = MappingCurve.linear()
         val added = original.addPoint(0.6, requestedY = 0.99)
@@ -131,7 +141,6 @@ class MappingCurveTest {
         expectIllegalArgument { original.removePoint(0) }
     }
 
-    @Test
     fun `integral is exact across segments tails and reversed bounds`() {
         val curve = MappingCurve.linear()
 
@@ -141,7 +150,6 @@ class MappingCurveTest {
         assertEquals(0.0, curve.integral(0.4, 0.4), TOLERANCE)
     }
 
-    @Test
     fun `all presets are valid and communicate distinct intentions`() {
         val curves = MappingPreset.entries.associateWith { it.createCurve() }
 

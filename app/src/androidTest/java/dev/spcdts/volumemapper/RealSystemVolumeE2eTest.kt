@@ -4,11 +4,12 @@ import android.Manifest
 import android.app.UiAutomation
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -17,12 +18,15 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Configurator
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.MappingControllerService
 import dev.spcdts.volumemapper.runtime.MappingCoordinator
+import dev.spcdts.volumemapper.ui.VolumeMapperTestTags
 import java.util.Locale
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -66,6 +70,9 @@ class RealSystemVolumeE2eTest {
         val graph = application.graph
         val coordinator = graph.mappingCoordinator
         val repository = graph.settingsRepository
+        composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
+            repository.hasLoadedInitialSettings
+        }
         val packageName = composeRule.activity.packageName
         val accessibilityComponent =
             "$packageName/dev.spcdts.volumemapper.runtime.VolumeKeyAccessibilityService"
@@ -88,10 +95,12 @@ class RealSystemVolumeE2eTest {
 
             // 外部 E2E runner 会先 pm clear；若单独重跑且已接受过披露，则仍验证已持久化状态。
             if (!repository.settings.value.disclosureAccepted) {
-                composeRule.onNodeWithText("查看并同意").performClick()
+                composeRule.onNodeWithText("查看授权").performClick()
                 composeRule.onNodeWithText("无障碍 API 显著披露").assertIsDisplayed()
                 composeRule.onNodeWithText("同意").assertIsNotEnabled()
-                composeRule.onNode(isToggleable()).performClick()
+                composeRule
+                    .onNodeWithText("我理解上述用途与按键冲突，并同意继续")
+                    .performClick()
                 composeRule.onNodeWithText("同意").assertIsEnabled().performClick()
                 composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
                     repository.settings.value.disclosureAccepted
@@ -127,9 +136,12 @@ class RealSystemVolumeE2eTest {
             val mappedUpOffset = ((initialOffset.toDouble() / routeSpan + 0.4) * routeSpan + 0.5)
                 .toInt()
             val testSettings = repository.settings.value.copy(
+                // K=5 的按键位置仍均匀；两个自由 x 控制点固定在第 2、3 个位置。
                 // 外部 E2E 从 1/3 档位起步：一次 UP 到约 +40%，再一次 DOWN 回原档。
                 outputMap = StepVolumeMap(
                     basisSpan = routeSpan,
+                    pressCount = 5,
+                    normalizedXs = listOf(0.0, 0.4, 0.6, 1.0),
                     offsets = listOf(0, initialOffset, mappedUpOffset, routeSpan),
                 ),
                 showSystemVolumeUi = false,
@@ -145,7 +157,7 @@ class RealSystemVolumeE2eTest {
             // 注入硬件层事件，避免 adb shell input/UiAutomation 绕过 Accessibility input filter。
             if (prepareExternalJourney) return
 
-            composeRule.onNodeWithText("启动映射", substring = true)
+            composeRule.onNodeWithTag(VolumeMapperTestTags.MASTER_SWITCH)
                 .assertIsEnabled()
                 .performClick()
             composeRule.waitUntil(CONTROLLER_TIMEOUT_MILLIS) {
@@ -156,30 +168,26 @@ class RealSystemVolumeE2eTest {
             }
 
             shell(automation, "cmd statusbar expand-notifications")
-            assertNotNull(
-                "前台控制器通知不可见",
-                device.wait(
-                    Until.findObject(By.text("音量键映射正在运行")),
-                    NOTIFICATION_TIMEOUT_MILLIS,
-                ),
+            val notificationTitle = device.wait(
+                Until.findObject(By.text("音量键映射正在运行")),
+                NOTIFICATION_TIMEOUT_MILLIS,
             )
-            var stopAction = device.wait(
-                Until.findObject(By.text("停止映射")),
-                NOTIFICATION_ACTION_PROBE_MILLIS,
-            )
+            assertNotNull("前台控制器通知不可见", notificationTitle)
+            val notificationRow = notificationRowFor(notificationTitle)
+            var stopAction = notificationRow?.findObject(By.text("停止映射"))
             if (stopAction == null) {
-                val expandAction = device.wait(
-                    Until.findObject(By.res("com.android.systemui", "expand_button")),
-                    NOTIFICATION_ACTION_PROBE_MILLIS,
-                ) ?: device.wait(
-                    Until.findObject(By.descContains("Expand")),
-                    NOTIFICATION_ACTION_PROBE_MILLIS,
-                )
+                // 通知面板可能同时存在多个折叠通知，必须在本应用标题所属的 row 内找按钮。
+                // 全局查找第一个 expand_button 会展开无关通知，并导致 action 误判为缺失。
+                val expandAction = notificationRow?.findObject(
+                    By.res("com.android.systemui", "expand_button"),
+                ) ?: notificationRow?.findObject(By.descContains("Expand"))
                 assertNotNull("折叠通知没有可用的展开控件", expandAction)
                 checkNotNull(expandAction).click()
-                stopAction = device.wait(
-                    Until.findObject(By.text("停止映射")),
-                    NOTIFICATION_TIMEOUT_MILLIS,
+                stopAction = waitForNotificationAction(
+                    device = device,
+                    notificationTitle = "音量键映射正在运行",
+                    actionText = "停止映射",
+                    timeoutMillis = NOTIFICATION_TIMEOUT_MILLIS,
                 )
             }
             assertNotNull("常驻通知缺少停止映射 action", stopAction)
@@ -191,24 +199,43 @@ class RealSystemVolumeE2eTest {
             }
             assertFalse("通知停止后不应继续消费按键", coordinator.runtime.value.canInterceptKeys)
         } finally {
-            MappingControllerService.stop(composeRule.activity)
-            coordinator.disarm()
-            if (!prepareExternalJourney) {
-                repository.updateOutputMap(originalSettings.outputMap)
-                repository.updateKeyConfig(originalSettings.keyConfig)
-                repository.updateShowSystemUi(originalSettings.showSystemVolumeUi)
-                repository.flushPendingWrite()
-            }
-            restoreAccessibilitySettings(
-                automation = automation,
-                originalServices = originalAccessibilityServices,
-                originalEnabled = originalAccessibilityEnabled,
+            runCleanupSteps(
+                { MappingControllerService.stop(composeRule.activity) },
+                { coordinator.disarm() },
+                {
+                    if (!prepareExternalJourney) {
+                        runBlocking { repository.replaceSettingsAndAwait(originalSettings) }
+                    }
+                },
+                {
+                    restoreAccessibilitySettings(
+                        automation = automation,
+                        originalServices = originalAccessibilityServices,
+                        originalEnabled = originalAccessibilityEnabled,
+                    )
+                },
+                { configurator.uiAutomationFlags = originalUiAutomationFlags },
+                {
+                    // pm revoke 会终止目标进程，也会连带杀死当前 instrumentation runner。
+                    // 测试入口在每轮前 pm clear，通知权限不需要在 runner 内撤销。
+                    shell(automation, "input keyevent KEYCODE_BACK")
+                },
             )
-            configurator.uiAutomationFlags = originalUiAutomationFlags
-            // pm revoke 会终止目标进程，也会连带杀死当前 instrumentation runner。
-            // 测试入口在每轮前 pm clear，通知权限不需要在 runner 内撤销。
-            shell(automation, "input keyevent KEYCODE_BACK")
         }
+    }
+
+    private fun runCleanupSteps(vararg steps: () -> Unit) {
+        var firstFailure: Throwable? = null
+        steps.forEach { step ->
+            runCatching(step).onFailure { failure ->
+                if (firstFailure == null) {
+                    firstFailure = failure
+                } else {
+                    firstFailure.addSuppressed(failure)
+                }
+            }
+        }
+        firstFailure?.let { throw it }
     }
 
     private fun enableOnlyRequiredAccessibilityService(
@@ -285,6 +312,34 @@ class RealSystemVolumeE2eTest {
         }
     }
 
+    private fun notificationRowFor(node: UiObject2?): UiObject2? {
+        var current = node
+        while (
+            current != null &&
+            current.resourceName != SYSTEM_UI_NOTIFICATION_ROW_RESOURCE
+        ) {
+            current = current.parent
+        }
+        return current
+    }
+
+    private fun waitForNotificationAction(
+        device: UiDevice,
+        notificationTitle: String,
+        actionText: String,
+        timeoutMillis: Long,
+    ): UiObject2? {
+        val deadline = SystemClock.uptimeMillis() + timeoutMillis
+        do {
+            device.findObjects(By.text(actionText)).forEach { candidate ->
+                val row = notificationRowFor(candidate) ?: return@forEach
+                if (row.findObject(By.text(notificationTitle)) != null) return candidate
+            }
+            Thread.sleep(NOTIFICATION_ACTION_POLL_MILLIS)
+        } while (SystemClock.uptimeMillis() < deadline)
+        return null
+    }
+
     private fun shell(automation: UiAutomation, command: String): String =
         ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))
             .bufferedReader()
@@ -317,7 +372,9 @@ class RealSystemVolumeE2eTest {
         const val CONTROLLER_TIMEOUT_MILLIS = 10_000L
         const val SETTINGS_TIMEOUT_MILLIS = 5_000L
         const val NOTIFICATION_TIMEOUT_MILLIS = 5_000L
-        const val NOTIFICATION_ACTION_PROBE_MILLIS = 1_500L
+        const val NOTIFICATION_ACTION_POLL_MILLIS = 100L
         const val ARG_PREPARE_EXTERNAL = "e2ePrepareOnly"
+        const val SYSTEM_UI_NOTIFICATION_ROW_RESOURCE =
+            "com.android.systemui:id/expandableNotificationRow"
     }
 }

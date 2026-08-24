@@ -3,6 +3,7 @@ package dev.spcdts.volumemapper.runtime
 import dev.spcdts.volumemapper.core.ActiveVolumePress
 import dev.spcdts.volumemapper.core.AudioRouteDescriptor
 import dev.spcdts.volumemapper.core.AudioRouteType
+import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
 import dev.spcdts.volumemapper.core.RouteConfidence
@@ -11,6 +12,7 @@ import dev.spcdts.volumemapper.core.VolumeMappingState
 import dev.spcdts.volumemapper.core.VolumePosition
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -27,6 +29,51 @@ class MappingCoordinatorStateTest {
     )
 
     @Test
+    fun `mapping position continuity scenarios`() {
+        `matching snapshot cannot retain an exact position without mapping state`()
+        `idle state retains its exact slot only while platform state is unchanged`()
+        `active state never crosses a new gesture boundary`()
+        `state target must match observed index before exact position is retained`()
+    }
+
+    @Test
+    fun `coordinator timing and snapshot acceptance scenarios`() {
+        `minimum hold interval cannot outrun the coordinator write gate`()
+        `write queue uses attempt time and preserves adjacent pending targets`()
+        `single index range is effectively fixed even when backend flag is false`()
+        `accepted snapshot publishes ready status from resulting state`()
+    }
+
+    fun `minimum hold interval cannot outrun the coordinator write gate`() {
+        assertTrue(
+            COORDINATOR_MIN_WRITE_INTERVAL_MILLIS <= COORDINATOR_TICK_INTERVAL_MILLIS,
+        )
+        assertTrue(
+            COORDINATOR_TICK_INTERVAL_MILLIS <=
+                KeyMappingConfig.MIN_HOLD_STEP_INTERVAL_MILLIS,
+        )
+    }
+
+    fun `write queue uses attempt time and preserves adjacent pending targets`() {
+        val writes = CoordinatorWriteQueue<Int>(minimumIntervalMillis = 50L)
+
+        writes.recordAttemptStarted(nowMillis = 100L)
+        // Simulate a Binder call that returns at 140 ms. Completion does not move the write gate,
+        // so the adjacent 150 ms ticker slot remains eligible.
+        writes.enqueue(2)
+        assertEquals(2, writes.takeNextIfReady(nowMillis = 150L))
+
+        // A one-millisecond actor phase offset must retain both adjacent targets in FIFO order.
+        writes.recordAttemptStarted(nowMillis = 151L)
+        writes.enqueue(3)
+        writes.enqueue(4)
+        assertNull(writes.takeNextIfReady(nowMillis = 200L))
+        assertEquals(3, writes.takeNextIfReady(nowMillis = 201L))
+        writes.recordAttemptStarted(nowMillis = 201L)
+        assertNull(writes.takeNextIfReady(nowMillis = 250L))
+        assertEquals(4, writes.takeNextIfReady(nowMillis = 251L))
+    }
+
     fun `matching snapshot cannot retain an exact position without mapping state`() {
         assertFalse(
             canKeepMappingPosition(
@@ -39,7 +86,6 @@ class MappingCoordinatorStateTest {
         )
     }
 
-    @Test
     fun `idle state retains its exact slot only while platform state is unchanged`() {
         val idle = VolumeMappingState(position = VolumePosition.ExactStep(stepIndex = 17))
         val sameBoundsWithDiagnosticDb = snapshot.copy(
@@ -65,7 +111,6 @@ class MappingCoordinatorStateTest {
         )
     }
 
-    @Test
     fun `active state never crosses a new gesture boundary`() {
         val active = VolumeMappingState(
             position = VolumePosition.ExactStep(stepIndex = 17),
@@ -79,7 +124,6 @@ class MappingCoordinatorStateTest {
         assertFalse(canKeepMappingPosition(active, 50, 50, snapshot, snapshot))
     }
 
-    @Test
     fun `state target must match observed index before exact position is retained`() {
         val stale = VolumeMappingState(position = VolumePosition.ExactStep(stepIndex = 18))
 
@@ -94,14 +138,12 @@ class MappingCoordinatorStateTest {
         )
     }
 
-    @Test
     fun `single index range is effectively fixed even when backend flag is false`() {
         assertTrue(isEffectivelyFixedVolume(true, RouteVolumeRange(0, 150)))
         assertTrue(isEffectivelyFixedVolume(false, RouteVolumeRange(7, 7)))
         assertFalse(isEffectivelyFixedVolume(false, RouteVolumeRange(0, 150)))
     }
 
-    @Test
     fun `accepted snapshot publishes ready status from resulting state`() {
         val probing = ControllerRuntimeState(
             isArmed = true,

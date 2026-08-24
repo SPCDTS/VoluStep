@@ -8,20 +8,45 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 class VolumeMappingReducerTest {
-    private val noAccelerationConfig = KeyMappingConfig(
+    private val fixedIntervalConfig = KeyMappingConfig(
         holdDelayMillis = 300L,
-        holdUnitsPerSecond = 0.2,
-        holdRampDurationMillis = 1_000L,
-        holdMaximumMultiplier = 1.0,
-        holdRampCurve = MappingCurve.linear(),
+        holdStepIntervalMillis = 500L,
     )
     private val sparseMap = StepVolumeMap(
         basisSpan = 10,
         offsets = listOf(0, 1, 4, 10),
     ).bind(RouteVolumeRange(minIndex = 5, maxIndex = 15))
-    private val sparseReducer = VolumeMappingReducer(sparseMap, noAccelerationConfig)
+    private val sparseReducer = VolumeMappingReducer(sparseMap, fixedIntervalConfig)
 
     @Test
+    fun `observed positions and short presses follow the configured table`() {
+        `initial state retains an observed index and derives its interpolated logical position`()
+        `observed index uses strict upper and lower configured steps`()
+        `exact short presses visit adjacent slots and reverse exactly`()
+        `repeated down is a strict no-op and cannot create a press`()
+    }
+
+    @Test
+    fun `hold timing advances only at configured intervals`() {
+        `hold retains fractional slots until one complete configured step accrues`()
+        `hold integration is independent of timer cadence and lands only on table indices`()
+        `configured hold interval advances exactly one slot per interval`()
+        `hold interval is constrained to the supported UI range`()
+    }
+
+    @Test
+    fun `release synchronization and cancellation preserve gesture invariants`() {
+        `matching key up integrates the final interval then clears gesture remainder`()
+        `unrelated key up leaves an active press untouched`()
+        `matching readback preserves exact slot while mismatches reanchor without writing`()
+        `cancel ends press and discards fractional hold remainder without changing target`()
+    }
+
+    @Test
+    fun `fixed volume routes never request writes`() {
+        `fixed volume route keeps its sole index and never requests writes`()
+    }
+
     fun `initial state retains an observed index and derives its interpolated logical position`() {
         val state = sparseReducer.initialState(observedIndex = 8)
 
@@ -32,7 +57,6 @@ class VolumeMappingReducerTest {
         expectIllegalArgument { sparseReducer.initialState(observedIndex = 4) }
     }
 
-    @Test
     fun `observed index uses strict upper and lower configured steps`() {
         val observed = sparseReducer.initialState(observedIndex = 8)
 
@@ -53,7 +77,6 @@ class VolumeMappingReducerTest {
         assertTrue(down.writeRequested)
     }
 
-    @Test
     fun `exact short presses visit adjacent slots and reverse exactly`() {
         var state = sparseReducer.initialState(observedIndex = 5)
 
@@ -102,7 +125,6 @@ class VolumeMappingReducerTest {
         assertEquals(VolumePosition.ExactStep(0), state.position)
     }
 
-    @Test
     fun `repeated down is a strict no-op and cannot create a press`() {
         val idle = sparseReducer.initialState(observedIndex = 8)
 
@@ -121,9 +143,8 @@ class VolumeMappingReducerTest {
         assertFalse(repeated.writeRequested)
     }
 
-    @Test
     fun `hold retains fractional slots until one complete configured step accrues`() {
-        val reducer = linearReducer(pressCount = 10, config = noAccelerationConfig)
+        val reducer = linearReducer(pressCount = 10, config = fixedIntervalConfig)
         val down = reducer.reduce(
             reducer.initialState(0),
             VolumeMappingAction.KeyDown(VolumeDirection.UP, eventTimeMillis = 0L),
@@ -154,12 +175,8 @@ class VolumeMappingReducerTest {
         assertTrue(completeSlot.writeRequested)
     }
 
-    @Test
     fun `hold integration is independent of timer cadence and lands only on table indices`() {
-        val acceleratingConfig = noAccelerationConfig.copy(
-            holdMaximumMultiplier = 3.0,
-        )
-        val reducer = linearReducer(pressCount = 10, config = acceleratingConfig)
+        val reducer = linearReducer(pressCount = 10, config = fixedIntervalConfig)
         val down = reducer.reduce(
             reducer.initialState(0),
             VolumeMappingAction.KeyDown(VolumeDirection.UP, eventTimeMillis = 0L),
@@ -180,13 +197,56 @@ class VolumeMappingReducerTest {
 
         assertEquals(oneTick.position, manyTicks.position)
         assertEquals(oneTick.heldStepRemainder, manyTicks.heldStepRemainder, TOLERANCE)
-        assertEquals(8, reducer.targetIndex(oneTick))
+        assertEquals(4, reducer.targetIndex(oneTick))
         assertTrue(reducer.targetIndex(oneTick) in reducer.stepMap.indices)
     }
 
-    @Test
+    fun `configured hold interval advances exactly one slot per interval`() {
+        val reducer = linearReducer(
+            pressCount = 10,
+            config = KeyMappingConfig(
+                holdDelayMillis = 300L,
+                holdStepIntervalMillis = 120L,
+            ),
+        )
+        val down = reducer.reduce(
+            reducer.initialState(0),
+            VolumeMappingAction.KeyDown(VolumeDirection.UP, eventTimeMillis = 0L),
+        ).state
+
+        val beforeInterval = reducer.reduce(
+            down,
+            VolumeMappingAction.AdvanceTime(nowMillis = 419L),
+        )
+        val firstInterval = reducer.reduce(
+            beforeInterval.state,
+            VolumeMappingAction.AdvanceTime(nowMillis = 420L),
+        )
+        val threeMoreIntervals = reducer.reduce(
+            firstInterval.state,
+            VolumeMappingAction.AdvanceTime(nowMillis = 780L),
+        )
+
+        assertEquals(1, beforeInterval.targetIndex)
+        assertEquals(119.0 / 120.0, beforeInterval.state.heldStepRemainder, TOLERANCE)
+        assertEquals(2, firstInterval.targetIndex)
+        assertEquals(0.0, firstInterval.state.heldStepRemainder, TOLERANCE)
+        assertEquals(5, threeMoreIntervals.targetIndex)
+    }
+
+    fun `hold interval is constrained to the supported UI range`() {
+        expectIllegalArgument { KeyMappingConfig(holdStepIntervalMillis = 59L) }
+        expectIllegalArgument { KeyMappingConfig(holdStepIntervalMillis = 61L) }
+        expectIllegalArgument { KeyMappingConfig(holdStepIntervalMillis = 70L) }
+        expectIllegalArgument { KeyMappingConfig(holdStepIntervalMillis = 499L) }
+        expectIllegalArgument { KeyMappingConfig(holdStepIntervalMillis = 501L) }
+        KeyMappingConfig(holdStepIntervalMillis = 60L)
+        KeyMappingConfig(holdStepIntervalMillis = 80L)
+        KeyMappingConfig(holdStepIntervalMillis = 500L)
+    }
+
     fun `matching key up integrates the final interval then clears gesture remainder`() {
-        val reducer = linearReducer(pressCount = 10, config = noAccelerationConfig)
+        val reducer = linearReducer(pressCount = 10, config = fixedIntervalConfig)
         val down = reducer.reduce(
             reducer.initialState(5),
             VolumeMappingAction.KeyDown(VolumeDirection.DOWN, eventTimeMillis = 0L),
@@ -209,7 +269,6 @@ class VolumeMappingReducerTest {
         assertFalse(later.writeRequested)
     }
 
-    @Test
     fun `unrelated key up leaves an active press untouched`() {
         val down = sparseReducer.reduce(
             sparseReducer.initialState(8),
@@ -225,9 +284,8 @@ class VolumeMappingReducerTest {
         assertFalse(unrelated.writeRequested)
     }
 
-    @Test
     fun `matching readback preserves exact slot while mismatches reanchor without writing`() {
-        val reducer = linearReducer(pressCount = 10, config = noAccelerationConfig)
+        val reducer = linearReducer(pressCount = 10, config = fixedIntervalConfig)
         val down = reducer.reduce(
             reducer.initialState(0),
             VolumeMappingAction.KeyDown(VolumeDirection.UP, eventTimeMillis = 0L),
@@ -264,11 +322,10 @@ class VolumeMappingReducerTest {
         assertFalse(forcedMismatch.writeRequested)
     }
 
-    @Test
     fun `fixed volume route keeps its sole index and never requests writes`() {
         val fixedMap = StepVolumeMap.linear(basisSpan = 10, pressCount = 5)
             .bind(RouteVolumeRange(minIndex = 7, maxIndex = 7))
-        val reducer = VolumeMappingReducer(fixedMap, noAccelerationConfig)
+        val reducer = VolumeMappingReducer(fixedMap, fixedIntervalConfig)
         val initial = reducer.initialState(7)
 
         val down = reducer.reduce(
@@ -289,14 +346,24 @@ class VolumeMappingReducerTest {
         assertEquals(7, held.targetIndex)
         assertEquals(7, released.targetIndex)
         assertEquals(0.0, reducer.logicalPosition(released.state), TOLERANCE)
+        assertEquals(
+            0.0,
+            VolumeMappingState(VolumePosition.ExactStep(0)).logicalPosition(fixedMap),
+            TOLERANCE,
+        )
+        expectIllegalArgument {
+            VolumeMappingState(VolumePosition.ExactStep(1)).logicalPosition(fixedMap)
+        }
+        expectIllegalArgument {
+            VolumeMappingState(VolumePosition.ObservedIndex(8)).logicalPosition(fixedMap)
+        }
         assertFalse(down.writeRequested)
         assertFalse(held.writeRequested)
         assertFalse(released.writeRequested)
     }
 
-    @Test
     fun `cancel ends press and discards fractional hold remainder without changing target`() {
-        val reducer = linearReducer(pressCount = 10, config = noAccelerationConfig)
+        val reducer = linearReducer(pressCount = 10, config = fixedIntervalConfig)
         val down = reducer.reduce(
             reducer.initialState(0),
             VolumeMappingAction.KeyDown(VolumeDirection.UP, eventTimeMillis = 0L),

@@ -9,6 +9,53 @@ import org.junit.Test
 
 class StepVolumeMapTest {
     @Test
+    fun `construction evaluation and legacy import scenarios`() {
+        `map validates basis endpoints count and strict offsets`()
+        `legacy constructors keep uniform x and offset evaluation interpolates`()
+        `free x coordinates drive piecewise evaluation and nearest point lookup`()
+        `continuous legacy curve is sampled and its floor and cap are expanded`()
+        `legacy plateau is projected to the closest strict integer sequence`()
+    }
+
+    @Test
+    fun `independent press and control count scenarios`() {
+        `changing press count leaves control polyline unchanged`()
+        `changing control point count retains free x instead of uniformizing old points`()
+        `adding a point never replaces constrained free x with a uniform grid`()
+        `single offset edit fixes endpoints and clamps between neighbours`()
+    }
+
+    @Test
+    fun `free x and y editing scenarios`() {
+        `x and combined edits fix endpoints and preserve strict axes`()
+        `touch edit pushes crossed neighbours while preserving the requested point`()
+    }
+
+    @Test
+    fun `rebase and authored detail preservation scenarios`() {
+        `rebase adopts a nonzero route range and its reduced effective count`()
+        `rebase preserves the already bound press targets when integer controls would drift`()
+        `same span binding preserves every authored offset exactly`()
+        `fewer control points than press states are interpolated at every press`()
+        `more control points than press states retain independent authored detail`()
+    }
+
+    @Test
+    fun `route projection scenarios`() {
+        `press count participates in map identity independently of control points`()
+        `zero to fifteen binding is strict and keeps fixed endpoints`()
+        `zero to one hundred fifty binding preserves fifty effective presses`()
+        `nonzero minimum binding offsets every projected target`()
+        `route with fewer intervals first reduces effective press count`()
+    }
+
+    @Test
+    fun `step navigation and optimal projection scenarios`() {
+        `next step is strict and accepts an observed index between targets`()
+        `fixed volume route has no effective or next step`()
+        `least squares projection is globally optimal and breaks ties toward lower indices`()
+    }
+
     fun `map validates basis endpoints count and strict offsets`() {
         expectIllegalArgument { StepVolumeMap(0, listOf(0, 0)) }
         expectIllegalArgument { StepVolumeMap(4, listOf(0)) }
@@ -18,10 +65,34 @@ class StepVolumeMapTest {
         expectIllegalArgument { StepVolumeMap(2, listOf(0, 1, 2, 3)) }
         expectIllegalArgument { StepVolumeMap(4, pressCount = 0, offsets = listOf(0, 4)) }
         expectIllegalArgument { StepVolumeMap(4, pressCount = 5, offsets = listOf(0, 4)) }
+        expectIllegalArgument {
+            StepVolumeMap(4, 2, normalizedXs = listOf(0.0), offsets = listOf(0, 4))
+        }
+        expectIllegalArgument {
+            StepVolumeMap(4, 2, normalizedXs = listOf(0.1, 1.0), offsets = listOf(0, 4))
+        }
+        expectIllegalArgument {
+            StepVolumeMap(4, 2, normalizedXs = listOf(0.0, 0.8), offsets = listOf(0, 4))
+        }
+        expectIllegalArgument {
+            StepVolumeMap(
+                4,
+                2,
+                normalizedXs = listOf(0.0, 0.7, 0.6, 1.0),
+                offsets = listOf(0, 1, 2, 4),
+            )
+        }
+        expectIllegalArgument {
+            StepVolumeMap(
+                4,
+                2,
+                normalizedXs = listOf(0.0, Double.NaN, 1.0),
+                offsets = listOf(0, 1, 4),
+            )
+        }
     }
 
-    @Test
-    fun `x coordinates are implicit uniform and offset evaluation interpolates`() {
+    fun `legacy constructors keep uniform x and offset evaluation interpolates`() {
         val map = StepVolumeMap(basisSpan = 20, offsets = listOf(0, 1, 4, 12, 20))
 
         assertEquals(4, map.pressCount)
@@ -35,7 +106,26 @@ class StepVolumeMapTest {
         expectIllegalArgument { map.evaluateOffset(Double.NaN) }
     }
 
-    @Test
+    fun `free x coordinates drive piecewise evaluation and nearest point lookup`() {
+        val map = StepVolumeMap(
+            basisSpan = 20,
+            pressCount = 4,
+            normalizedXs = listOf(0.0, 0.1, 0.6, 1.0),
+            offsets = listOf(0, 2, 5, 20),
+        )
+
+        assertEquals(2.9, map.evaluateOffset(0.25), TOLERANCE)
+        assertEquals(10.625, map.evaluateOffset(0.75), TOLERANCE)
+        assertEquals(1, map.closestControlPointIndex(0.2))
+        assertEquals(2, map.closestControlPointIndex(0.55))
+        assertEquals(0, map.closestControlPointIndex(-2.0))
+        assertEquals(3, map.closestControlPointIndex(2.0))
+        expectIllegalArgument { map.closestControlPointIndex(Double.NaN) }
+
+        // K + 1 runtime samples stay on the uniform 0, 1/K, ..., 1 key grid.
+        assertEquals(listOf(0, 3, 4, 11, 20), map.bind(RouteVolumeRange(0, 20)).indices)
+    }
+
     fun `continuous legacy curve is sampled and its floor and cap are expanded`() {
         val legacy = MappingCurve(
             listOf(
@@ -54,7 +144,6 @@ class StepVolumeMapTest {
         assertEquals(StepVolumeMap.linear(12, 3), StepVolumeMap.fromCurve(flat, 12, 3))
     }
 
-    @Test
     fun `legacy plateau is projected to the closest strict integer sequence`() {
         val plateau = MappingCurve(
             listOf(
@@ -72,11 +161,11 @@ class StepVolumeMapTest {
         assertStrictlyIncreasing(sampled.offsets)
     }
 
-    @Test
     fun `changing press count leaves control polyline unchanged`() {
         val original = StepVolumeMap(
             basisSpan = 20,
             pressCount = 8,
+            normalizedXs = listOf(0.0, 0.15, 1.0),
             offsets = listOf(0, 4, 20),
         )
 
@@ -84,6 +173,7 @@ class StepVolumeMapTest {
 
         assertEquals(4, changed.pressCount)
         assertEquals(3, changed.controlPointCount)
+        assertEquals(original.normalizedXs, changed.normalizedXs)
         assertEquals(original.offsets, changed.offsets)
         assertEquals(original.evaluateOffset(0.7), changed.evaluateOffset(0.7), TOLERANCE)
         assertSame(changed, changed.withPressCount(4))
@@ -91,29 +181,50 @@ class StepVolumeMapTest {
         expectIllegalArgument { original.withPressCount(21) }
     }
 
-    @Test
-    fun `changing control point count resamples shape without changing press count`() {
+    fun `changing control point count retains free x instead of uniformizing old points`() {
         val original = StepVolumeMap(
             basisSpan = 20,
             pressCount = 8,
-            offsets = listOf(0, 4, 20),
+            normalizedXs = listOf(0.0, 0.15, 0.6, 1.0),
+            offsets = listOf(0, 3, 8, 20),
         )
 
-        val expanded = original.resampleControlPoints(5)
+        val expanded = original.resampleControlPoints(6)
 
         assertEquals(8, expanded.pressCount)
-        assertEquals(5, expanded.controlPointCount)
-        assertEquals(listOf(0, 2, 4, 12, 20), expanded.offsets)
-        assertSame(expanded, expanded.resampleControlPoints(5))
-        assertEquals(
-            StepVolumeMap(basisSpan = 20, pressCount = 8, offsets = listOf(0, 20)),
-            expanded.resampleControlPoints(2),
+        assertEquals(6, expanded.controlPointCount)
+        assertDoublesEqual(
+            listOf(0.0, 0.15, 0.33, 0.6, 0.8, 1.0),
+            expanded.normalizedXs,
         )
+        assertEquals(listOf(0, 3, 5, 8, 14, 20), expanded.offsets)
+        original.normalizedXs.zip(original.offsets).forEach { authoredPoint ->
+            assertTrue(authoredPoint in expanded.normalizedXs.zip(expanded.offsets))
+        }
+        assertSame(expanded, expanded.resampleControlPoints(6))
+        assertEquals(original, expanded.resampleControlPoints(4))
+        val endpointsOnly = expanded.resampleControlPoints(2)
+        assertEquals(listOf(0.0, 1.0), endpointsOnly.normalizedXs)
+        assertEquals(listOf(0, 20), endpointsOnly.offsets)
         expectIllegalArgument { original.resampleControlPoints(1) }
         expectIllegalArgument { original.resampleControlPoints(22) }
     }
 
-    @Test
+    fun `adding a point never replaces constrained free x with a uniform grid`() {
+        val original = StepVolumeMap(
+            basisSpan = 5,
+            pressCount = 3,
+            normalizedXs = listOf(0.0, StepVolumeMap.MINIMUM_CONTROL_X_SPACING, 0.4, 1.0),
+            offsets = listOf(0, 3, 4, 5),
+        )
+
+        val expanded = original.resampleControlPoints(5)
+
+        assertEquals(listOf(0.0, StepVolumeMap.MINIMUM_CONTROL_X_SPACING, 0.4, 0.7, 1.0), expanded.normalizedXs)
+        original.normalizedXs.forEach { assertTrue(it in expanded.normalizedXs) }
+        assertStrictlyIncreasing(expanded.offsets)
+    }
+
     fun `single offset edit fixes endpoints and clamps between neighbours`() {
         val original = StepVolumeMap(20, listOf(0, 3, 8, 14, 20))
 
@@ -126,7 +237,36 @@ class StepVolumeMapTest {
         expectIllegalArgument { original.withOffset(5, 10) }
     }
 
-    @Test
+    fun `x and combined edits fix endpoints and preserve strict axes`() {
+        val original = StepVolumeMap(
+            basisSpan = 20,
+            pressCount = 8,
+            normalizedXs = listOf(0.0, 0.2, 0.6, 0.85, 1.0),
+            offsets = listOf(0, 3, 8, 14, 20),
+        )
+
+        assertSame(original, original.withNormalizedX(0, 0.1))
+        assertSame(original, original.withNormalizedX(4, 0.9))
+        assertEquals(0.35, original.withNormalizedX(2, 0.35).normalizedXAt(2), TOLERANCE)
+        assertEquals(
+            original.normalizedXAt(3) - StepVolumeMap.MINIMUM_CONTROL_X_SPACING,
+            original.withNormalizedX(2, 100.0).normalizedXAt(2),
+            TOLERANCE,
+        )
+
+        val moved = original.moveControlPointPushing(
+            controlPointIndex = 2,
+            requestedNormalizedX = 0.45,
+            requestedOffset = 19,
+        )
+        assertEquals(0.45, moved.normalizedXAt(2), TOLERANCE)
+        assertEquals(listOf(0, 3, 18, 19, 20), moved.offsets)
+        assertSame(original, original.moveControlPointPushing(0, 0.5, 10))
+        expectIllegalArgument { original.withNormalizedX(5, 0.5) }
+        expectIllegalArgument { original.withNormalizedX(2, Double.NaN) }
+        expectIllegalArgument { original.moveControlPointPushing(2, Double.NaN, 10) }
+    }
+
     fun `touch edit pushes crossed neighbours while preserving the requested point`() {
         val original = StepVolumeMap(20, listOf(0, 3, 8, 14, 20))
 
@@ -149,7 +289,6 @@ class StepVolumeMapTest {
         }
     }
 
-    @Test
     fun `rebase adopts a nonzero route range and its reduced effective count`() {
         val source = StepVolumeMap(
             basisSpan = 20,
@@ -164,7 +303,6 @@ class StepVolumeMapTest {
         expectIllegalArgument { source.rebase(RouteVolumeRange(7, 7)) }
     }
 
-    @Test
     fun `rebase preserves the already bound press targets when integer controls would drift`() {
         val source = StepVolumeMap(
             basisSpan = 4,
@@ -182,7 +320,6 @@ class StepVolumeMapTest {
         assertEquals(listOf(0, 2, 3), rebased.offsets)
     }
 
-    @Test
     fun `same span binding preserves every authored offset exactly`() {
         val source = StepVolumeMap(15, listOf(0, 1, 3, 9, 15))
 
@@ -192,7 +329,6 @@ class StepVolumeMapTest {
         assertEquals(source.pressCount, bound.effectivePressCount)
     }
 
-    @Test
     fun `fewer control points than press states are interpolated at every press`() {
         val source = StepVolumeMap(
             basisSpan = 20,
@@ -207,7 +343,6 @@ class StepVolumeMapTest {
         assertEquals(listOf(0, 2, 3, 7, 14, 20), bound.indices)
     }
 
-    @Test
     fun `more control points than press states retain independent authored detail`() {
         val source = StepVolumeMap(
             basisSpan = 20,
@@ -222,7 +357,6 @@ class StepVolumeMapTest {
         assertEquals(listOf(0, 2, 8, 20), bound.indices)
     }
 
-    @Test
     fun `press count participates in map identity independently of control points`() {
         val controls = listOf(0, 3, 12)
 
@@ -232,7 +366,6 @@ class StepVolumeMapTest {
         assertTrue(threePresses != fourPresses)
     }
 
-    @Test
     fun `zero to fifteen binding is strict and keeps fixed endpoints`() {
         val bound = StepVolumeMap.linear(150, 5).bind(RouteVolumeRange(0, 15))
 
@@ -241,7 +374,6 @@ class StepVolumeMapTest {
         assertStrictlyIncreasing(bound.indices)
     }
 
-    @Test
     fun `zero to one hundred fifty binding preserves fifty effective presses`() {
         val bound = StepVolumeMap.linear(150, 50).bind(RouteVolumeRange(0, 150))
 
@@ -252,7 +384,6 @@ class StepVolumeMapTest {
         assertTrue(bound.indices.zipWithNext().all { (left, right) -> right - left == 3 })
     }
 
-    @Test
     fun `nonzero minimum binding offsets every projected target`() {
         val source = StepVolumeMap(10, listOf(0, 1, 2, 8, 10))
 
@@ -262,7 +393,6 @@ class StepVolumeMapTest {
         assertEquals(4, bound.effectivePressCount)
     }
 
-    @Test
     fun `route with fewer intervals first reduces effective press count`() {
         val source = StepVolumeMap(
             basisSpan = 20,
@@ -275,7 +405,6 @@ class StepVolumeMapTest {
         assertEquals(listOf(5, 6, 7, 8, 9), bound.indices)
     }
 
-    @Test
     fun `next step is strict and accepts an observed index between targets`() {
         val bound = StepVolumeMap(15, listOf(0, 3, 12, 15))
             .bind(RouteVolumeRange(0, 15))
@@ -287,7 +416,6 @@ class StepVolumeMapTest {
         expectIllegalArgument { bound.nextStep(16, VolumeDirection.UP) }
     }
 
-    @Test
     fun `fixed volume route has no effective or next step`() {
         val bound = StepVolumeMap.linear(150, 50).bind(RouteVolumeRange(7, 7))
 
@@ -297,7 +425,6 @@ class StepVolumeMapTest {
         assertNull(bound.nextStep(7, VolumeDirection.DOWN))
     }
 
-    @Test
     fun `least squares projection is globally optimal and breaks ties toward lower indices`() {
         val targets = listOf(0.0, 1.5, 3.0)
 
@@ -322,6 +449,13 @@ class StepVolumeMapTest {
 
     private fun assertStrictlyIncreasing(values: List<Int>) {
         assertTrue(values.zipWithNext().all { (left, right) -> right > left })
+    }
+
+    private fun assertDoublesEqual(expected: List<Double>, actual: List<Double>) {
+        assertEquals(expected.size, actual.size)
+        expected.zip(actual).forEach { (expectedValue, actualValue) ->
+            assertEquals(expectedValue, actualValue, TOLERANCE)
+        }
     }
 
     private fun expectIllegalArgument(block: () -> Unit) {

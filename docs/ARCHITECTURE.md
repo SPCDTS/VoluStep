@@ -10,23 +10,23 @@ repeat → 只刷新 heartbeat；UP → 结束同一 token
         ↓
 x(t) ∈ {-1, 0, +1}
         ↓  仅 active press 启动 50 ms ticker，不依赖 OEM key-repeat 频率
-离散状态 q ∈ {0, …, K}；短按移动一个状态，长按累积完整状态数
-        ↓  在 P 个均匀控制点折线 C(x) 上按 q/K 采样，投影为严格递增表 I[q]
+离散状态 q ∈ {0, …, K}；短按移动一个状态，长按按固定间隔累积完整状态数
+        ↓  在 P 个自由 x 控制点折线 C(x) 上按均匀 q/K 采样，投影为严格递增表 I[q]
 STREAM_MUSIC 目标整数 index = I[q]
         ↓  setStreamVolume + 单 verification cycle 的约 80/380 ms 回读
 AudioPolicy → 蓝牙 AVRCP/VCS → 耳机固件
 ```
 
-`K` 表示从最小音量到最大音量需要的短按次数，`P` 表示搭建折线的控制点总数，两者独立保存。控制点横轴固定均匀，纵轴端点固定到配置基准跨度两端且严格递增；运行时在 `K_effective+1` 个按键位置采样折线，再用最小平方整数投影生成严格递增的实际 index 表，保证每次有效短按至少改变一个 Android index。较小路由只降低 `K_effective`，不会在编辑任一参数时覆盖完整 authored K/P。完整交互和投影规则见 [CURVE_EDITOR.md](CURVE_EDITOR.md)。
+`K` 表示从最小音量到最大音量需要的短按次数，`P` 表示搭建折线的控制点总数，两者独立保存。每个控制点保存自由且严格递增的 x 与整数 y；只有 `K_effective+1` 个实际按键位置固定均匀。运行时在这些位置采样折线，再用最小平方整数投影生成严格递增的实际 index 表，保证每次有效短按至少改变一个 Android index。较小路由只降低 `K_effective`，不会在编辑任一参数时覆盖完整 authored K/P。完整交互和投影规则见 [CURVE_EDITOR.md](CURVE_EDITOR.md)。
 
 ## 代码边界
 
 ```text
 core/
-  StepVolumeMap            独立 K/P、均匀控制点、整数 offset 与严格单调投影
+  StepVolumeMap            独立 K/P、自由 x 控制点、整数 offset 与严格单调投影
   BoundStepVolumeMap       把设置曲线绑定到当前路由的实际整数 index 表
-  MappingCurve             长按加速曲线、预设形状与旧设置迁移
-  VolumeMappingReducer     离散短按/长按/UP 状态机；orphan repeat 严格 no-op
+  MappingCurve             预设形状与旧设置迁移
+  VolumeMappingReducer     离散短按/固定间隔长按/UP 状态机；orphan repeat 严格 no-op
   RouteVolume              路由、范围、dB 表和快照模型
 
 audio/
@@ -38,14 +38,16 @@ runtime/
   MappingCoordinator             token owner、双 epoch、单 actor、节流、回读、fail-open
 
 data/
-  SettingsRepository       DataStore 持久化，拖动期间防抖写入
+  SettingsRepository       原子加载快照、FIFO 单写入 actor、拖动防抖与立即写 barrier
 
 ui/
-  CurveEditor              控制折线/按键落点画布、精确 index 编辑、步差与撤销/重做
-  VolumeMapperApp          控制、设置、披露和设备诊断
+  CurveEditor              自由控制点、双轴吸附、均匀按键落点和当前音量水平标记
+  VolumeMapperApp          单页控制、长按间隔、披露和折叠设备状态
 ```
 
 所有组件都在单进程中，避免 AccessibilityService、前台服务和 UI 各自持有不同状态。
+
+设置仓库把“当前设置 + 初始加载完成”作为一个原子 UI 快照发布；加载完成前主开关、曲线和长按配置均不可写。内存状态变更与完整快照入队在同一临界区线性化，普通拖动快照按入队时间做 trailing-edge 防抖，立即写作为 FIFO barrier，带回执请求只在 DataStore 实际落盘后完成。单次非取消写失败只拒绝当前请求，writer 继续处理后续完整快照。
 
 ## 按键一致性
 
@@ -75,7 +77,7 @@ Android 17 对后台音频焦点、播放和系统音量修改进行了强化。
 
 本项目采用：
 
-1. 用户在可见 Activity 中点击“启动映射”；
+1. 用户在可见 Activity 中打开顶部“控制”开关；
 2. Activity 启动 `foregroundServiceType="specialUse"` 服务；
 3. 服务立即显示可停止的常驻通知；
 4. AccessibilityService 只有在 FGS 健康时才消费新手势；
@@ -102,7 +104,7 @@ API 33+ 为媒体属性恰好返回一个设备时标记 `CONFIRMED`；返回多
 
 ## 写入、节流和故障放行
 
-- 连续长按写入按 70 ms 节流，稳态最多约 14 次/秒；首次 DOWN 和最终 UP 的强制写入不受这条稳态节流限制；
+- 连续长按用 50 ms ticker 与不超过一个 tick 的写入门限；最短 60 ms 配置平均最多约 16.7 个相邻状态/秒，门限不会把尚未写出的相邻状态合并；首次 DOWN 和最终 UP 的强制写入不受这条稳态门限限制；
 - UP 总是强制收敛到 reducer 的最终整数目标，避免最后一个已跨过但仍被节流的状态丢失；
 - 每次新手势先读取真实音量，并强制 `expectedIndex = observed`；如果 observed 正好是配置状态，短按移动到相邻状态；如果位于两个状态之间，则按方向选择严格大于或小于它的第一个目标；
 - active hold 的匹配回读会保留未满一个状态的时间余量；松手后余量清零。下一次新手势仅在平台 index、路由和范围都未变化时保留“当前是哪个精确配置状态”的身份；
