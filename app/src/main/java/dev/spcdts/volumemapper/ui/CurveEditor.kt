@@ -9,13 +9,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -28,8 +28,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
@@ -40,6 +42,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
@@ -83,7 +86,7 @@ fun MappingCurveEditor(
             (routeMinimum.orZero() + incomingMap.offsets[selectedStep]).toString(),
         )
     }
-    var sliderActionStart by remember { mutableStateOf<StepVolumeMap?>(null) }
+    var detailsExpanded by rememberSaveable { mutableStateOf(false) }
     var canvasGestureInProgress by remember { mutableStateOf(false) }
     var pendingExternalSource by remember { mutableStateOf<EditorSource?>(null) }
     var lastExternalSource by remember { mutableStateOf(incomingSource) }
@@ -100,7 +103,6 @@ fun MappingCurveEditor(
         indexText = (routeMinimum.orZero() + synchronizedMap.offsets[synchronizedSelection]).toString()
         undoStack = emptyList()
         redoStack = emptyList()
-        sliderActionStart = null
     }
 
     val publishCompletedAction: (StepVolumeMap, StepVolumeMap, Int) -> Unit =
@@ -215,27 +217,118 @@ fun MappingCurveEditor(
         append(" 步，Audio volume index 为 ")
         append(selectedActualIndex)
     }
+    val requestedPressCount = pressCountText.toIntOrNull()
+    val pressCountIsValid =
+        requestedPressCount != null && requestedPressCount in 1..maximumPressCount
+    val showPressCountApply = pressCountIsValid && requestedPressCount != editorMap.pressCount
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
-                text = "Y：Audio volume index $displayMinimum…$displayMaximum",
-                style = MaterialTheme.typography.labelLarge,
+                text = "按键次数",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall,
             )
+            IconButton(
+                onClick = {
+                    pressCountText = (editorMap.pressCount - 1).toString()
+                    applyPressCount()
+                },
+                enabled = editorReady && editorMap.pressCount > 1,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag(CurveEditorTestTags.PRESS_COUNT_DECREMENT)
+                    .semantics { contentDescription = "按键次数减少 1" },
+            ) {
+                Text("−", style = MaterialTheme.typography.titleLarge)
+            }
+            OutlinedTextField(
+                value = pressCountText,
+                onValueChange = { value ->
+                    if (value.isEmpty() || value.all(Char::isDigit)) pressCountText = value
+                },
+                enabled = editorReady,
+                singleLine = true,
+                isError = !pressCountIsValid,
+                label = { Text("K") },
+                trailingIcon = if (showPressCountApply) {
+                    {
+                        IconButton(
+                            onClick = applyPressCount,
+                            modifier = Modifier
+                                .testTag(CurveEditorTestTags.PRESS_COUNT_APPLY)
+                                .semantics { contentDescription = "应用按键次数" },
+                        ) {
+                            Text("✓")
+                        }
+                    }
+                } else {
+                    null
+                },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Done,
+                ),
+                keyboardActions = KeyboardActions(onDone = { applyPressCount() }),
+                modifier = Modifier
+                    .width(120.dp)
+                    .testTag(CurveEditorTestTags.PRESS_COUNT_INPUT)
+                    .semantics {
+                        contentDescription = "按键次数 K，可用范围 1 到 $maximumPressCount"
+                        if (!pressCountIsValid) {
+                            error("请输入 1 到 $maximumPressCount 之间的整数")
+                        }
+                    },
+            )
+            IconButton(
+                onClick = {
+                    pressCountText = (editorMap.pressCount + 1).toString()
+                    applyPressCount()
+                },
+                enabled = editorReady && editorMap.pressCount < maximumPressCount,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag(CurveEditorTestTags.PRESS_COUNT_INCREMENT)
+                    .semantics { contentDescription = "按键次数增加 1" },
+            ) {
+                Text("+", style = MaterialTheme.typography.titleLarge)
+            }
+        }
+
+        if (editorReady && !pressCountIsValid) {
             Text(
-                text = "X：0…$visiblePressCount 次按键（均匀固定）",
-                style = MaterialTheme.typography.labelLarge,
+                text = "请输入 1…$maximumPressCount 之间的整数",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
             )
         }
+
+        if (editorReady && editorMap.pressCount == editorMap.basisSpan) {
+            Text(
+                text = "每次固定 +1；减小 K 后可调整不同区段的步幅。",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        Text(
+            text = "均匀按键 0…$visiblePressCount  ·  Audio index $displayMinimum…$displayMaximum",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelMedium,
+        )
 
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(330.dp)
+                .height(260.dp)
                 .testTag(CurveEditorTestTags.CANVAS)
                 .semantics {
                     contentDescription =
-                        "音量映射曲线。横轴是均匀固定的按键次数，纵轴是整数 Audio volume index；可在固定列间拖动画笔"
+                        "音量映射曲线。横轴是均匀固定的按键次数，纵轴是整数 Audio volume index；触摸可在固定列间拖动画笔，TalkBack 用户可使用下方精确编辑"
                     stateDescription = canvasStateDescription
                 }
                 .pointerInput(
@@ -420,6 +513,12 @@ fun MappingCurveEditor(
             val columnSpacing = plotWidth / visiblePressCount.coerceAtLeast(1).toFloat()
             val pointRadius = (columnSpacing / 4f).coerceIn(2.dp.toPx(), 7.dp.toPx())
             actualIndices.forEachIndexed { step, index ->
+                val showPoint =
+                    columnSpacing >= 8.dp.toPx() ||
+                        step == 0 ||
+                        step == visiblePressCount ||
+                        step == safeSelectedStep
+                if (!showPoint) return@forEachIndexed
                 val point = pointFor(step, index)
                 val selected = step == safeSelectedStep
                 drawCircle(
@@ -466,300 +565,22 @@ fun MappingCurveEditor(
             safeSelectedStep == 0 -> null
             else -> actualIndices[safeSelectedStep] - actualIndices[safeSelectedStep - 1]
         }
-        Text(
-            text = buildString {
-                append("下方条带表示每次短按的 Δindex；色块越高，单次跨度越大。")
-                selectedDelta?.let { append(" 当前步 Δindex=+$it。") }
-            },
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall,
-        )
-
-        Text(
-            text = "按键次数 K",
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Text(
-            text = "K 表示从最小音量到最大音量需要的短按次数；曲线始终有 K+1 个等距状态。",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall,
-        )
-        if (editorReady && editorMap.pressCount == editorMap.basisSpan) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
-                text = "当前 K 已占满所有整数 index，每次只能 +1，严格曲线因此只有线性一种。先减小 K，才能把更多 Δindex 灵活分配到不同区段。",
-                color = MaterialTheme.colorScheme.tertiary,
-                style = MaterialTheme.typography.bodySmall,
+                text = buildString {
+                    append("第 $safeSelectedStep / $visiblePressCount 步  ·  index $selectedActualIndex")
+                    selectedDelta?.let { append("  ·  Δ+$it") }
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag(CurveEditorTestTags.SELECTED_STEP_VALUE),
+                style = MaterialTheme.typography.titleSmall,
             )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = pressCountText,
-                onValueChange = { value ->
-                    if (value.isEmpty() || value.all(Char::isDigit)) pressCountText = value
-                },
-                enabled = editorReady,
-                singleLine = true,
-                isError = pressCountText.toIntOrNull()?.let {
-                    it !in 1..maximumPressCount
-                } ?: true,
-                label = { Text("短按次数") },
-                supportingText = {
-                    Text(
-                        if (editorReady) "可用范围 1…$maximumPressCount" else "当前路由不可编辑",
-                    )
-                },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
-                    imeAction = ImeAction.Done,
-                ),
-                keyboardActions = KeyboardActions(onDone = { applyPressCount() }),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag(CurveEditorTestTags.PRESS_COUNT_INPUT),
-            )
-            Button(
-                onClick = applyPressCount,
-                enabled = editorReady &&
-                    pressCountText.toIntOrNull()?.let {
-                        it in 1..maximumPressCount && it != editorMap.pressCount
-                    } == true,
-                modifier = Modifier.testTag(CurveEditorTestTags.PRESS_COUNT_APPLY),
-                contentPadding = PaddingValues(horizontal = 14.dp),
-            ) {
-                Text("应用次数")
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedButton(
-                onClick = {
-                    pressCountText = (editorMap.pressCount - 1).toString()
-                    applyPressCount()
-                },
-                enabled = editorReady && editorMap.pressCount > 1,
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag(CurveEditorTestTags.PRESS_COUNT_DECREMENT),
-            ) {
-                Text("减少 1 次")
-            }
-            OutlinedButton(
-                onClick = {
-                    pressCountText = (editorMap.pressCount + 1).toString()
-                    applyPressCount()
-                },
-                enabled = editorReady && editorMap.pressCount < maximumPressCount,
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag(CurveEditorTestTags.PRESS_COUNT_INCREMENT),
-            ) {
-                Text("增加 1 次")
-            }
-        }
-
-        val commonPressCounts = remember(maximumPressCount, editorMap.pressCount) {
-            (COMMON_PRESS_COUNTS + editorMap.pressCount + maximumPressCount)
-                .filter { it in 1..maximumPressCount }
-                .distinct()
-                .sorted()
-        }
-        LazyRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag(CurveEditorTestTags.PRESS_COUNT_PRESETS),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(commonPressCounts, key = { it }) { count ->
-                FilterChip(
-                    selected = count == editorMap.pressCount,
-                    enabled = editorReady,
-                    onClick = {
-                        pressCountText = count.toString()
-                        applyPressCount()
-                    },
-                    label = { Text(count.toString()) },
-                )
-            }
-        }
-
-        Text(
-            text = "选择状态：第 $safeSelectedStep / $visiblePressCount 次短按",
-            modifier = Modifier.testTag(CurveEditorTestTags.SELECTED_STEP_VALUE),
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Slider(
-            value = safeSelectedStep.toFloat(),
-            onValueChange = { value ->
-                val nextStep = value.roundToInt().coerceIn(0, visiblePressCount)
-                selectedStep = nextStep
-                indexText = actualIndices[nextStep].toString()
-            },
-            enabled = editorReady,
-            valueRange = 0f..visiblePressCount.coerceAtLeast(1).toFloat(),
-            steps = (visiblePressCount - 1).coerceAtLeast(0),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag(CurveEditorTestTags.STEP_SELECTOR)
-                .semantics {
-                    contentDescription = "选择按键状态"
-                    stateDescription = "第 $safeSelectedStep 次短按"
-                },
-        )
-
-        Text(
-            text = "第 $safeSelectedStep 步：Audio volume index = $selectedActualIndex",
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Slider(
-            value = if (selectedCanMove) selectedActualIndex.toFloat() else 0f,
-            onValueChange = { value ->
-                if (sliderActionStart == null) sliderActionStart = editorMap
-                val nextIndex = value.roundToInt()
-                editorMap = editorMap.withOffset(
-                    safeSelectedStep,
-                    nextIndex - displayMinimum,
-                )
-                indexText = (displayMinimum + editorMap.offsets[safeSelectedStep]).toString()
-            },
-            onValueChangeFinished = {
-                val before = sliderActionStart
-                sliderActionStart = null
-                if (before != null) {
-                    publishCompletedAction(before, editorMap, safeSelectedStep)
-                }
-            },
-            enabled = selectedCanMove,
-            valueRange = if (selectedCanMove) {
-                selectedMinimumIndex.toFloat()..selectedMaximumIndex.toFloat()
-            } else {
-                0f..1f
-            },
-            steps = if (selectedCanMove) {
-                (selectedMaximumIndex - selectedMinimumIndex - 1).coerceAtLeast(0)
-            } else {
-                0
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag(CurveEditorTestTags.INDEX_SLIDER)
-                .semantics {
-                    contentDescription = "调整第 $safeSelectedStep 步的 Audio volume index"
-                    stateDescription = selectedActualIndex.toString()
-                },
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = indexText,
-                onValueChange = { value ->
-                    if (
-                        value.isEmpty() ||
-                        value == "-" ||
-                        value.removePrefix("-").all(Char::isDigit)
-                    ) {
-                        indexText = value
-                    }
-                },
-                enabled = selectedCanMove,
-                singleLine = true,
-                isError = selectedCanMove && indexText.toIntOrNull()?.let {
-                    it !in selectedMinimumIndex..selectedMaximumIndex
-                } != false,
-                label = { Text("Audio volume index") },
-                supportingText = {
-                    Text(
-                        if (selectedIsEndpoint) {
-                            "端点固定为 ${if (safeSelectedStep == 0) "最小" else "最大"}音量"
-                        } else if (!selectedCanMove) {
-                            "相邻状态已占满；可先减小 K，或在画布上推挤多个点"
-                        } else {
-                            "精确范围 $selectedMinimumIndex…$selectedMaximumIndex"
-                        },
-                    )
-                },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
-                    imeAction = ImeAction.Done,
-                ),
-                keyboardActions = KeyboardActions(onDone = { applyIndexText() }),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag(CurveEditorTestTags.INDEX_INPUT),
-            )
-            Button(
-                onClick = applyIndexText,
-                enabled = editorReady &&
-                    !selectedIsEndpoint &&
-                    indexText.toIntOrNull()?.let {
-                        it in selectedMinimumIndex..selectedMaximumIndex &&
-                            it != selectedActualIndex
-                    } == true,
-                modifier = Modifier.testTag(CurveEditorTestTags.APPLY),
-                contentPadding = PaddingValues(horizontal = 14.dp),
-            ) {
-                Text("应用")
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedButton(
-                onClick = {
-                    val before = editorMap
-                    val after = before.withOffset(
-                        safeSelectedStep,
-                        selectedActualIndex - 1 - displayMinimum,
-                    )
-                    publishCompletedAction(before, after, safeSelectedStep)
-                },
-                enabled = editorReady &&
-                    !selectedIsEndpoint &&
-                    selectedActualIndex > selectedMinimumIndex,
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag(CurveEditorTestTags.INDEX_DECREMENT),
-            ) {
-                Text("index −1")
-            }
-            OutlinedButton(
-                onClick = {
-                    val before = editorMap
-                    val after = before.withOffset(
-                        safeSelectedStep,
-                        selectedActualIndex + 1 - displayMinimum,
-                    )
-                    publishCompletedAction(before, after, safeSelectedStep)
-                },
-                enabled = editorReady &&
-                    !selectedIsEndpoint &&
-                    selectedActualIndex < selectedMaximumIndex,
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag(CurveEditorTestTags.INDEX_INCREMENT),
-            ) {
-                Text("index +1")
-            }
-        }
-
-        val linearMap = if (editorReady) {
-            StepVolumeMap.linear(editorMap.basisSpan, editorMap.pressCount)
-        } else {
-            null
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedButton(
+            IconButton(
                 onClick = {
                     val current = editorMap
                     val previous = undoStack.last()
@@ -775,12 +596,13 @@ fun MappingCurveEditor(
                 },
                 enabled = editorReady && undoStack.isNotEmpty(),
                 modifier = Modifier
-                    .weight(1f)
-                    .testTag(CurveEditorTestTags.UNDO),
+                    .heightIn(min = 48.dp)
+                    .testTag(CurveEditorTestTags.UNDO)
+                    .semantics { contentDescription = "撤销曲线编辑" },
             ) {
-                Text("撤销")
+                Text("↶", style = MaterialTheme.typography.titleLarge)
             }
-            OutlinedButton(
+            IconButton(
                 onClick = {
                     val current = editorMap
                     val next = redoStack.last()
@@ -794,24 +616,164 @@ fun MappingCurveEditor(
                 },
                 enabled = editorReady && redoStack.isNotEmpty(),
                 modifier = Modifier
-                    .weight(1f)
-                    .testTag(CurveEditorTestTags.REDO),
+                    .heightIn(min = 48.dp)
+                    .testTag(CurveEditorTestTags.REDO)
+                    .semantics { contentDescription = "重做曲线编辑" },
             ) {
-                Text("重做")
+                Text("↷", style = MaterialTheme.typography.titleLarge)
             }
         }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = if (selectedIsEndpoint) "端点固定" else "微调 index",
+                modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            IconButton(
+                onClick = {
+                    val before = editorMap
+                    val after = before.withOffset(
+                        safeSelectedStep,
+                        selectedActualIndex - 1 - displayMinimum,
+                    )
+                    publishCompletedAction(before, after, safeSelectedStep)
+                },
+                enabled = editorReady &&
+                    !selectedIsEndpoint &&
+                    selectedActualIndex > selectedMinimumIndex,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag(CurveEditorTestTags.INDEX_DECREMENT)
+                    .semantics { contentDescription = "Audio volume index 减少 1" },
+            ) {
+                Text("−1", style = MaterialTheme.typography.titleMedium)
+            }
+            IconButton(
+                onClick = {
+                    val before = editorMap
+                    val after = before.withOffset(
+                        safeSelectedStep,
+                        selectedActualIndex + 1 - displayMinimum,
+                    )
+                    publishCompletedAction(before, after, safeSelectedStep)
+                },
+                enabled = editorReady &&
+                    !selectedIsEndpoint &&
+                    selectedActualIndex < selectedMaximumIndex,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag(CurveEditorTestTags.INDEX_INCREMENT)
+                    .semantics { contentDescription = "Audio volume index 增加 1" },
+            ) {
+                Text("+1", style = MaterialTheme.typography.titleMedium)
+            }
+        }
+
         OutlinedButton(
-            onClick = {
-                linearMap?.let { resetMap ->
-                    publishCompletedAction(editorMap, resetMap, selectedStep)
-                }
-            },
-            enabled = linearMap != null && linearMap != editorMap,
+            onClick = { detailsExpanded = !detailsExpanded },
             modifier = Modifier
                 .fillMaxWidth()
-                .testTag(CurveEditorTestTags.RESET_LINEAR),
+                .heightIn(min = 48.dp)
+                .testTag(CurveEditorTestTags.DETAILS_TOGGLE)
+                .semantics {
+                    contentDescription = "精确编辑"
+                    stateDescription = if (detailsExpanded) "已展开" else "已折叠"
+                },
         ) {
-            Text("重置为线性曲线")
+            Text(if (detailsExpanded) "收起精确编辑 ︿" else "精确编辑 ﹀")
+        }
+
+        if (detailsExpanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "选择状态：第 $safeSelectedStep / $visiblePressCount 步",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Slider(
+                    value = safeSelectedStep.toFloat(),
+                    onValueChange = { value ->
+                        val nextStep = value.roundToInt().coerceIn(0, visiblePressCount)
+                        selectedStep = nextStep
+                        indexText = actualIndices[nextStep].toString()
+                    },
+                    enabled = editorReady,
+                    valueRange = 0f..visiblePressCount.coerceAtLeast(1).toFloat(),
+                    steps = (visiblePressCount - 1).coerceAtLeast(0),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag(CurveEditorTestTags.STEP_SELECTOR)
+                        .semantics {
+                            contentDescription = "选择按键状态"
+                            stateDescription = "第 $safeSelectedStep 次短按"
+                        },
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = indexText,
+                        onValueChange = { value ->
+                            if (
+                                value.isEmpty() ||
+                                value == "-" ||
+                                value.removePrefix("-").all(Char::isDigit)
+                            ) {
+                                indexText = value
+                            }
+                        },
+                        enabled = selectedCanMove,
+                        singleLine = true,
+                        isError = selectedCanMove && indexText.toIntOrNull()?.let {
+                            it !in selectedMinimumIndex..selectedMaximumIndex
+                        } != false,
+                        label = { Text("Audio volume index") },
+                        supportingText = {
+                            Text(
+                                if (selectedIsEndpoint) {
+                                    "端点固定为${if (safeSelectedStep == 0) "最小" else "最大"}音量"
+                                } else if (!selectedCanMove) {
+                                    "相邻状态已占满；可减小 K 或在画布上推挤"
+                                } else {
+                                    "可用范围 $selectedMinimumIndex…$selectedMaximumIndex"
+                                },
+                            )
+                        },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done,
+                        ),
+                        keyboardActions = KeyboardActions(onDone = { applyIndexText() }),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag(CurveEditorTestTags.INDEX_INPUT),
+                    )
+                    Button(
+                        onClick = applyIndexText,
+                        enabled = editorReady &&
+                            !selectedIsEndpoint &&
+                            indexText.toIntOrNull()?.let {
+                                it in selectedMinimumIndex..selectedMaximumIndex &&
+                                    it != selectedActualIndex
+                            } == true,
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag(CurveEditorTestTags.APPLY),
+                        contentPadding = PaddingValues(horizontal = 14.dp),
+                    ) {
+                        Text("确定")
+                    }
+                }
+            }
         }
 
         if (snapshot != null && routeSpan == 0) {
@@ -855,8 +817,6 @@ private fun Int?.orZero(): Int = this ?: 0
 
 private const val HISTORY_LIMIT = 50
 
-private val COMMON_PRESS_COUNTS = listOf(5, 8, 10, 15, 20, 30, 50, 75, 100, 150)
-
 object CurveEditorTestTags {
     const val CANVAS = "mapping_curve_canvas"
     const val PRESS_COUNT_INPUT = "mapping_curve_press_count_input"
@@ -874,6 +834,7 @@ object CurveEditorTestTags {
     const val UNDO = "mapping_curve_undo"
     const val REDO = "mapping_curve_redo"
     const val RESET_LINEAR = "mapping_curve_reset_linear"
+    const val DETAILS_TOGGLE = "mapping_curve_details_toggle"
 
     // Kept as source-compatible aliases while existing UI tests migrate to integer-step terms.
     const val POINT_SELECTOR = STEP_SELECTOR

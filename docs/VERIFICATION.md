@@ -1,5 +1,18 @@
 # 本机验证记录
 
+## 2026-08-24 简约 UI 重构
+
+本轮把高频操作留在默认层，把精确输入、按键响应、设备底层信息和后台排障建议改为按需展开；同时统一为单一蓝色强调色、中性 surface，并支持系统明暗模式。显著披露、fail-open、路由降级和固定音量提示没有因简化界面而删除。
+
+验证设备为 `VolumeMapper_API_37`，序列号 `emulator-5554`，分辨率 `1080×2400`，Android 17 / API 37。执行结果：
+
+- `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:lintRelease :app:assembleDebug :app:assembleRelease :app:bundleRelease`：通过；最终与设备测试合并执行时共完成 149 个 Gradle task；
+- `:app:connectedDebugAndroidTest`：3/3 通过，0 skip、0 failure；覆盖主导航与折叠设置、真实 `AudioManager` 集成，以及显著披露、无障碍连接、前台控制器和通知停止流程；
+- `scripts/emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild`：通过。宿主从空白应用数据开始完成披露，后台 evdev 音量键按离散映射完成 `5 → 11 → 5`，再从 SystemUI 常驻通知停止控制器并验证 fail-open；脚本在 `finally` 中恢复模拟器无障碍、音量与 adbd 状态；
+- 使用 Android CLI 检查控制、曲线默认层、精确编辑、诊断折叠区，并分别在系统浅色与深色模式目视复核；浅色状态栏使用深色系统图标，深色模式使用浅色图标。强制显示数字软键盘时，聚焦的 `K` 输入仍保持可见。没有发现 1080×2400 窄屏上的横向溢出、系统栏遮挡或不可达控件。截图保存在被 Git 忽略的 `artifacts/minimal-*.png`。
+
+本轮只有 API 37 模拟器连接，未把这次纯 UI 改动冒充为新的 Xiaomi / 蓝牙耳机真机验证；下方既有真机音频链路结论仍对应当时安装包与记录条件。
+
 ## 2026-08-24 离散按键曲线重构
 
 本节对应从基线 `c96f32b` 开始、与本记录一同提交的离散曲线工作树。旧版的连续 `x → V`、短按百分比和 dB 量化已经改为固定均匀横轴与整数 index 状态表；下方更早记录中的“1% / 0.7% / 40% 短按步长”是当时安装包的历史配置名称，不代表当前界面仍提供这些选项。

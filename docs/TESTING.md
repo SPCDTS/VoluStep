@@ -39,7 +39,7 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 
 仓库包含三项设备侧测试：
 
-- `MainActivityTest`：验证主导航、按键次数、选中点精调、撤销/重做与预设控件可达；
+- `MainActivityTest`：验证主导航、默认层的按键次数与曲线画布可达，并在展开“精确编辑”和“按键响应”后验证选中状态、整数输入、撤销/重做及低频设置；预设只验证可达，不在共享 DataStore 上写入测试配置；
 - `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造完整 DOWN/UP，并验证真实 `STREAM_MUSIC` index 改变和最终清理。
 - `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并从通知 action 停止映射；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性离散状态表。
 
