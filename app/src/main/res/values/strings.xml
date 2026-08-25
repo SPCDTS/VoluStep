@@ -109,7 +109,7 @@
     <string name="curve_action_move_point_up">Move control point up one available volume level</string>
     <string name="curve_action_move_point_down">Move control point down one available volume level</string>
     <string name="curve_action_delete_point">Delete selected control point</string>
-    <string name="curve_action_insert_point">Insert a control point in the selected segment</string>
+    <string name="curve_action_insert_point">Insert control point</string>
 
     <string name="runtime_mapping_disabled">Mapping is off</string>
     <string name="runtime_fixed_volume">The system reports fixed volume; default key behavior is restored</string>

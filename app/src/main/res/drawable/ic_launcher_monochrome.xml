@@ -12,10 +12,10 @@
         android:strokeLineJoin="round"
         android:strokeWidth="5.5" />
     <path
-        android:fillAlpha="0.22"
+        android:fillAlpha="0.42"
         android:fillColor="#FFFFFFFF"
         android:pathData="M58,39 a10,10 0,1 0,0,20 a10,10 0,1 0,0,-20" />
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M28,67 a5,5 0,1 0,0,10 a5,5 0,1 0,0,-10 M44,59 a5,5 0,1 0,0,10 a5,5 0,1 0,0,-10 M58,42 a7,7 0,1 0,0,14 a7,7 0,1 0,0,-14 M78,31 a5,5 0,1 0,0,10 a5,5 0,1 0,0,-10" />
+        android:pathData="M28,67 a5,5 0,1 0,0,10 a5,5 0,1 0,0,-10 M44,59 a5,5 0,1 0,0,10 a5,5 0,1 0,0,-10 M58,44 a5,5 0,1 0,0,10 a5,5 0,1 0,0,-10 M78,31 a5,5 0,1 0,0,10 a5,5 0,1 0,0,-10" />
 </vector>

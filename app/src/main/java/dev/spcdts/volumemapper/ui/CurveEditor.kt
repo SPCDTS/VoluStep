@@ -4,7 +4,6 @@ import android.graphics.Paint as AndroidPaint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
@@ -45,7 +44,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.SolidColor
@@ -184,6 +182,23 @@ fun MappingCurveEditor(
     val displayDenominator = displaySpan.coerceAtLeast(1)
     val editorReady = routeSpan?.let { it > 0 } ?: true
 
+    fun insertionSegmentIndexFor(map: StepVolumeMap): Int {
+        selectedSegment?.let { return it.coerceIn(0, map.controlSegmentCount - 1) }
+        val pointIndex = selectedControlPoint.coerceIn(map.normalizedXs.indices)
+        return pointIndex.coerceAtMost(map.controlSegmentCount - 1)
+    }
+
+    fun maximumControlPointCountFor(map: StepVolumeMap): Int = minOf(
+        MAXIMUM_CONTROL_POINT_COUNT,
+        map.pressCount + 1,
+        map.basisSpan + 1,
+    )
+
+    fun canInsertAtSegment(map: StepVolumeMap, segmentIndex: Int): Boolean =
+        map.pressPositionAt(segmentIndex + 1) - map.pressPositionAt(segmentIndex) >= 2 &&
+            map.offsets[segmentIndex + 1] - map.offsets[segmentIndex] >= 2 &&
+            map.controlPointCount < maximumControlPointCountFor(map)
+
     fun displayIndexForOffset(map: StepVolumeMap, offset: Int): Int = if (routeSpan != null) {
         if (routeSpan == 0) {
             displayMinimum
@@ -214,24 +229,16 @@ fun MappingCurveEditor(
         renderedMap.normalizedXForDisplayedIndex(displayedControlIndices, index)
     }
     val selectedIndex = selectedControlPoint.coerceIn(renderedMap.normalizedXs.indices)
-    val selectedSegmentIndex = selectedSegment?.takeIf {
-        it in 0 until renderedMap.controlSegmentCount
-    }
-    val maximumControlPointCount = minOf(
-        MAXIMUM_CONTROL_POINT_COUNT,
-        renderedMap.pressCount + 1,
-        renderedMap.basisSpan + 1,
+    val selectedSegmentIndex = selectedSegment?.coerceIn(
+        0,
+        renderedMap.controlSegmentCount - 1,
     )
+    val maximumControlPointCount = maximumControlPointCountFor(renderedMap)
     val canDeleteSelectedPoint = selectedSegmentIndex == null &&
         selectedIndex in 1 until renderedMap.controlSegmentCount &&
         renderedMap.controlPointCount > 2
-    val canInsertSelectedSegment = selectedSegmentIndex?.let { segmentIndex ->
-        renderedMap.pressPositionAt(segmentIndex + 1) -
-            renderedMap.pressPositionAt(segmentIndex) >= 2 &&
-            renderedMap.offsets[segmentIndex + 1] -
-            renderedMap.offsets[segmentIndex] >= 2 &&
-            renderedMap.controlPointCount < maximumControlPointCount
-    } ?: false
+    val selectedInsertionSegmentIndex = insertionSegmentIndexFor(renderedMap)
+    val canInsertAtSelection = canInsertAtSegment(renderedMap, selectedInsertionSegmentIndex)
     val density = LocalDensity.current
     val chartHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.42f)
         .coerceIn(280.dp, 360.dp)
@@ -244,13 +251,13 @@ fun MappingCurveEditor(
     val segmentHitRadiusPx = with(density) { 14.dp.toPx() }
 
     val primary = MaterialTheme.colorScheme.primary
+    val curve = MaterialTheme.colorScheme.onSurface
     val surface = MaterialTheme.colorScheme.surface
     val grid = MaterialTheme.colorScheme.outlineVariant
     val tick = MaterialTheme.colorScheme.onSurfaceVariant
-    val darkTheme = isSystemInDarkTheme()
-    val selection = primary
-    val current = if (darkTheme) Color(0xFF8ED4A5) else Color(0xFF2D7A4B)
-    val currentContent = if (darkTheme) Color(0xFF14351F) else Color.White
+    val selection = curve
+    val current = primary
+    val currentContent = MaterialTheme.colorScheme.onPrimary
 
     fun publish(
         next: StepVolumeMap,
@@ -271,15 +278,10 @@ fun MappingCurveEditor(
         latestOnMapCommitted(next)
     }
 
-    fun insertSelectedSegment(): Boolean {
+    fun insertAtSelection(): Boolean {
         val before = editorMap
-        val segmentIndex = selectedSegment?.takeIf {
-            it in 0 until before.controlSegmentCount
-        } ?: return false
-        val hasIntegerRoom = before.pressPositionAt(segmentIndex + 1) -
-            before.pressPositionAt(segmentIndex) >= 2 &&
-            before.offsets[segmentIndex + 1] - before.offsets[segmentIndex] >= 2
-        if (!editorReady || !hasIntegerRoom || before.controlPointCount >= maximumControlPointCount) {
+        val segmentIndex = insertionSegmentIndexFor(before)
+        if (!editorReady || !canInsertAtSegment(before, segmentIndex)) {
             return false
         }
         val after = before.insertControlPointAtSegment(segmentIndex)
@@ -514,8 +516,8 @@ fun MappingCurveEditor(
             )
             add(CustomAccessibilityAction(deletePointAction) { deleteSelectedControlPoint() })
         }
-        if (selectedSegmentIndex != null && canInsertSelectedSegment && editorReady) {
-            add(CustomAccessibilityAction(insertPointAction) { insertSelectedSegment() })
+        if (canInsertAtSelection && editorReady) {
+            add(CustomAccessibilityAction(insertPointAction) { insertAtSelection() })
         }
     }
 
@@ -531,11 +533,11 @@ fun MappingCurveEditor(
             enabled = editorReady,
             valueEditable = false,
             canDecrement = canDeleteSelectedPoint,
-            canIncrement = canInsertSelectedSegment,
+            canIncrement = canInsertAtSelection,
             onValueChange = { requested ->
                 when {
                     requested < renderedMap.controlPointCount -> deleteSelectedControlPoint()
-                    requested > renderedMap.controlPointCount -> insertSelectedSegment()
+                    requested > renderedMap.controlPointCount -> insertAtSelection()
                 }
             },
             valueTag = CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT,
@@ -930,7 +932,7 @@ fun MappingCurveEditor(
                     lineTo(controlPoints.last().x, plotBottom)
                     close()
                 }
-                drawPath(area, color = primary.copy(alpha = 0.075f))
+                drawPath(area, color = curve.copy(alpha = 0.055f))
 
                 val currentY = currentDisplayIndex?.let { pointFor(0.0, it).y }
                 if (currentY != null) {
@@ -969,7 +971,7 @@ fun MappingCurveEditor(
                 }
                 drawPath(
                     path = controlPath,
-                    color = primary,
+                    color = curve,
                     style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round),
                 )
                 selectedSegmentIndex?.let { segmentIndex ->
@@ -990,10 +992,10 @@ fun MappingCurveEditor(
                         cap = StrokeCap.Round,
                     )
                     drawLine(
-                        color = selection,
+                        color = curve,
                         start = start,
                         end = end,
-                        strokeWidth = 3.5.dp.toPx(),
+                        strokeWidth = 3.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
                 }
@@ -1031,29 +1033,27 @@ fun MappingCurveEditor(
                     val isSelected = selectedPointVisible && index == selectedIndex
                     if (isSelected) {
                         drawCircle(
-                            color = primary.copy(alpha = 0.13f),
+                            color = selection.copy(alpha = 0.10f),
                             radius = 12.dp.toPx(),
                             center = point,
                         )
                         drawCircle(
-                            color = primary.copy(alpha = 0.18f),
+                            color = selection.copy(alpha = 0.16f),
                             radius = 8.dp.toPx(),
                             center = point,
                         )
                     }
                     drawCircle(
-                        color = if (isSelected) primary else surface,
-                        radius = if (isSelected) 5.5.dp.toPx() else 4.2.dp.toPx(),
+                        color = surface,
+                        radius = 4.2.dp.toPx(),
                         center = point,
                     )
-                    if (!isSelected) {
-                        drawCircle(
-                            color = primary,
-                            radius = 4.2.dp.toPx(),
-                            center = point,
-                            style = Stroke(width = 1.6.dp.toPx()),
-                        )
-                    }
+                    drawCircle(
+                        color = curve,
+                        radius = 4.2.dp.toPx(),
+                        center = point,
+                        style = Stroke(width = 1.6.dp.toPx()),
+                    )
                 }
 
                 if (selectedPointVisible) {
@@ -1203,8 +1203,7 @@ private fun CompactCurveStepper(
     var draftEdited by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val darkTheme = isSystemInDarkTheme()
-    val containerColor = if (darkTheme) Color(0xFF28262C) else Color(0xFFF0EDF4)
+    val containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
     val contentColor = MaterialTheme.colorScheme.onSurface
     val emptyValueDescription = stringResource(R.string.curve_empty_value)
     val decreaseDescription = if (valueEditable) {

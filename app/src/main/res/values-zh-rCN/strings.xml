@@ -105,7 +105,7 @@
     <string name="curve_action_move_point_up">控制点上移一个可表示档位</string>
     <string name="curve_action_move_point_down">控制点下移一个可表示档位</string>
     <string name="curve_action_delete_point">删除选中控制点</string>
-    <string name="curve_action_insert_point">在选中线段中插入控制点</string>
+    <string name="curve_action_insert_point">插入控制点</string>
 
     <string name="runtime_mapping_disabled">尚未启用映射</string>
     <string name="runtime_fixed_volume">系统报告固定音量，已交还默认按键行为</string>

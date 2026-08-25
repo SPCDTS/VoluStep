@@ -72,6 +72,16 @@ class MainActivityTest {
 
     @Test
     fun singlePageShowsCoreControlsLargeChartAndCurrentVolumeSemantics() {
+        val launchMap = originalSettings.outputMap
+        val launchPointIndex = launchMap.controlPointCount / 2
+        waitForCurveState(
+            appString(R.string.curve_state_selected_point, launchPointIndex + 1),
+            appString(
+                R.string.curve_state_x,
+                launchMap.pressPositionAt(launchPointIndex),
+            ),
+        )
+
         useApplicationLocale("en-US")
         replaceSettings(testSettings(disclosureAccepted = false))
         val graph = (composeRule.activity.application as VolumeMapperApplication).graph
@@ -228,7 +238,7 @@ class MainActivityTest {
             appString(R.string.curve_state_x, 5),
         )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
-            .assertIsNotEnabled()
+            .assertIsEnabled()
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
             .assertIsEnabled()
             .performClick()
@@ -237,10 +247,12 @@ class MainActivityTest {
             appString(R.string.curve_state_selected_segment, 2),
             appString(R.string.curve_state_x_range, 3, 8),
         )
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
+            .assertIsEnabled()
     }
 
     @Test
-    fun controlPointButtonsDisableForEndpointsAndLocallyFullIntegerSegments() {
+    fun selectedPointInsertionUsesItsRightSegmentAndLastPointUsesItsLeftSegment() {
         val initialMap = testMap()
         replaceSettings(testSettings(outputMap = initialMap))
         val canvas = composeRule.onNodeWithTag(CurveEditorTestTags.CANVAS)
@@ -248,122 +260,67 @@ class MainActivityTest {
             .assertIsDisplayed()
         val canvasBounds = canvas.fetchSemanticsNode().boundsInRoot
 
-        // 两个端点固定，选中端点时不得删除，也不能在“点选择”状态插入。
-        val firstPoint = curvePointOnCanvas(
+        // 普通控制点的 + 作用于其右侧线段，而不是左侧线段或整张曲线。
+        val ordinaryPoint = curvePointOnCanvas(
             map = initialMap,
-            pointIndex = 0,
+            pointIndex = 1,
             canvasWidth = canvasBounds.width,
             canvasHeight = canvasBounds.height,
         )
-        canvas.performTouchInput { click(firstPoint) }
+        canvas.performTouchInput { click(ordinaryPoint) }
         waitForCurveState(
-            appString(R.string.curve_state_selected_point, 1),
-            appString(R.string.curve_state_x, 0),
+            appString(R.string.curve_state_selected_point, 2),
+            appString(R.string.curve_state_x, 3),
+        )
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
+            .assertIsEnabled()
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
+            .assertIsEnabled()
+            .performClick()
+        val insertedOnRight = StepVolumeMap(
+            basisSpan = 30,
+            pressCount = 18,
+            pressPositions = listOf(0, 3, 5, 8, 13, 18),
+            offsets = listOf(0, 3, 5, 8, 18, 30),
+        )
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap == insertedOnRight }
+        waitForCurveState(
+            appString(R.string.curve_state_selected_point, 3),
+            appString(R.string.curve_state_x, 5),
+        )
+        assertIntegerGrid(insertedOnRight)
+
+        // 最后一个控制点没有右侧线段，+ 明确回退到左侧线段。
+        replaceSettings(testSettings(outputMap = initialMap))
+        val lastPointIndex = initialMap.controlPointCount - 1
+        val lastPoint = curvePointOnCanvas(
+            map = initialMap,
+            pointIndex = lastPointIndex,
+            canvasWidth = canvasBounds.width,
+            canvasHeight = canvasBounds.height,
+        )
+        canvas.performTouchInput { click(lastPoint) }
+        waitForCurveState(
+            appString(R.string.curve_state_selected_point, lastPointIndex + 1),
+            appString(R.string.curve_state_x, 18),
         )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
             .assertIsNotEnabled()
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
-            .assertIsNotEnabled()
-        assertEquals(initialMap, settingsRepository.settings.value.outputMap)
-
-        // 局部没有空闲整数 x 的线段不可插入，即使整张图仍有其他可用位置。
-        val xFullSegmentMap = StepVolumeMap(
+            .assertIsEnabled()
+            .performClick()
+        val insertedOnLeft = StepVolumeMap(
             basisSpan = 30,
             pressCount = 18,
-            pressPositions = listOf(0, 1, 8, 13, 18),
-            offsets = listOf(0, 3, 8, 18, 30),
+            pressPositions = listOf(0, 3, 8, 13, 15, 18),
+            offsets = listOf(0, 3, 8, 18, 23, 30),
         )
-        replaceSettings(testSettings(outputMap = xFullSegmentMap))
-        canvas.performTouchInput {
-            click(
-                midpoint(
-                    curvePointOnCanvas(
-                        xFullSegmentMap,
-                        0,
-                        canvasBounds.width,
-                        canvasBounds.height,
-                    ),
-                    curvePointOnCanvas(
-                        xFullSegmentMap,
-                        1,
-                        canvasBounds.width,
-                        canvasBounds.height,
-                    ),
-                ),
-            )
-        }
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap == insertedOnLeft }
         waitForCurveState(
-            appString(R.string.curve_state_selected_segment, 1),
-            appString(R.string.curve_state_x_range, 0, 1),
+            appString(R.string.curve_state_selected_point, 5),
+            appString(R.string.curve_state_x, 15),
         )
-        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
-            .assertIsNotEnabled()
-
-        // y 同样是严格整数网格；没有空闲整数 index 时也不能悄悄移动其他点来插入。
-        val yFullSegmentMap = StepVolumeMap(
-            basisSpan = 30,
-            pressCount = 18,
-            pressPositions = listOf(0, 3, 8, 13, 18),
-            offsets = listOf(0, 1, 8, 18, 30),
-        )
-        replaceSettings(testSettings(outputMap = yFullSegmentMap))
-        canvas.performTouchInput {
-            click(
-                midpoint(
-                    curvePointOnCanvas(
-                        yFullSegmentMap,
-                        0,
-                        canvasBounds.width,
-                        canvasBounds.height,
-                    ),
-                    curvePointOnCanvas(
-                        yFullSegmentMap,
-                        1,
-                        canvasBounds.width,
-                        canvasBounds.height,
-                    ),
-                ),
-            )
-        }
-        waitForCurveState(
-            appString(R.string.curve_state_selected_segment, 1),
-            appString(R.string.curve_state_x_range, 0, 3),
-        )
-        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
-            .assertIsNotEnabled()
-
-        // P 的产品上限是 16；即使选中线段仍有空闲整数 X/Y，也不得继续插入。
-        val maximumPointMap = StepVolumeMap(
-            basisSpan = 30,
-            pressCount = 18,
-            pressPositions = (0..14).toList() + 18,
-            offsets = (0..14).toList() + 30,
-        )
-        replaceSettings(testSettings(outputMap = maximumPointMap))
-        canvas.performTouchInput {
-            click(
-                midpoint(
-                    curvePointOnCanvas(
-                        maximumPointMap,
-                        14,
-                        canvasBounds.width,
-                        canvasBounds.height,
-                    ),
-                    curvePointOnCanvas(
-                        maximumPointMap,
-                        15,
-                        canvasBounds.width,
-                        canvasBounds.height,
-                    ),
-                ),
-            )
-        }
-        waitForCurveState(
-            appString(R.string.curve_state_selected_segment, 15),
-            appString(R.string.curve_state_x_range, 14, 18),
-        )
-        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
-            .assertIsNotEnabled()
+        assertIntegerGrid(insertedOnLeft)
     }
 
     @Test
@@ -587,6 +544,7 @@ class MainActivityTest {
             R.string.curve_action_move_point_up,
             R.string.curve_action_move_point_down,
             R.string.curve_action_delete_point,
+            R.string.curve_action_insert_point,
         ).map { appString(it) }
         assertTrue(labels.containsAll(pointActionLabels))
         assertTrue(

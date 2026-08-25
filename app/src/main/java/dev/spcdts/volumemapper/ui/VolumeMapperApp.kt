@@ -8,7 +8,6 @@ import android.provider.Settings
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -53,7 +52,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
@@ -184,11 +182,7 @@ private fun MainScreen(
     onOpenAppSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val borderedSurfaceColor = if (isSystemInDarkTheme()) {
-        Color(0xFF3C3941)
-    } else {
-        Color(0xFFE1DEE6)
-    }
+    val borderedSurfaceColor = MaterialTheme.colorScheme.outlineVariant
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -212,7 +206,7 @@ private fun MainScreen(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(22.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
                 ),
                 border = BorderStroke(1.dp, borderedSurfaceColor),
             ) {
@@ -479,17 +473,13 @@ private fun DeviceCard(
             context.resolveLocalizedText(runtime.statusMessage),
         ),
     ).joinToString(separator = "\n")
-    val borderedSurfaceColor = if (isSystemInDarkTheme()) {
-        Color(0xFF3C3941)
-    } else {
-        Color(0xFFE1DEE6)
-    }
+    val borderedSurfaceColor = MaterialTheme.colorScheme.outlineVariant
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
         border = BorderStroke(1.dp, borderedSurfaceColor),
     ) {
@@ -584,7 +574,7 @@ private fun DeviceSettingRow(
     onClickLabel: String? = null,
     testTag: String? = null,
 ) {
-    val valueColor = if (isSystemInDarkTheme()) Color(0xFFB8C7E5) else Color(0xFF515E77)
+    val valueColor = MaterialTheme.colorScheme.onSurfaceVariant
     Row(
         modifier = Modifier
             .fillMaxWidth()
