@@ -25,15 +25,15 @@ import org.junit.Test
 
 class SettingsSerializationTest {
     @Test
-    fun `current settings and v3 codec scenarios`() {
-        `settings round trip preserves free x step map and fixed hold interval`()
-        `step map v3 codec round trips free x and rejects malformed points`()
+    fun `current settings and v4 codec scenarios`() {
+        `settings round trip preserves integer x step map and fixed hold interval`()
+        `step map v4 codec round trips integer x and migrates v3`()
         `settings write actor preserves fifo acknowledgements and survives one failure`()
     }
 
     @Test
     fun `version migration and fallback scenarios`() {
-        `step map v2 migrates independent counts onto uniform x`()
+        `step map v2 migrates onto integer x and dense v3 preserves runtime shape`()
         `step map v1 migrates losslessly with every press state as a control point`()
         `legacy v2 curve and point zero zero seven tap step migrate to 143 presses`()
         `malformed new step payload falls back to legacy curve and tap step`()
@@ -43,8 +43,8 @@ class SettingsSerializationTest {
     @Test
     fun `hold interval and downgrade shadow round trip scenarios`() {
         `hold interval accepts both limits and rejects values outside them`()
-        `encode keeps true x v2 curve and tap step shadow for downgraded builds`()
-        `legacy shadow restores independent control count and true x`()
+        `encode keeps integer x v2 curve and tap step shadow for downgraded builds`()
+        `legacy shadow restores independent control count and integer x`()
     }
 
     @Test
@@ -54,11 +54,11 @@ class SettingsSerializationTest {
         `curve codec rejects malformed v2 without affecting legacy support`()
     }
 
-    fun `settings round trip preserves free x step map and fixed hold interval`() {
+    fun `settings round trip preserves integer x step map and fixed hold interval`() {
         val outputMap = StepVolumeMap(
             basisSpan = 150,
             pressCount = 9,
-            normalizedXs = listOf(0.0, 0.08, 0.31, 0.72, 0.9, 1.0),
+            pressPositions = listOf(0, 1, 3, 6, 8, 9),
             offsets = listOf(0, 1, 4, 17, 58, 150),
         )
         val settings = VolumeMapperSettings(
@@ -82,30 +82,40 @@ class SettingsSerializationTest {
         assertEquals(outputMap, decoded.outputMap)
         assertEquals(140L, decoded.keyConfig.holdStepIntervalMillis)
         assertEquals(
-            "v3|150|9|0.0,0;0.08,1;0.31,4;0.72,17;0.9,58;1.0,150",
+            "v4|150|9|0,0;1,1;3,4;6,17;8,58;9,150",
             preferences[outputMapKey],
+        )
+        assertEquals(
+            listOf(0, 2, 6, 13, 18),
+            VolumeMapperSettings().outputMap.pressPositions,
         )
         assertEquals("INDEX", preferences[modeNameKey])
         assertNull(preferences[legacyModeKey])
     }
 
-    fun `step map v3 codec round trips free x and rejects malformed points`() {
+    fun `step map v4 codec round trips integer x and migrates v3`() {
         val map = StepVolumeMap(
             basisSpan = 12,
             pressCount = 6,
-            normalizedXs = listOf(0.0, 0.15, 0.7, 1.0),
+            pressPositions = listOf(0, 1, 4, 6),
             offsets = listOf(0, 1, 5, 12),
         )
         val encoded = SettingsSerialization.encodeStepVolumeMap(map)
 
-        assertEquals("v3|12|6|0.0,0;0.15,1;0.7,5;1.0,12", encoded)
+        assertEquals("v4|12|6|0,0;1,1;4,5;6,12", encoded)
         assertEquals(map, SettingsSerialization.decodeStepVolumeMap(encoded))
         assertThrowsIllegalArgument {
-            SettingsSerialization.decodeStepVolumeMap("v3|12|6|0.0,0;0.7,5;0.6,7;1.0,12")
+            SettingsSerialization.decodeStepVolumeMap("v4|12|6|0,0;4,5;3,7;6,12")
         }
         assertThrowsIllegalArgument {
-            SettingsSerialization.decodeStepVolumeMap("v3|12|6|0.0,0;0.7,5;1.0")
+            SettingsSerialization.decodeStepVolumeMap("v4|12|6|0,0;4,5;6")
         }
+
+        val migratedV3 = SettingsSerialization.decodeStepVolumeMap(
+            "v3|18|18|0.0,0;0.12,1;0.34,5;0.70,16;1.0,18",
+        )
+        assertEquals(listOf(0, 2, 6, 13, 18), migratedV3.pressPositions)
+        assertEquals(listOf(0, 1, 5, 16, 18), migratedV3.offsets)
     }
 
     fun `settings write actor preserves fifo acknowledgements and survives one failure`() =
@@ -184,15 +194,26 @@ class SettingsSerializationTest {
             retryWriter.cancelAndJoin()
         }
 
-    fun `step map v2 migrates independent counts onto uniform x`() {
+    fun `step map v2 migrates onto integer x and dense v3 preserves runtime shape`() {
         val migrated = SettingsSerialization.decodeStepVolumeMap("v2|12|6|0,1,5,12")
 
         assertEquals(6, migrated.pressCount)
+        assertEquals(listOf(0, 2, 4, 6), migrated.pressPositions)
         assertEquals(listOf(0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0), migrated.normalizedXs)
         assertEquals(listOf(0, 1, 5, 12), migrated.offsets)
         assertThrowsIllegalArgument {
             SettingsSerialization.decodeStepVolumeMap("v2|12|6|0,5,4,12")
         }
+
+        // v1-v3 allowed P > K + 1. Migration samples the old curve at every representable
+        // integer press instead of discarding it and falling back to the default map.
+        val denseV3 = SettingsSerialization.decodeStepVolumeMap(
+            "v3|12|3|0.0,0;0.1,1;0.2,2;0.4,4;0.6,7;0.8,9;1.0,12",
+        )
+        assertEquals(3, denseV3.pressCount)
+        assertEquals(listOf(0, 1, 2, 3), denseV3.pressPositions)
+        assertEquals(listOf(0, 3, 8, 12), denseV3.offsets)
+        assertEquals(listOf(0, 3, 8, 12), denseV3.bind(RouteVolumeRange(0, 12)).indices)
     }
 
     fun `step map v1 migrates losslessly with every press state as a control point`() {
@@ -200,6 +221,7 @@ class SettingsSerializationTest {
 
         assertEquals(3, migrated.pressCount)
         assertEquals(4, migrated.controlPointCount)
+        assertEquals(listOf(0, 1, 2, 3), migrated.pressPositions)
         assertEquals(listOf(0, 1, 5, 12), migrated.offsets)
         assertEquals(listOf(0, 1, 5, 12), migrated.bind(RouteVolumeRange(0, 12)).indices)
     }
@@ -307,11 +329,11 @@ class SettingsSerializationTest {
         )
     }
 
-    fun `encode keeps true x v2 curve and tap step shadow for downgraded builds`() {
+    fun `encode keeps integer x v2 curve and tap step shadow for downgraded builds`() {
         val outputMap = StepVolumeMap(
             basisSpan = 12,
             pressCount = 6,
-            normalizedXs = listOf(0.0, 0.15, 0.7, 1.0),
+            pressPositions = listOf(0, 1, 4, 6),
             offsets = listOf(0, 1, 5, 12),
         )
         val preferences = mutablePreferencesOf(
@@ -344,11 +366,11 @@ class SettingsSerializationTest {
         assertNull(preferences[stringPreferencesKey("hold_curve")])
     }
 
-    fun `legacy shadow restores independent control count and true x`() {
+    fun `legacy shadow restores independent control count and integer x`() {
         val source = StepVolumeMap(
             basisSpan = 150,
             pressCount = 9,
-            normalizedXs = listOf(0.0, 0.07, 0.4, 0.83, 1.0),
+            pressPositions = listOf(0, 1, 4, 7, 9),
             offsets = listOf(0, 1, 20, 80, 150),
         )
         val encoded = mutablePreferencesOf()

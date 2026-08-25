@@ -66,15 +66,15 @@ class VolumeKeyAudioIntegrationTest {
             val initialOffset = indexSpan / 3
             val mappedUpOffset = ((initialOffset.toDouble() / indexSpan + 0.4) * indexSpan + 0.5)
                 .toInt()
-            val freeXMap = StepVolumeMap(
+            val integerPressMap = StepVolumeMap(
                 basisSpan = indexSpan,
                 pressCount = 5,
-                normalizedXs = listOf(0.0, 0.4, 0.6, 1.0),
+                pressPositions = listOf(0, 2, 3, 5),
                 offsets = listOf(0, initialOffset, mappedUpOffset, indexSpan),
             )
-            val boundMap = freeXMap.bind(readySnapshot.range)
+            val boundMap = integerPressMap.bind(readySnapshot.range)
             val testSettings = originalSettings.copy(
-                outputMap = freeXMap,
+                outputMap = integerPressMap,
                 showSystemVolumeUi = false,
             )
             repository.updateOutputMap(testSettings.outputMap)

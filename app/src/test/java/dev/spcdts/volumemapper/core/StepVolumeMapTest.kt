@@ -12,21 +12,21 @@ class StepVolumeMapTest {
     fun `construction evaluation and legacy import scenarios`() {
         `map validates basis endpoints count and strict offsets`()
         `legacy constructors keep uniform x and offset evaluation interpolates`()
-        `free x coordinates drive piecewise evaluation and nearest point lookup`()
+        `integer press coordinates drive piecewise evaluation and nearest point lookup`()
         `continuous legacy curve is sampled and its floor and cap are expanded`()
         `legacy plateau is projected to the closest strict integer sequence`()
     }
 
     @Test
     fun `independent press and control count scenarios`() {
-        `changing press count leaves control polyline unchanged`()
-        `changing control point count retains free x instead of uniformizing old points`()
-        `adding a point never replaces constrained free x with a uniform grid`()
+        `changing press count strictly reprojects integer x`()
+        `changing control point count keeps both axes integer and strict`()
+        `adding points handles opposing horizontal and vertical gaps`()
         `single offset edit fixes endpoints and clamps between neighbours`()
     }
 
     @Test
-    fun `free x and y editing scenarios`() {
+    fun `integer x and y editing scenarios`() {
         `x and combined edits fix endpoints and preserve strict axes`()
         `touch edit pushes crossed neighbours while preserving the requested point`()
     }
@@ -37,7 +37,7 @@ class StepVolumeMapTest {
         `rebase preserves the already bound press targets when integer controls would drift`()
         `same span binding preserves every authored offset exactly`()
         `fewer control points than press states are interpolated at every press`()
-        `more control points than press states retain independent authored detail`()
+        `control points cannot outnumber integer press states`()
     }
 
     @Test
@@ -56,6 +56,7 @@ class StepVolumeMapTest {
         `least squares projection is globally optimal and breaks ties toward lower indices`()
     }
 
+    @Suppress("DEPRECATION")
     fun `map validates basis endpoints count and strict offsets`() {
         expectIllegalArgument { StepVolumeMap(0, listOf(0, 0)) }
         expectIllegalArgument { StepVolumeMap(4, listOf(0)) }
@@ -66,19 +67,27 @@ class StepVolumeMapTest {
         expectIllegalArgument { StepVolumeMap(4, pressCount = 0, offsets = listOf(0, 4)) }
         expectIllegalArgument { StepVolumeMap(4, pressCount = 5, offsets = listOf(0, 4)) }
         expectIllegalArgument {
-            StepVolumeMap(4, 2, normalizedXs = listOf(0.0), offsets = listOf(0, 4))
+            StepVolumeMap(4, 2, pressPositions = listOf(0), offsets = listOf(0, 4))
         }
         expectIllegalArgument {
-            StepVolumeMap(4, 2, normalizedXs = listOf(0.1, 1.0), offsets = listOf(0, 4))
+            StepVolumeMap(4, 2, pressPositions = listOf(1, 2), offsets = listOf(0, 4))
         }
         expectIllegalArgument {
-            StepVolumeMap(4, 2, normalizedXs = listOf(0.0, 0.8), offsets = listOf(0, 4))
+            StepVolumeMap(4, 2, pressPositions = listOf(0, 1), offsets = listOf(0, 4))
         }
         expectIllegalArgument {
             StepVolumeMap(
                 4,
                 2,
-                normalizedXs = listOf(0.0, 0.7, 0.6, 1.0),
+                pressPositions = listOf(0, 1, 1),
+                offsets = listOf(0, 1, 4),
+            )
+        }
+        expectIllegalArgument {
+            StepVolumeMap(
+                4,
+                2,
+                pressPositions = listOf(0, 1, 2, 2),
                 offsets = listOf(0, 1, 2, 4),
             )
         }
@@ -96,26 +105,30 @@ class StepVolumeMapTest {
         val map = StepVolumeMap(basisSpan = 20, offsets = listOf(0, 1, 4, 12, 20))
 
         assertEquals(4, map.pressCount)
+        assertEquals(listOf(0, 1, 2, 3, 4), map.pressPositions)
+        assertEquals(2, map.pressPositionAt(2))
         assertEquals(0.0, map.normalizedXAt(0), TOLERANCE)
         assertEquals(0.5, map.normalizedXAt(2), TOLERANCE)
         assertEquals(1.0, map.normalizedXAt(4), TOLERANCE)
         assertEquals(2.5, map.evaluateOffset(0.375), TOLERANCE)
         assertEquals(0.0, map.evaluateOffset(-1.0), TOLERANCE)
         assertEquals(20.0, map.evaluateOffset(2.0), TOLERANCE)
+        expectIllegalArgument { map.pressPositionAt(5) }
         expectIllegalArgument { map.normalizedXAt(5) }
         expectIllegalArgument { map.evaluateOffset(Double.NaN) }
     }
 
-    fun `free x coordinates drive piecewise evaluation and nearest point lookup`() {
+    fun `integer press coordinates drive piecewise evaluation and nearest point lookup`() {
         val map = StepVolumeMap(
             basisSpan = 20,
             pressCount = 4,
-            normalizedXs = listOf(0.0, 0.1, 0.6, 1.0),
-            offsets = listOf(0, 2, 5, 20),
+            pressPositions = listOf(0, 1, 2, 4),
+            offsets = listOf(0, 2, 6, 20),
         )
 
-        assertEquals(2.9, map.evaluateOffset(0.25), TOLERANCE)
-        assertEquals(10.625, map.evaluateOffset(0.75), TOLERANCE)
+        assertEquals(listOf(0.0, 0.25, 0.5, 1.0), map.normalizedXs)
+        assertEquals(4.0, map.evaluateOffset(0.375), TOLERANCE)
+        assertEquals(13.0, map.evaluateOffset(0.75), TOLERANCE)
         assertEquals(1, map.closestControlPointIndex(0.2))
         assertEquals(2, map.closestControlPointIndex(0.55))
         assertEquals(0, map.closestControlPointIndex(-2.0))
@@ -123,7 +136,7 @@ class StepVolumeMapTest {
         expectIllegalArgument { map.closestControlPointIndex(Double.NaN) }
 
         // K + 1 runtime samples stay on the uniform 0, 1/K, ..., 1 key grid.
-        assertEquals(listOf(0, 3, 4, 11, 20), map.bind(RouteVolumeRange(0, 20)).indices)
+        assertEquals(listOf(0, 2, 6, 13, 20), map.bind(RouteVolumeRange(0, 20)).indices)
     }
 
     fun `continuous legacy curve is sampled and its floor and cap are expanded`() {
@@ -161,31 +174,33 @@ class StepVolumeMapTest {
         assertStrictlyIncreasing(sampled.offsets)
     }
 
-    fun `changing press count leaves control polyline unchanged`() {
+    fun `changing press count strictly reprojects integer x`() {
         val original = StepVolumeMap(
             basisSpan = 20,
-            pressCount = 8,
-            normalizedXs = listOf(0.0, 0.15, 1.0),
-            offsets = listOf(0, 4, 20),
+            pressCount = 9,
+            pressPositions = listOf(0, 2, 6, 9),
+            offsets = listOf(0, 4, 11, 20),
         )
 
-        val changed = original.withPressCount(4)
+        val changed = original.withPressCount(5)
 
-        assertEquals(4, changed.pressCount)
-        assertEquals(3, changed.controlPointCount)
-        assertEquals(original.normalizedXs, changed.normalizedXs)
+        assertEquals(5, changed.pressCount)
+        assertEquals(4, changed.controlPointCount)
+        assertEquals(listOf(0, 1, 3, 5), changed.pressPositions)
+        assertEquals(listOf(0.0, 0.2, 0.6, 1.0), changed.normalizedXs)
+        assertStrictlyIncreasing(changed.pressPositions)
         assertEquals(original.offsets, changed.offsets)
-        assertEquals(original.evaluateOffset(0.7), changed.evaluateOffset(0.7), TOLERANCE)
-        assertSame(changed, changed.withPressCount(4))
+        assertSame(changed, changed.withPressCount(5))
         expectIllegalArgument { original.withPressCount(0) }
         expectIllegalArgument { original.withPressCount(21) }
+        expectIllegalArgument { original.withPressCount(2) }
     }
 
-    fun `changing control point count retains free x instead of uniformizing old points`() {
+    fun `changing control point count keeps both axes integer and strict`() {
         val original = StepVolumeMap(
             basisSpan = 20,
             pressCount = 8,
-            normalizedXs = listOf(0.0, 0.15, 0.6, 1.0),
+            pressPositions = listOf(0, 1, 5, 8),
             offsets = listOf(0, 3, 8, 20),
         )
 
@@ -193,35 +208,41 @@ class StepVolumeMapTest {
 
         assertEquals(8, expanded.pressCount)
         assertEquals(6, expanded.controlPointCount)
-        assertDoublesEqual(
-            listOf(0.0, 0.15, 0.33, 0.6, 0.8, 1.0),
-            expanded.normalizedXs,
-        )
-        assertEquals(listOf(0, 3, 5, 8, 14, 20), expanded.offsets)
-        original.normalizedXs.zip(original.offsets).forEach { authoredPoint ->
-            assertTrue(authoredPoint in expanded.normalizedXs.zip(expanded.offsets))
-        }
+        assertEquals(listOf(0, 1, 3, 5, 6, 8), expanded.pressPositions)
+        assertEquals(listOf(0, 3, 5, 8, 12, 20), expanded.offsets)
+        assertStrictlyIncreasing(expanded.pressPositions)
+        assertStrictlyIncreasing(expanded.offsets)
         assertSame(expanded, expanded.resampleControlPoints(6))
         assertEquals(original, expanded.resampleControlPoints(4))
         val endpointsOnly = expanded.resampleControlPoints(2)
+        assertEquals(listOf(0, 8), endpointsOnly.pressPositions)
         assertEquals(listOf(0.0, 1.0), endpointsOnly.normalizedXs)
         assertEquals(listOf(0, 20), endpointsOnly.offsets)
+
+        var resized = endpointsOnly
+        (2..9).forEach { pointCount ->
+            resized = resized.resampleControlPoints(pointCount)
+            assertEquals(pointCount, resized.controlPointCount)
+            assertStrictlyIncreasing(resized.pressPositions)
+            assertStrictlyIncreasing(resized.offsets)
+        }
         expectIllegalArgument { original.resampleControlPoints(1) }
-        expectIllegalArgument { original.resampleControlPoints(22) }
+        expectIllegalArgument { original.resampleControlPoints(10) }
     }
 
-    fun `adding a point never replaces constrained free x with a uniform grid`() {
+    fun `adding points handles opposing horizontal and vertical gaps`() {
         val original = StepVolumeMap(
-            basisSpan = 5,
-            pressCount = 3,
-            normalizedXs = listOf(0.0, StepVolumeMap.MINIMUM_CONTROL_X_SPACING, 0.4, 1.0),
-            offsets = listOf(0, 3, 4, 5),
+            basisSpan = 30,
+            pressCount = 5,
+            pressPositions = listOf(0, 2, 3, 5),
+            offsets = listOf(0, 1, 29, 30),
         )
 
-        val expanded = original.resampleControlPoints(5)
+        val expanded = original.resampleControlPoints(6)
 
-        assertEquals(listOf(0.0, StepVolumeMap.MINIMUM_CONTROL_X_SPACING, 0.4, 0.7, 1.0), expanded.normalizedXs)
-        original.normalizedXs.forEach { assertTrue(it in expanded.normalizedXs) }
+        assertEquals((0..5).toList(), expanded.pressPositions)
+        assertEquals(6, expanded.controlPointCount)
+        assertStrictlyIncreasing(expanded.pressPositions)
         assertStrictlyIncreasing(expanded.offsets)
     }
 
@@ -241,30 +262,28 @@ class StepVolumeMapTest {
         val original = StepVolumeMap(
             basisSpan = 20,
             pressCount = 8,
-            normalizedXs = listOf(0.0, 0.2, 0.6, 0.85, 1.0),
+            pressPositions = listOf(0, 2, 5, 7, 8),
             offsets = listOf(0, 3, 8, 14, 20),
         )
 
-        assertSame(original, original.withNormalizedX(0, 0.1))
-        assertSame(original, original.withNormalizedX(4, 0.9))
-        assertEquals(0.35, original.withNormalizedX(2, 0.35).normalizedXAt(2), TOLERANCE)
-        assertEquals(
-            original.normalizedXAt(3) - StepVolumeMap.MINIMUM_CONTROL_X_SPACING,
-            original.withNormalizedX(2, 100.0).normalizedXAt(2),
-            TOLERANCE,
-        )
+        assertSame(original, original.withPressPosition(0, 1))
+        assertSame(original, original.withPressPosition(4, 7))
+        assertEquals(3, original.withPressPosition(2, 3).pressPositionAt(2))
+        assertEquals(6, original.withPressPosition(2, 100).pressPositionAt(2))
 
         val moved = original.moveControlPointPushing(
             controlPointIndex = 2,
-            requestedNormalizedX = 0.45,
+            requestedPressPosition = 4,
             requestedOffset = 19,
         )
-        assertEquals(0.45, moved.normalizedXAt(2), TOLERANCE)
+        assertEquals(4, moved.pressPositionAt(2))
+        assertEquals(0.5, moved.normalizedXAt(2), TOLERANCE)
         assertEquals(listOf(0, 3, 18, 19, 20), moved.offsets)
-        assertSame(original, original.moveControlPointPushing(0, 0.5, 10))
-        expectIllegalArgument { original.withNormalizedX(5, 0.5) }
-        expectIllegalArgument { original.withNormalizedX(2, Double.NaN) }
-        expectIllegalArgument { original.moveControlPointPushing(2, Double.NaN, 10) }
+        assertStrictlyIncreasing(moved.pressPositions)
+        assertStrictlyIncreasing(moved.offsets)
+        assertSame(original, original.moveControlPointPushing(0, 4, 10))
+        expectIllegalArgument { original.withPressPosition(5, 4) }
+        expectIllegalArgument { original.moveControlPointPushing(5, 4, 10) }
     }
 
     fun `touch edit pushes crossed neighbours while preserving the requested point`() {
@@ -307,7 +326,8 @@ class StepVolumeMapTest {
         val source = StepVolumeMap(
             basisSpan = 4,
             pressCount = 2,
-            offsets = listOf(0, 2, 3, 4),
+            pressPositions = listOf(0, 1, 2),
+            offsets = listOf(0, 3, 4),
         )
         val range = RouteVolumeRange(minIndex = 5, maxIndex = 8)
 
@@ -340,21 +360,27 @@ class StepVolumeMapTest {
 
         assertEquals(3, source.controlPointCount)
         assertEquals(5, bound.effectivePressCount)
-        assertEquals(listOf(0, 2, 3, 7, 14, 20), bound.indices)
+        assertEquals(listOf(0, 2, 4, 9, 15, 20), bound.indices)
     }
 
-    fun `more control points than press states retain independent authored detail`() {
-        val source = StepVolumeMap(
-            basisSpan = 20,
-            pressCount = 3,
-            offsets = listOf(0, 1, 2, 4, 8, 14, 20),
-        )
-
-        val bound = source.bind(RouteVolumeRange(0, 20))
-
-        assertEquals(7, source.controlPointCount)
-        assertEquals(3, bound.effectivePressCount)
-        assertEquals(listOf(0, 2, 8, 20), bound.indices)
+    fun `control points cannot outnumber integer press states`() {
+        expectIllegalArgument {
+            StepVolumeMap(
+                basisSpan = 20,
+                pressCount = 3,
+                pressPositions = listOf(0, 1, 2, 3, 3),
+                offsets = listOf(0, 1, 4, 14, 20),
+            )
+        }
+        expectIllegalArgument {
+            StepVolumeMap(
+                basisSpan = 20,
+                pressCount = 3,
+                offsets = listOf(0, 1, 4, 14, 20),
+            )
+        }
+        val densest = StepVolumeMap.linear(20, pressCount = 3, controlPointCount = 4)
+        assertEquals(listOf(0, 1, 2, 3), densest.pressPositions)
     }
 
     fun `press count participates in map identity independently of control points`() {

@@ -14,6 +14,7 @@ import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.core.MappingCurve
 import dev.spcdts.volumemapper.core.MappingPoint
 import dev.spcdts.volumemapper.core.StepVolumeMap
+import dev.spcdts.volumemapper.core.StrictIntegerProjection
 import java.io.IOException
 import kotlin.math.ceil
 import kotlinx.coroutines.CancellationException
@@ -35,7 +36,7 @@ data class VolumeMapperSettings(
     val outputMap: StepVolumeMap = StepVolumeMap(
         basisSpan = DEFAULT_OUTPUT_BASIS_SPAN,
         pressCount = DEFAULT_OUTPUT_PRESS_COUNT,
-        normalizedXs = listOf(0.0, 0.12, 0.34, 0.70, 1.0),
+        pressPositions = listOf(0, 2, 6, 13, DEFAULT_OUTPUT_PRESS_COUNT),
         offsets = listOf(0, 1, 5, 16, DEFAULT_OUTPUT_BASIS_SPAN),
     ),
     val keyConfig: KeyMappingConfig = KeyMappingConfig(
@@ -347,15 +348,15 @@ internal object SettingsSerialization {
     }
 
     fun encodeStepVolumeMap(map: StepVolumeMap): String = buildString {
-        append(STEP_MAP_FORMAT_V3)
+        append(STEP_MAP_FORMAT_V4)
         append('|')
         append(map.basisSpan)
         append('|')
         append(map.pressCount)
         append('|')
         append(
-            map.normalizedXs.indices.joinToString(separator = ";") { index ->
-                "${java.lang.Double.toString(map.normalizedXs[index])},${map.offsets[index]}"
+            map.pressPositions.indices.joinToString(separator = ";") { index ->
+                "${map.pressPositions[index]},${map.offsets[index]}"
             },
         )
     }
@@ -363,6 +364,20 @@ internal object SettingsSerialization {
     fun decodeStepVolumeMap(encoded: String): StepVolumeMap {
         val components = encoded.split('|', limit = 4)
         return when (components.firstOrNull()) {
+            STEP_MAP_FORMAT_V4 -> {
+                require(components.size == 4)
+                val points = components[3].split(';').map { encodedPoint ->
+                    val parts = encodedPoint.split(',', limit = 2)
+                    require(parts.size == 2)
+                    parts[0].toInt() to parts[1].toInt()
+                }
+                StepVolumeMap(
+                    basisSpan = components[1].toInt(),
+                    pressCount = components[2].toInt(),
+                    pressPositions = points.map { it.first },
+                    offsets = points.map { it.second },
+                )
+            }
             STEP_MAP_FORMAT_V3 -> {
                 require(components.size == 4)
                 val points = components[3].split(';').map { encodedPoint ->
@@ -370,7 +385,7 @@ internal object SettingsSerialization {
                     require(parts.size == 2)
                     parts[0].toDouble() to parts[1].toInt()
                 }
-                StepVolumeMap(
+                migrateNormalizedStepMap(
                     basisSpan = components[1].toInt(),
                     pressCount = components[2].toInt(),
                     normalizedXs = points.map { it.first },
@@ -379,17 +394,25 @@ internal object SettingsSerialization {
             }
             STEP_MAP_FORMAT_V2 -> {
                 require(components.size == 4)
-                StepVolumeMap(
-                    basisSpan = components[1].toInt(),
-                    pressCount = components[2].toInt(),
-                    offsets = components[3].split(',').map(String::toInt),
+                val basisSpan = components[1].toInt()
+                val pressCount = components[2].toInt()
+                val offsets = components[3].split(',').map(String::toInt)
+                migrateNormalizedStepMap(
+                    basisSpan = basisSpan,
+                    pressCount = pressCount,
+                    normalizedXs = uniformNormalizedXs(offsets.size),
+                    offsets = offsets,
                 )
             }
             STEP_MAP_FORMAT_V1 -> {
                 require(components.size == 3)
-                StepVolumeMap(
-                    basisSpan = components[1].toInt(),
-                    offsets = components[2].split(',').map(String::toInt),
+                val basisSpan = components[1].toInt()
+                val offsets = components[2].split(',').map(String::toInt)
+                migrateNormalizedStepMap(
+                    basisSpan = basisSpan,
+                    pressCount = offsets.lastIndex,
+                    normalizedXs = uniformNormalizedXs(offsets.size),
+                    offsets = offsets,
                 )
             }
             else -> throw IllegalArgumentException("Unsupported step-map format")
@@ -419,9 +442,91 @@ internal object SettingsSerialization {
             pressCount = pressCount,
             controlPointCount = minOf(
                 legacyCurve.points.size,
+                pressCount + 1,
                 LEGACY_OUTPUT_BASIS_SPAN + 1,
             ),
         )
+    }
+
+    /** Migrates v1-v3 free-x payloads without falling back to a default curve. */
+    private fun migrateNormalizedStepMap(
+        basisSpan: Int,
+        pressCount: Int,
+        normalizedXs: List<Double>,
+        offsets: List<Int>,
+    ): StepVolumeMap {
+        require(basisSpan > 0) { "basisSpan must be positive" }
+        require(pressCount > 0) { "pressCount must be positive" }
+        require(pressCount <= basisSpan) { "pressCount cannot exceed basisSpan" }
+        require(normalizedXs.size == offsets.size) {
+            "normalizedXs and offsets must have the same size"
+        }
+        require(offsets.size in 2..basisSpan + 1) {
+            "controlPointCount must be between 2 and basisSpan + 1"
+        }
+        val canonicalXs = normalizedXs.mapIndexed { index, value ->
+            when {
+                index == 0 && kotlin.math.abs(value) <= LEGACY_X_EPSILON -> 0.0
+                index == normalizedXs.lastIndex &&
+                    kotlin.math.abs(value - 1.0) <= LEGACY_X_EPSILON -> 1.0
+                else -> value
+            }
+        }
+        require(canonicalXs.all { value -> value.isFinite() && value in 0.0..1.0 }) {
+            "normalized x values must be finite and inside 0..1"
+        }
+        require(canonicalXs.first() == 0.0 && canonicalXs.last() == 1.0) {
+            "normalized x endpoints must be 0 and 1"
+        }
+        require(canonicalXs.zipWithNext().all { (left, right) -> right > left }) {
+            "normalized x values must be strictly increasing"
+        }
+        require(offsets.first() == 0 && offsets.last() == basisSpan) {
+            "offset endpoints must be 0 and basisSpan"
+        }
+        require(offsets.zipWithNext().all { (left, right) -> right > left }) {
+            "offsets must be strictly increasing"
+        }
+
+        if (offsets.size <= pressCount + 1) {
+            return StepVolumeMap(
+                basisSpan = basisSpan,
+                pressCount = pressCount,
+                pressPositions = StrictIntegerProjection.project(
+                    targets = canonicalXs.map { x -> x * pressCount.toDouble() },
+                    span = pressCount,
+                ),
+                offsets = offsets,
+            )
+        }
+
+        // Old builds allowed P > K + 1. Preserve the authored shape by evaluating that curve on
+        // every integer press position, which is the densest representable canonical x grid.
+        val minimumSpacing = canonicalXs.zipWithNext { left, right -> right - left }.min()
+        val legacyCurve = MappingCurve(
+            points = canonicalXs.indices.map { index ->
+                MappingPoint(
+                    x = canonicalXs[index],
+                    y = offsets[index].toDouble() / basisSpan.toDouble(),
+                )
+            },
+            minimumXSpacing = minOf(
+                MappingCurve.DEFAULT_MINIMUM_X_SPACING,
+                minimumSpacing,
+            ),
+        )
+        return StepVolumeMap.fromCurve(
+            curve = legacyCurve,
+            basisSpan = basisSpan,
+            pressCount = pressCount,
+            controlPointCount = pressCount + 1,
+        )
+    }
+
+    private fun uniformNormalizedXs(count: Int): List<Double> = when {
+        count <= 0 -> emptyList()
+        count == 1 -> listOf(0.0)
+        else -> List(count) { index -> index.toDouble() / (count - 1).toDouble() }
     }
 
     private fun StepVolumeMap.toLegacyCurve(): MappingCurve = MappingCurve(
@@ -494,4 +599,6 @@ internal object SettingsSerialization {
     private const val STEP_MAP_FORMAT_V1 = "v1"
     private const val STEP_MAP_FORMAT_V2 = "v2"
     private const val STEP_MAP_FORMAT_V3 = "v3"
+    private const val STEP_MAP_FORMAT_V4 = "v4"
+    private const val LEGACY_X_EPSILON = 1e-12
 }

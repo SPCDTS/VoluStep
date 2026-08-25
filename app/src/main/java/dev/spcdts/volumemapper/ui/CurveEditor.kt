@@ -23,7 +23,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Icon
@@ -69,19 +68,17 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import kotlin.math.abs
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
  * Piecewise-linear volume map editor.
  *
- * P authored control points are free on both axes. K + 1 short-press positions stay uniformly
- * distributed over the x axis. X softly snaps to those positions; y always snaps to an integer
- * Audio volume index.
+ * Control points are authored on the integer press/index grid. K + 1 short-press positions stay
+ * uniformly distributed over the x axis, while the independently configurable control-point count
+ * is limited by the number of available integer press positions.
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
@@ -99,8 +96,6 @@ fun MappingCurveEditor(
         )
     }
     var gestureInProgress by remember { mutableStateOf(false) }
-    var xSnapGuide by remember { mutableStateOf<Double?>(null) }
-    var ySnapGuide by remember { mutableStateOf<Int?>(null) }
     var expectedCommittedMap by remember { mutableStateOf<StepVolumeMap?>(null) }
     var expectedCommitSourceMap by remember { mutableStateOf<StepVolumeMap?>(null) }
 
@@ -181,22 +176,18 @@ fun MappingCurveEditor(
     val currentX = currentDisplayIndex?.let { index ->
         renderedMap.normalizedXForDisplayedIndex(displayedControlIndices, index)
     }
-    val runtimePreview = renderedMap.bind(
-        snapshot?.range ?: RouteVolumeRange(0, renderedMap.basisSpan),
-    )
-
     val selectedIndex = selectedControlPoint.coerceIn(renderedMap.normalizedXs.indices)
-    val maximumControlPointCount = maxOf(
-        renderedMap.controlPointCount,
-        min(MAXIMUM_CONTROL_POINT_COUNT, renderedMap.basisSpan + 1),
+    val maximumControlPointCount = minOf(
+        MAXIMUM_CONTROL_POINT_COUNT,
+        renderedMap.pressCount + 1,
+        renderedMap.basisSpan + 1,
     )
     val density = LocalDensity.current
-    val leftPaddingPx = with(density) { 38.dp.toPx() }
+    val leftPaddingPx = with(density) { 62.dp.toPx() }
     val rightPaddingPx = with(density) { 12.dp.toPx() }
     val topPaddingPx = with(density) { 28.dp.toPx() }
-    val bottomPaddingPx = with(density) { 28.dp.toPx() }
+    val bottomPaddingPx = with(density) { 40.dp.toPx() }
     val hitRadiusPx = with(density) { 22.dp.toPx() }
-    val xSnapDistancePx = with(density) { 10.dp.toPx() }
 
     val primary = MaterialTheme.colorScheme.primary
     val surface = MaterialTheme.colorScheme.surface
@@ -207,10 +198,16 @@ fun MappingCurveEditor(
     val current = if (darkTheme) Color(0xFF8ED4A5) else Color(0xFF2D7A4B)
     val currentContent = if (darkTheme) Color(0xFF14351F) else Color.White
 
-    fun publish(next: StepVolumeMap, preferredX: Double) {
+    fun publish(
+        next: StepVolumeMap,
+        preferredX: Double,
+        preferredControlPointIndex: Int? = null,
+    ) {
         if (next == editorMap) return
         editorMap = next
-        selectedControlPoint = next.closestControlPointIndex(preferredX)
+        selectedControlPoint = preferredControlPointIndex
+            ?.coerceIn(next.normalizedXs.indices)
+            ?: next.closestControlPointIndex(preferredX)
         latestOnMapCommitted(next)
     }
 
@@ -224,16 +221,14 @@ fun MappingCurveEditor(
             return false
         }
 
-        val currentX = before.normalizedXAt(pointIndex)
-        val requestedX = if (pressDelta == 0) {
-            currentX
+        val currentPressPosition = before.pressPositionAt(pointIndex)
+        val requestedPressPosition = if (pressDelta == 0) {
+            currentPressPosition
         } else {
-            val candidate = currentX + pressDelta.toDouble() / before.pressCount.toDouble()
-            val minimumX = before.normalizedXAt(pointIndex - 1) +
-                StepVolumeMap.MINIMUM_CONTROL_X_SPACING
-            val maximumX = before.normalizedXAt(pointIndex + 1) -
-                StepVolumeMap.MINIMUM_CONTROL_X_SPACING
-            if (candidate !in minimumX..maximumX) return false
+            val candidate = currentPressPosition + pressDelta
+            val minimum = before.pressPositionAt(pointIndex - 1) + 1
+            val maximum = before.pressPositionAt(pointIndex + 1) - 1
+            if (candidate !in minimum..maximum) return false
             candidate
         }
 
@@ -259,7 +254,7 @@ fun MappingCurveEditor(
         }
         val after = before.moveControlPointPushing(
             controlPointIndex = pointIndex,
-            requestedNormalizedX = requestedX,
+            requestedPressPosition = requestedPressPosition,
             requestedOffset = requestedOffset,
         )
         if (after == before) return false
@@ -316,7 +311,7 @@ fun MappingCurveEditor(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         CompactCurveStepper(
-            label = "控制点 P",
+            label = "控制点数量",
             value = renderedMap.controlPointCount,
             minimum = 2,
             maximum = maximumControlPointCount,
@@ -333,25 +328,23 @@ fun MappingCurveEditor(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(224.dp)
+                .height(236.dp)
                 .testTag(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
                 .semantics {
                     contentDescription = buildString {
                         append(
-                            "音量映射图。横轴是均匀按键位置，纵轴是整数音量 index；" +
+                            "音量映射图。横轴是整数按键次数，纵轴是整数音量 index；" +
                                 "可通过更多操作选择和移动控制点。",
                         )
                         snapshot?.let { append("当前音量水平线 ${it.currentIndex}。") }
                     }
                     stateDescription = buildString {
-                        append("K ${renderedMap.pressCount}，P ${renderedMap.controlPointCount}")
-                        append("，已选第 ${selectedIndex + 1} 个控制点")
                         append(
-                            "，x ${(
-                                renderedMap.normalizedXAt(selectedIndex) *
-                                    renderedMap.pressCount
-                                ).formatAxisPosition()}",
+                            "按键次数 ${renderedMap.pressCount}，" +
+                                "控制点数量 ${renderedMap.controlPointCount}",
                         )
+                        append("，已选第 ${selectedIndex + 1} 个控制点")
+                        append("，x ${renderedMap.pressPositionAt(selectedIndex)}")
                         append("，index $selectedDisplayIndex")
                         append("，上下操作按当前路由可表示档位移动")
                         snapshot?.let { append("，当前音量 ${it.currentIndex}") }
@@ -412,12 +405,11 @@ fun MappingCurveEditor(
                             if (hitIndex == 0 || hitIndex == startMap.controlSegmentCount) {
                                 return@awaitEachGesture
                             }
-                            val currentX = startMap.normalizedXAt(hitIndex)
                             val canMoveX =
-                                currentX > startMap.normalizedXAt(hitIndex - 1) +
-                                StepVolumeMap.MINIMUM_CONTROL_X_SPACING ||
-                                    currentX < startMap.normalizedXAt(hitIndex + 1) -
-                                    StepVolumeMap.MINIMUM_CONTROL_X_SPACING
+                                startMap.pressPositionAt(hitIndex) >
+                                startMap.pressPositionAt(hitIndex - 1) + 1 ||
+                                    startMap.pressPositionAt(hitIndex) <
+                                    startMap.pressPositionAt(hitIndex + 1) - 1
                             val minimumOffset = hitIndex
                             val maximumOffset = startMap.basisSpan -
                                 (startMap.controlSegmentCount - hitIndex)
@@ -437,24 +429,11 @@ fun MappingCurveEditor(
                                         val rawX = ((change.position.x - plotLeft) / plotWidth)
                                             .coerceIn(0f, 1f)
                                             .toDouble()
-                                        val nearestPressX =
-                                            (rawX * gestureMap.pressCount).roundToInt().toDouble() /
-                                                gestureMap.pressCount.toDouble()
-                                        val leftX = gestureMap.normalizedXAt(hitIndex - 1)
-                                        val rightX = gestureMap.normalizedXAt(hitIndex + 1)
-                                        val nearestPressIsMovable =
-                                            nearestPressX > leftX +
-                                            StepVolumeMap.MINIMUM_CONTROL_X_SPACING &&
-                                                nearestPressX < rightX -
-                                                StepVolumeMap.MINIMUM_CONTROL_X_SPACING
-                                        val effectiveSnapDistancePx = min(
-                                            xSnapDistancePx,
-                                            plotWidth * 0.4f / gestureMap.pressCount.toFloat(),
-                                        )
-                                        val shouldSnapX = nearestPressIsMovable &&
-                                            abs(nearestPressX - rawX) * plotWidth <=
-                                            effectiveSnapDistancePx
-                                        val requestedX = if (shouldSnapX) nearestPressX else rawX
+                                        val requestedPressPosition =
+                                            (rawX * gestureMap.pressCount).roundToInt().coerceIn(
+                                                gestureMap.pressPositionAt(hitIndex - 1) + 1,
+                                                gestureMap.pressPositionAt(hitIndex + 1) - 1,
+                                            )
                                         val rawDisplayIndex = displayMinimum +
                                             (plotBottom - change.position.y) / plotHeight *
                                             displaySpan.toFloat()
@@ -479,26 +458,34 @@ fun MappingCurveEditor(
                                                 gestureMap.offsets[hitIndex],
                                             )
                                         }
-                                        val requestedOffset = referenceOffsetForDisplayIndex(
+                                        val currentOffset = gestureMap.offsets[hitIndex]
+                                        val currentDisplayedIndex = displayIndexForOffset(
                                             gestureMap,
-                                            requestedDisplayIndex,
+                                            currentOffset,
                                         )
+                                        val requestedOffset = if (
+                                            requestedDisplayIndex == currentDisplayedIndex
+                                        ) {
+                                            // Display-index projection can be many-to-one when a
+                                            // route has fewer steps than the editing basis. Keep
+                                            // the authored y exactly stable during a horizontal
+                                            // drag instead of round-tripping (for example 5 -> 3
+                                            // -> 6 on a 30-to-15 route).
+                                            currentOffset
+                                        } else {
+                                            referenceOffsetForDisplayIndex(
+                                                gestureMap,
+                                                requestedDisplayIndex,
+                                            )
+                                        }
                                         val moved = gestureMap.moveControlPointPushing(
                                             controlPointIndex = hitIndex,
-                                            requestedNormalizedX = requestedX,
+                                            requestedPressPosition = requestedPressPosition,
                                             requestedOffset = requestedOffset,
                                         )
                                         gestureMap = moved
                                         editorMap = moved
                                         selectedControlPoint = hitIndex
-                                        val actualX = moved.normalizedXAt(hitIndex)
-                                        xSnapGuide = nearestPressX.takeIf {
-                                            shouldSnapX && abs(actualX - nearestPressX) < 1e-5
-                                        }
-                                        ySnapGuide = displayIndexForOffset(
-                                            moved,
-                                            moved.offsets[hitIndex],
-                                        )
                                     change.consume()
                                 }
                             } finally {
@@ -522,8 +509,6 @@ fun MappingCurveEditor(
                                         replacement.closestControlPointIndex(previousX)
                                 }
                                 gestureInProgress = false
-                                xSnapGuide = null
-                                ySnapGuide = null
                             }
                         }
                     },
@@ -549,51 +534,135 @@ fun MappingCurveEditor(
                     textSize = 10.sp.toPx()
                     textAlign = AndroidPaint.Align.RIGHT
                 }
-                val axisFractions = listOf(0f, 1f / 3f, 2f / 3f, 1f)
-                axisFractions.forEach { fraction ->
-                    val y = plotBottom - fraction * plotHeight
+                val controlPoints = displayedControlIndices.mapIndexed { index, displayIndex ->
+                    pointFor(renderedMap.normalizedXAt(index), displayIndex.toDouble())
+                }
+                val selectedPoint = controlPoints[selectedIndex]
+                val selectedPressPosition = renderedMap.pressPositionAt(selectedIndex)
+                val axisValues = listOf(
+                    displayMinimum,
+                    displayMinimum + (displaySpan / 3.0).roundToInt(),
+                    displayMinimum + (displaySpan * 2.0 / 3.0).roundToInt(),
+                    displayMaximum,
+                ).distinct()
+
+                fun drawVolumeGlyph(centerY: Float, value: Int) {
+                    val color = tick.copy(alpha = 0.88f)
+                    val stroke = 1.35.dp.toPx()
+                    val originX = plotLeft - 54.dp.toPx()
+                    val speaker = Path().apply {
+                        moveTo(originX, centerY - 2.2.dp.toPx())
+                        lineTo(originX + 3.2.dp.toPx(), centerY - 2.2.dp.toPx())
+                        lineTo(originX + 7.2.dp.toPx(), centerY - 5.2.dp.toPx())
+                        lineTo(originX + 7.2.dp.toPx(), centerY + 5.2.dp.toPx())
+                        lineTo(originX + 3.2.dp.toPx(), centerY + 2.2.dp.toPx())
+                        lineTo(originX, centerY + 2.2.dp.toPx())
+                        close()
+                    }
+                    drawPath(speaker, color = color, style = Stroke(width = stroke))
+                    if (value <= 0) {
+                        val muteLeft = originX + 10.dp.toPx()
+                        val muteRight = originX + 16.dp.toPx()
+                        drawLine(
+                            color = color,
+                            start = Offset(muteLeft, centerY - 3.dp.toPx()),
+                            end = Offset(muteRight, centerY + 3.dp.toPx()),
+                            strokeWidth = stroke,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = color,
+                            start = Offset(muteRight, centerY - 3.dp.toPx()),
+                            end = Offset(muteLeft, centerY + 3.dp.toPx()),
+                            strokeWidth = stroke,
+                            cap = StrokeCap.Round,
+                        )
+                        return
+                    }
+                    val level = if (displaySpan <= 0) {
+                        1
+                    } else {
+                        when {
+                            value - displayMinimum <= displaySpan / 3.0 -> 1
+                            value - displayMinimum <= displaySpan * 2.0 / 3.0 -> 2
+                            else -> 3
+                        }
+                    }
+                    repeat(level) { wave ->
+                        val radius = (3.0f + wave * 2.6f).dp.toPx()
+                        val waveX = originX + (9.2f + wave * 1.4f).dp.toPx()
+                        val wavePath = Path().apply {
+                            moveTo(waveX, centerY - radius)
+                            quadraticTo(
+                                waveX + radius * 0.78f,
+                                centerY,
+                                waveX,
+                                centerY + radius,
+                            )
+                        }
+                        drawPath(wavePath, color = color, style = Stroke(width = stroke))
+                    }
+                }
+
+                axisValues.forEach { value ->
+                    val y = pointFor(0.0, value.toDouble()).y
                     drawLine(
-                        color = grid.copy(alpha = if (fraction == 0f) 0.72f else 0.48f),
+                        color = grid.copy(
+                            alpha = if (value == displayMinimum) 0.72f else 0.48f,
+                        ),
                         start = Offset(plotLeft, y),
                         end = Offset(plotRight, y),
                         strokeWidth = 1.dp.toPx(),
                     )
-                    val value = displayMinimum + (displaySpan * fraction).roundToInt()
-                    drawContext.canvas.nativeCanvas.drawText(
-                        value.toString(),
-                        plotLeft - 7.dp.toPx(),
-                        y - (tickPaint.ascent() + tickPaint.descent()) / 2f,
-                        tickPaint,
-                    )
+                    drawVolumeGlyph(y, value)
+                    if (abs(y - selectedPoint.y) >= 14.dp.toPx()) {
+                        drawContext.canvas.nativeCanvas.drawText(
+                            value.toString(),
+                            plotLeft - 8.dp.toPx(),
+                            y - (tickPaint.ascent() + tickPaint.descent()) / 2f,
+                            tickPaint,
+                        )
+                    }
                 }
+                drawLine(
+                    color = grid.copy(alpha = 0.8f),
+                    start = Offset(plotLeft, plotTop),
+                    end = Offset(plotLeft, plotBottom),
+                    strokeWidth = 1.dp.toPx(),
+                )
 
                 val xTickPaint = AndroidPaint(tickPaint).apply {
                     textAlign = AndroidPaint.Align.CENTER
                 }
-                listOf(0f, 0.5f, 1f).forEachIndexed { tickIndex, fraction ->
-                    val x = plotLeft + fraction * plotWidth
+                val xAxisLabelBaseline = plotBottom + 17.dp.toPx()
+                listOf(
+                    0,
+                    (renderedMap.pressCount / 2.0).roundToInt(),
+                    renderedMap.pressCount,
+                ).distinct().forEach { pressPosition ->
+                    val x = plotLeft +
+                        pressPosition.toFloat() / renderedMap.pressCount.toFloat() * plotWidth
                     drawLine(
                         color = grid.copy(alpha = 0.65f),
                         start = Offset(x, plotBottom),
                         end = Offset(x, plotBottom + 4.dp.toPx()),
                         strokeWidth = 1.dp.toPx(),
                     )
-                    val value = when (tickIndex) {
-                        0 -> "0"
-                        1 -> (renderedMap.pressCount / 2.0).formatAxisPosition()
-                        else -> renderedMap.pressCount.toString()
+                    if (abs(x - selectedPoint.x) >= 18.dp.toPx()) {
+                        xTickPaint.textAlign = when (pressPosition) {
+                            0 -> AndroidPaint.Align.LEFT
+                            renderedMap.pressCount -> AndroidPaint.Align.RIGHT
+                            else -> AndroidPaint.Align.CENTER
+                        }
+                        drawContext.canvas.nativeCanvas.drawText(
+                            pressPosition.toString(),
+                            x,
+                            xAxisLabelBaseline,
+                            xTickPaint,
+                        )
                     }
-                    drawContext.canvas.nativeCanvas.drawText(
-                        value,
-                        x,
-                        plotBottom + 17.dp.toPx(),
-                        xTickPaint,
-                    )
                 }
 
-                val controlPoints = displayedControlIndices.mapIndexed { index, displayIndex ->
-                    pointFor(renderedMap.normalizedXAt(index), displayIndex.toDouble())
-                }
                 val area = Path().apply {
                     moveTo(controlPoints.first().x, plotBottom)
                     lineTo(controlPoints.first().x, controlPoints.first().y)
@@ -602,31 +671,6 @@ fun MappingCurveEditor(
                     close()
                 }
                 drawPath(area, color = primary.copy(alpha = 0.075f))
-
-                ySnapGuide?.let { displayIndex ->
-                    val guideY = pointFor(0.0, displayIndex.toDouble()).y
-                    drawLine(
-                        color = snap,
-                        start = Offset(plotLeft, guideY),
-                        end = Offset(plotRight, guideY),
-                        strokeWidth = 1.5.dp.toPx(),
-                        pathEffect = PathEffect.dashPathEffect(
-                            floatArrayOf(4.dp.toPx(), 4.dp.toPx()),
-                        ),
-                    )
-                }
-                xSnapGuide?.let { normalizedX ->
-                    val guideX = plotLeft + normalizedX.toFloat() * plotWidth
-                    drawLine(
-                        color = snap,
-                        start = Offset(guideX, plotTop),
-                        end = Offset(guideX, plotBottom),
-                        strokeWidth = 1.5.dp.toPx(),
-                        pathEffect = PathEffect.dashPathEffect(
-                            floatArrayOf(4.dp.toPx(), 4.dp.toPx()),
-                        ),
-                    )
-                }
 
                 val currentY = currentDisplayIndex?.let { pointFor(0.0, it).y }
                 if (currentY != null) {
@@ -638,6 +682,23 @@ fun MappingCurveEditor(
                         cap = StrokeCap.Round,
                     )
                 }
+                val selectedGuideEffect = PathEffect.dashPathEffect(
+                    floatArrayOf(4.dp.toPx(), 4.dp.toPx()),
+                )
+                drawLine(
+                    color = snap.copy(alpha = 0.86f),
+                    start = Offset(plotLeft, selectedPoint.y),
+                    end = selectedPoint,
+                    strokeWidth = 1.35.dp.toPx(),
+                    pathEffect = selectedGuideEffect,
+                )
+                drawLine(
+                    color = snap.copy(alpha = 0.86f),
+                    start = selectedPoint,
+                    end = Offset(selectedPoint.x, plotBottom),
+                    strokeWidth = 1.35.dp.toPx(),
+                    pathEffect = selectedGuideEffect,
+                )
 
                 val controlPath = Path().apply {
                     controlPoints.forEachIndexed { index, point ->
@@ -650,17 +711,32 @@ fun MappingCurveEditor(
                     style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round),
                 )
 
-                val sampleRadius = 1.8.dp.toPx()
-                runtimePreview.indices.forEachIndexed { step, displayIndex ->
-                    val normalizedX = if (runtimePreview.effectivePressCount == 0) {
-                        0.0
-                    } else {
-                        step.toDouble() / runtimePreview.effectivePressCount.toDouble()
-                    }
+                val currentIntersection = if (
+                    currentY != null && currentX != null && currentIndexLabel != null
+                ) {
+                    Offset(
+                        x = plotLeft + currentX.toFloat() * plotWidth,
+                        y = currentY,
+                    )
+                } else {
+                    null
+                }
+                currentIntersection?.let { intersection ->
                     drawCircle(
-                        color = primary.copy(alpha = 0.68f),
-                        radius = sampleRadius,
-                        center = pointFor(normalizedX, displayIndex.toDouble()),
+                        color = current.copy(alpha = 0.18f),
+                        radius = 7.5.dp.toPx(),
+                        center = intersection,
+                    )
+                    drawCircle(
+                        color = current,
+                        radius = 4.dp.toPx(),
+                        center = intersection,
+                    )
+                    drawCircle(
+                        color = surface,
+                        radius = 4.dp.toPx(),
+                        center = intersection,
+                        style = Stroke(width = 2.dp.toPx()),
                     )
                 }
 
@@ -688,28 +764,47 @@ fun MappingCurveEditor(
                     }
                 }
 
-                if (currentY != null && currentX != null && currentIndexLabel != null) {
-                    val intersection = Offset(
-                        x = plotLeft + currentX.toFloat() * plotWidth,
-                        y = currentY,
+                drawLine(
+                    color = snap,
+                    start = Offset(plotLeft - 5.dp.toPx(), selectedPoint.y),
+                    end = Offset(plotLeft, selectedPoint.y),
+                    strokeWidth = 1.5.dp.toPx(),
+                )
+                drawLine(
+                    color = snap,
+                    start = Offset(selectedPoint.x, plotBottom),
+                    end = Offset(selectedPoint.x, plotBottom + 5.dp.toPx()),
+                    strokeWidth = 1.5.dp.toPx(),
+                )
+                val selectedTickPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                    color = snap.toArgb()
+                    textSize = 11.sp.toPx()
+                    typeface = android.graphics.Typeface.create(
+                        "sans-serif-medium",
+                        android.graphics.Typeface.NORMAL,
                     )
-                    drawCircle(
-                        color = current.copy(alpha = 0.18f),
-                        radius = 7.5.dp.toPx(),
-                        center = intersection,
-                    )
-                    drawCircle(
-                        color = current,
-                        radius = 4.dp.toPx(),
-                        center = intersection,
-                    )
-                    drawCircle(
-                        color = surface,
-                        radius = 4.dp.toPx(),
-                        center = intersection,
-                        style = Stroke(width = 2.dp.toPx()),
-                    )
+                }
+                selectedTickPaint.textAlign = AndroidPaint.Align.RIGHT
+                drawContext.canvas.nativeCanvas.drawText(
+                    selectedDisplayIndex.toString(),
+                    plotLeft - 8.dp.toPx(),
+                    selectedPoint.y -
+                        (selectedTickPaint.ascent() + selectedTickPaint.descent()) / 2f,
+                    selectedTickPaint,
+                )
+                selectedTickPaint.textAlign = when {
+                    selectedPressPosition == 0 -> AndroidPaint.Align.LEFT
+                    selectedPressPosition == renderedMap.pressCount -> AndroidPaint.Align.RIGHT
+                    else -> AndroidPaint.Align.CENTER
+                }
+                drawContext.canvas.nativeCanvas.drawText(
+                    selectedPressPosition.toString(),
+                    selectedPoint.x,
+                    xAxisLabelBaseline,
+                    selectedTickPaint,
+                )
 
+                if (currentY != null && currentX != null && currentIndexLabel != null) {
                     val tagText = "当前 $currentIndexLabel"
                     val tagPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
                         color = currentContent.toArgb()
@@ -732,7 +827,17 @@ fun MappingCurveEditor(
                         20.dp.toPx(),
                         textHeight + 2f * tagVerticalPadding,
                     ).coerceAtMost(plotHeight)
-                    val tagLeft = (plotRight - tagWidth).coerceAtLeast(plotLeft)
+                    val rightAlignedTagLeft = (plotRight - tagWidth).coerceAtLeast(plotLeft)
+                    val currentIntersectionX = plotLeft + currentX.toFloat() * plotWidth
+                    val tagLeft = if (
+                        currentIntersectionX >= rightAlignedTagLeft - 6.dp.toPx()
+                    ) {
+                        // Near maximum volume the curve intersection and endpoint sit at the
+                        // right edge. Put the tag on the opposite side so it never hides them.
+                        plotLeft
+                    } else {
+                        rightAlignedTagLeft
+                    }
                     val tagTop = (currentY - tagHeight / 2f).coerceIn(
                         plotTop,
                         plotBottom - tagHeight,
@@ -751,27 +856,19 @@ fun MappingCurveEditor(
                     )
                 }
             }
-
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                contentDescription = null,
-                tint = tick,
-                modifier = Modifier
-                    .padding(start = 2.dp, top = 1.dp)
-                    .size(16.dp),
-            )
         }
 
         CompactCurveStepper(
-            label = "按键 K",
+            label = "按键次数",
             value = renderedMap.pressCount,
-            minimum = 1,
+            minimum = renderedMap.controlSegmentCount,
             maximum = renderedMap.basisSpan,
             enabled = editorReady,
             onValueChange = { requested ->
                 publish(
                     renderedMap.withPressCount(requested),
                     renderedMap.normalizedXAt(selectedIndex),
+                    preferredControlPointIndex = selectedIndex,
                 )
             },
             valueTag = CurveEditorTestTags.PRESS_COUNT_INPUT,
@@ -803,24 +900,34 @@ private fun CompactCurveStepper(
 ) {
     var draftValue by remember { mutableStateOf(value.toString()) }
     var inputHasFocus by remember { mutableStateOf(false) }
+    var draftEdited by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val darkTheme = isSystemInDarkTheme()
     val containerColor = if (darkTheme) Color(0xFF28262C) else Color(0xFFF0EDF4)
     val contentColor = MaterialTheme.colorScheme.onSurface
 
-    LaunchedEffect(value, inputHasFocus) {
-        if (!inputHasFocus) draftValue = value.toString()
+    LaunchedEffect(value, inputHasFocus, draftEdited) {
+        if (!inputHasFocus || !draftEdited) {
+            draftValue = value.toString()
+            draftEdited = false
+        }
     }
 
     fun commitDraft() {
+        if (!draftEdited) {
+            draftValue = value.toString()
+            return
+        }
         val requested = draftValue.toIntOrNull()
         if (requested == null) {
             draftValue = value.toString()
+            draftEdited = false
             return
         }
         val accepted = requested.coerceIn(minimum, maximum)
         draftValue = accepted.toString()
+        draftEdited = false
         if (accepted != value) onValueChange(accepted)
     }
 
@@ -828,6 +935,7 @@ private fun CompactCurveStepper(
         val base = draftValue.toIntOrNull()?.coerceIn(minimum, maximum) ?: value
         val accepted = (base + delta).coerceIn(minimum, maximum)
         draftValue = accepted.toString()
+        draftEdited = false
         if (accepted != value) onValueChange(accepted)
         inputHasFocus = false
         focusManager.clearFocus(force = true)
@@ -870,6 +978,7 @@ private fun CompactCurveStepper(
             onValueChange = { requested ->
                 if (requested.all(Char::isDigit) && requested.length <= 9) {
                     draftValue = requested
+                    draftEdited = true
                 }
             },
             enabled = enabled,
@@ -949,11 +1058,6 @@ private fun StepVolumeMap.normalizedXForDisplayedIndex(
     val fraction = (requestedIndex - leftIndexValue) / (rightIndexValue - leftIndexValue)
     return normalizedXs[leftIndex] +
         (normalizedXs[rightIndex] - normalizedXs[leftIndex]) * fraction
-}
-
-private fun Double.formatAxisPosition(): String {
-    val doubled = (this * 2.0).roundToInt()
-    return if (doubled % 2 == 0) (doubled / 2).toString() else "${doubled / 2}.5"
 }
 
 object CurveEditorTestTags {

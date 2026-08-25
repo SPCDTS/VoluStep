@@ -16,14 +16,14 @@
 
 当前覆盖：
 
-- 独立的按键次数 `K` / 控制点数 `P`、自由且严格递增的控制点 x、整数端点与折线采样；
-- `K+1` 个均匀按键位置、单独修改 `K` 或 `P`、`P<K+1` / `P>K+1`、跨路由范围重投影、全局最小平方结果及确定性 tie-break；
+- 按键次数 `K` / 控制点数 `P`、严格递增的整数按键位、整数端点与折线采样；
+- `K+1` 个均匀按键位置、修改 K 时的整数重投影、`2≤P≤K+1`、跨路由范围重投影、全局最小平方结果及确定性 tie-break；
 - x/y 联合编辑、相邻约束、端点固定与拖动越界时的最小推挤；
 - 精确状态短按、外部 index 的严格上下界选择、固定长按间隔、repeat no-op、匹配/不匹配 UP、readback 同步与取消；
 - 不同 50 ms ticker 节奏下固定间隔积分的一致性，以及 `60…500 ms`、20 ms 网格配置边界；
 - 非零 min、固定音量、0–15 与 0–150 路由绑定边界；
 - mapping state 为空、外部 index 变化、精确状态连续性和 active hold 步数余量边界；
-- DataStore `v3` 自由 x round-trip、`v1` / `v2` 无损迁移、legacy shadow 恢复、旧间隔对齐与坏字段独立降级；
+- DataStore `v4` 整数坐标 round-trip、`v1` / `v2` / `v3` 保形迁移、legacy shadow 恢复、旧间隔对齐与坏字段独立降级；
 - 设置写入 actor 的 FIFO immediate barrier、普通快照防抖、回执顺序和单次持久化失败后继续工作。
 
 上述细粒度断言合并在 22 个 JVM 场景组内；加上 8 个 Android instrumentation，仓库共保留 30 个测试入口。UI 在 DataStore 初始快照原子发布前禁用配置写入口，避免默认占位值覆盖已保存设置。JVM 测试不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也没有用 fake backend 覆盖 coordinator 的完整并发时序。
@@ -31,7 +31,7 @@
 ### Lint 与构建
 
 ```powershell
-.\gradlew.bat :app:lintDebug :app:assembleDebug :app:bundleRelease
+.\gradlew.bat :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:assembleDebug :app:bundleRelease
 ```
 
 Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
@@ -40,9 +40,9 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 
 仓库包含三个设备侧测试类：
 
-- `MainActivityTest`：共 6 项，验证正式单页只保留核心控件、当前音量水平线语义、`K` / `P` 独立步进、控制点 x/y 拖动与吸附、图表无障碍选择/移动操作、`60…500 ms` 长按间隔边界，以及默认折叠的设备区；测试结束会恢复进入测试前的完整设置；
+- `MainActivityTest`：共 6 项，验证正式单页只保留核心控件、当前音量水平线语义、`K` / `P` 分别编辑及动态容量约束、控制点 x/y 拖动与吸附、图表无障碍选择/移动操作、`60…500 ms` 长按间隔边界，以及默认折叠的设备区；测试结束会恢复进入测试前的完整设置；
 - `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造完整 DOWN/UP，并验证真实 `STREAM_MUSIC` index 改变和最终清理。
-- `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并只在本应用通知行内展开和点击停止 action；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性自由控制点映射。
+- `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并只在本应用通知行内展开和点击停止 action；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性整数控制点映射。
 
 第二项测试不会启动真实 AccessibilityService，也不会验证系统是否把物理按键分派给服务。第三项的 instrumentation 阶段不能独自证明按键分派，因为 UiAutomation 注入会绕过 Accessibility input filter；实体按键链路由下述宿主 E2E 使用内核 evdev 事件验证。模拟器结果仍不能替代 OEM、蓝牙耳机和真实系统授权页测试。编译测试 APK 与实际执行应区分：
 
@@ -129,7 +129,7 @@ Android 17 还应使用系统支持的音频 hardening 调试命令（若该镜�
 - 一个 verification cycle 跟踪 latest expected；fresh mismatch 不重锚，成熟 mismatch 清 pending 并同步 observed，final mismatch 才计失败；
 - UP 必须刷新最终 reducer target；同一 route ID 的 min/max 变化必须取消手势，只有 dB 诊断元数据变化不能重建 reducer；
 - 三次连续读写/最终回读失败后新按键自动交还系统；
-- 设置中按键次数 `K` 与控制点数 `P` 必须独立；改 `K` 不改变控制折线，改 `P` 不改变 `K`；
+- 设置中按键次数 `K` 与控制点数 `P` 分别编辑；改 `K` 保持 P 与 y 并按旧比例严格重投影整数 x，改 `P` 不改变 `K`；
 - `P` 个控制点与 `K+1` 个实际按键状态都固定端点，运行时 index 严格递增；
 - 当前路由跨度小于 `K` 时只临时降低有效按键次数；编辑 K 或 P 都不能顺带固化临时路由结果或破坏另一个参数；
 - 不读取窗口内容，不使用隐藏 API，不绕过系统安全音量。

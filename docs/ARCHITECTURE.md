@@ -11,19 +11,19 @@ repeat → 只刷新 heartbeat；UP → 结束同一 token
 x(t) ∈ {-1, 0, +1}
         ↓  仅 active press 启动 50 ms ticker，不依赖 OEM key-repeat 频率
 离散状态 q ∈ {0, …, K}；短按移动一个状态，长按按固定间隔累积完整状态数
-        ↓  在 P 个自由 x 控制点折线 C(x) 上按均匀 q/K 采样，投影为严格递增表 I[q]
+        ↓  在 P 个整数按键位控制点折线 C(x) 上按均匀 q/K 采样，投影为严格递增表 I[q]
 STREAM_MUSIC 目标整数 index = I[q]
         ↓  setStreamVolume + 单 verification cycle 的约 80/380 ms 回读
 AudioPolicy → 蓝牙 AVRCP/VCS → 耳机固件
 ```
 
-`K` 表示从最小音量到最大音量需要的短按次数，`P` 表示搭建折线的控制点总数，两者独立保存。每个控制点保存自由且严格递增的 x 与整数 y；只有 `K_effective+1` 个实际按键位置固定均匀。运行时在这些位置采样折线，再用最小平方整数投影生成严格递增的实际 index 表，保证每次有效短按至少改变一个 Android index。较小路由只降低 `K_effective`，不会在编辑任一参数时覆盖完整 authored K/P。完整交互和投影规则见 [CURVE_EDITOR.md](CURVE_EDITOR.md)。
+`K` 表示从最小音量到最大音量需要的短按次数，`P` 表示搭建折线的控制点总数。每个控制点保存 `0…K` 内严格递增的整数按键位置与整数 y，因此 `P≤K+1`；`K_effective+1` 个实际按键位置固定均匀。运行时在这些位置采样折线，再用最小平方整数投影生成严格递增的实际 index 表，保证每次有效短按至少改变一个 Android index。较小路由只降低 `K_effective`，不会在编辑任一参数时覆盖完整作者曲线。完整交互和投影规则见 [CURVE_EDITOR.md](CURVE_EDITOR.md)。
 
 ## 代码边界
 
 ```text
 core/
-  StepVolumeMap            独立 K/P、自由 x 控制点、整数 offset 与严格单调投影
+  StepVolumeMap            整数按键位控制点、整数 offset 与严格单调投影
   BoundStepVolumeMap       把设置曲线绑定到当前路由的实际整数 index 表
   MappingCurve             预设形状与旧设置迁移
   VolumeMappingReducer     离散短按/固定间隔长按/UP 状态机；orphan repeat 严格 no-op
@@ -41,7 +41,7 @@ data/
   SettingsRepository       原子加载快照、FIFO 单写入 actor、拖动防抖与立即写 barrier
 
 ui/
-  CurveEditor              自由控制点、双轴吸附、均匀按键落点和当前音量水平标记
+  CurveEditor              非均匀整数控制点、双轴硬吸附和当前音量水平标记
   VolumeMapperApp          单页控制、长按间隔、披露和折叠设备状态
 ```
 

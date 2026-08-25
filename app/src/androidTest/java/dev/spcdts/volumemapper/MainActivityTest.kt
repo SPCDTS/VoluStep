@@ -25,7 +25,6 @@ import dev.spcdts.volumemapper.data.SettingsRepository
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.ui.CurveEditorTestTags
 import dev.spcdts.volumemapper.ui.VolumeMapperTestTags
-import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -82,10 +81,18 @@ class MainActivityTest {
         )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT)
             .assertIsDisplayed()
+        assertEquals(
+            "控制点数量",
+            contentDescription(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT),
+        )
         composeRule.onNodeWithTag(CurveEditorTestTags.CANVAS).assertIsDisplayed()
         composeRule.onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INPUT)
             .performScrollTo()
             .assertIsDisplayed()
+        assertEquals(
+            "按键次数",
+            contentDescription(CurveEditorTestTags.PRESS_COUNT_INPUT),
+        )
         composeRule.onNodeWithTag(VolumeMapperTestTags.LONG_PRESS_INTERVAL_VALUE)
             .performScrollTo()
             .assertIsDisplayed()
@@ -111,6 +118,9 @@ class MainActivityTest {
             "当前音量水平线必须向无障碍服务暴露实际 index",
             markerDescription.contains("当前音量水平线 $currentIndex"),
         )
+        val markerState = stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
+        assertTrue(markerState.contains("按键次数 18，控制点数量 5"))
+        assertTrue(markerState.contains("，x 8，index "))
 
         // 未接受显著披露时，主开关只能进入授权流程，不能在测试中误启动全局控制器。
         composeRule.onNodeWithTag(VolumeMapperTestTags.MASTER_SWITCH)
@@ -128,7 +138,47 @@ class MainActivityTest {
     }
 
     @Test
-    fun pAndKSupportDirectInputAndRemainIndependent() {
+    fun pAndKDirectInputHonorsIntegerGridCapacity() {
+        // 改 K 只重投影整数 x；即使归一化距离改变，也必须保留同一控制点的选择。
+        val selectionStableMap = StepVolumeMap(
+            basisSpan = 30,
+            pressCount = 5,
+            pressPositions = listOf(0, 1, 5),
+            offsets = listOf(0, 5, 30),
+        )
+        replaceSettings(testSettings(outputMap = selectionStableMap))
+        composeRule.waitUntil {
+            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
+                .contains("已选第 2 个控制点")
+        }
+        val selectionPressCountInput = composeRule
+            .onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INPUT)
+            .performScrollTo()
+        selectionPressCountInput.performTextReplacement("2")
+        selectionPressCountInput.performImeAction()
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 2 }
+        assertTrue(
+            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
+                .contains("已选第 2 个控制点，x 1"),
+        )
+
+        replaceSettings(testSettings())
+
+        // 仅聚焦但未编辑时，外部设置更新必须同步到草稿，失焦不能提交旧值。
+        val focusedPressCountInput = composeRule
+            .onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INPUT)
+            .performScrollTo()
+        focusedPressCountInput.performClick()
+        replaceSettings(
+            testSettings(outputMap = testMap().withPressCount(newPressCount = 17)),
+        )
+        composeRule.waitUntil {
+            stateDescription(CurveEditorTestTags.PRESS_COUNT_INPUT) == "17"
+        }
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT)
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals(17, settingsRepository.settings.value.outputMap.pressCount)
         replaceSettings(testSettings())
 
         assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 5)
@@ -153,82 +203,66 @@ class MainActivityTest {
         val pressCountInput = composeRule
             .onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INPUT)
             .performScrollTo()
-        pressCountInput.performTextReplacement("12")
+        pressCountInput.performTextReplacement("6")
         pressCountInput.performImeAction()
-        composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 12 }
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 6 }
         assertEquals(7, settingsRepository.settings.value.outputMap.controlPointCount)
         assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 7)
-        assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 12)
+        assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 6)
+        assertIntegerGrid(settingsRepository.settings.value.outputMap)
+        composeRule.onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_DECREMENT)
+            .performScrollTo()
+            .assertIsNotEnabled()
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
+            .assertIsNotEnabled()
 
-        // 直接输入与 −/+共享同一份状态，且 P/K 不会隐式联动。
+        // 减少 P 会释放一个整数按键位，随后 K 才能继续减少。
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
             .performScrollTo()
             .performClick()
         composeRule.waitUntil {
             settingsRepository.settings.value.outputMap.controlPointCount == 6
         }
-        assertEquals(12, settingsRepository.settings.value.outputMap.pressCount)
+        assertEquals(6, settingsRepository.settings.value.outputMap.pressCount)
 
-        composeRule.onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INCREMENT)
+        composeRule.onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_DECREMENT)
             .performScrollTo()
             .performClick()
-        composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 13 }
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 5 }
         assertEquals(6, settingsRepository.settings.value.outputMap.controlPointCount)
         assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 6)
-        assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 13)
+        assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 5)
+        assertIntegerGrid(settingsRepository.settings.value.outputMap)
 
-        // 边界值后的未提交草稿也必须立即驱动 −/+，不能沿用旧值造成按钮假禁用。
-        pointCountInput.performTextReplacement("2")
+        // 直接输入超出整数网格容量时，P 被约束为 K + 1。
+        pointCountInput.performTextReplacement("16")
         pointCountInput.performImeAction()
-        composeRule.waitUntil { settingsRepository.settings.value.outputMap.controlPointCount == 2 }
-        pointCountInput.performTextReplacement("5")
-        assertEquals("5", stateDescription(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT))
-        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
-            .performScrollTo()
-            .assertIsEnabled()
-            .performClick()
-        composeRule.waitUntil { settingsRepository.settings.value.outputMap.controlPointCount == 4 }
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.controlPointCount == 6 }
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
+            .assertIsNotEnabled()
 
+        // 正式界面仍以 16 为控制点上限；K=15 时恰好容纳 16 个整数控制点。
         pressCountInput.performTextReplacement(initialBasisSpan.toString())
         pressCountInput.performImeAction()
         composeRule.waitUntil {
             settingsRepository.settings.value.outputMap.pressCount == initialBasisSpan
         }
-        pressCountInput.performTextReplacement("10")
-        composeRule.onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INCREMENT)
-            .performScrollTo()
-            .assertIsEnabled()
-            .performClick()
-        composeRule.waitUntil(5_000L) {
-            settingsRepository.settings.value.outputMap.pressCount == 11
-        }
-
-        // 正式界面最多 16 个控制点；P 仍可大于 K，二者保持独立。
+        pressCountInput.performTextReplacement("15")
+        pressCountInput.performImeAction()
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 15 }
         pointCountInput.performTextReplacement("16")
         pointCountInput.performImeAction()
         composeRule.waitUntil { settingsRepository.settings.value.outputMap.controlPointCount == 16 }
-        assertEquals(11, settingsRepository.settings.value.outputMap.pressCount)
+        assertEquals(15, settingsRepository.settings.value.outputMap.pressCount)
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
             .performScrollTo()
             .assertIsNotEnabled()
-
-        // 旧版本可能已持久化超过正式上限的合法密集曲线，减号必须逐点收敛而非 31→15。
-        val legacyDenseMap = settingsRepository.settings.value.outputMap
-            .resampleControlPoints(initialBasisSpan + 1)
-        replaceSettings(testSettings(outputMap = legacyDenseMap))
-        assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 31)
-        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
-            .performScrollTo()
-            .assertIsEnabled()
-            .performClick()
-        composeRule.waitUntil(5_000L) {
-            settingsRepository.settings.value.outputMap.controlPointCount == 30
-        }
+        assertIntegerGrid(settingsRepository.settings.value.outputMap)
     }
 
     @Test
-    fun draggingAControlPointMovesBothFreeXAndIntegerIndex() {
-        val initialMap = testMap()
+    fun draggingAControlPointHardSnapsBothAxes() {
+        val initialMap = testMap().withOffset(controlPointIndex = 2, requestedOffset = 5)
         replaceSettings(testSettings(outputMap = initialMap))
 
         val canvas = composeRule.onNodeWithTag(CurveEditorTestTags.CANVAS)
@@ -236,14 +270,15 @@ class MainActivityTest {
             .assertIsDisplayed()
         val bounds = canvas.fetchSemanticsNode().boundsInRoot
         val density = composeRule.activity.resources.displayMetrics.density
-        val plotLeft = 38f * density
+        val plotLeft = 62f * density
         val plotRight = bounds.width - 12f * density
         val plotTop = 28f * density
-        val plotBottom = bounds.height - 28f * density
+        val plotBottom = bounds.height - 40f * density
         val plotWidth = plotRight - plotLeft
         val plotHeight = plotBottom - plotTop
         val movedPoint = 2
-        val targetX = 10.0 / initialMap.pressCount.toDouble()
+        val rawTargetPress = 10.4
+        val targetX = rawTargetPress / initialMap.pressCount.toDouble()
         val targetOffset = 14
         val start = Offset(
             x = plotLeft + initialMap.normalizedXAt(movedPoint).toFloat() * plotWidth,
@@ -254,6 +289,32 @@ class MainActivityTest {
             x = plotLeft + targetX.toFloat() * plotWidth,
             y = plotBottom - targetOffset.toFloat() / initialMap.basisSpan * plotHeight,
         )
+
+        // Android 媒体路由通常只有 15 档，而编辑基准是 30。纯横拖不能把基准
+        // offset 5 经显示 index 3 反投影成 6。
+        val horizontalEnd = Offset(x = end.x, y = start.y)
+        canvas.performTouchInput {
+            down(start)
+            moveTo(horizontalEnd, delayMillis = 450L)
+            up()
+        }
+        composeRule.waitUntil {
+            settingsRepository.settings.value.outputMap.pressPositionAt(movedPoint) == 10
+        }
+        assertEquals(
+            "纯横向拖动必须保持原始 y，不能经过显示档位反投影后漂移",
+            initialMap.offsets[movedPoint],
+            settingsRepository.settings.value.outputMap.offsets[movedPoint],
+        )
+        composeRule.waitUntil(5_000L) {
+            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
+                .contains("，x 10，")
+        }
+        replaceSettings(testSettings(outputMap = initialMap))
+        composeRule.waitUntil(5_000L) {
+            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
+                .contains("，x ${initialMap.pressPositionAt(movedPoint)}，")
+        }
 
         canvas.performTouchInput {
             down(start)
@@ -273,13 +334,10 @@ class MainActivityTest {
         }
 
         val movedMap = settingsRepository.settings.value.outputMap
-        assertTrue(
-            "控制点应能脱离均匀 P 位置并横向移动",
-            movedMap.normalizedXAt(movedPoint) > initialMap.normalizedXAt(movedPoint) + 0.05,
-        )
-        assertTrue(
-            "靠近均匀按键位置时 x 应吸附",
-            abs(movedMap.normalizedXAt(movedPoint) - targetX) < 1e-4,
+        assertEquals(
+            "任何横向位置都必须硬吸附到最近整数按键位",
+            10,
+            movedMap.pressPositionAt(movedPoint),
         )
         assertEquals(
             "y 必须吸附到整数 Audio volume index",
@@ -288,6 +346,32 @@ class MainActivityTest {
         )
         assertEquals(initialMap.pressCount, movedMap.pressCount)
         assertEquals(initialMap.controlPointCount, movedMap.controlPointCount)
+        assertIntegerGrid(movedMap)
+
+        // 拖过右侧相邻点时夹在相邻整数位置，而不是越点或重新保存小数。
+        val movedStart = Offset(
+            x = plotLeft + movedMap.normalizedXAt(movedPoint).toFloat() * plotWidth,
+            y = plotBottom -
+                movedMap.offsets[movedPoint].toFloat() / movedMap.basisSpan * plotHeight,
+        )
+        val beyondRightNeighbour = Offset(
+            x = plotLeft + 17f / movedMap.pressCount.toFloat() * plotWidth,
+            y = movedStart.y,
+        )
+        canvas.performTouchInput {
+            down(movedStart)
+            moveTo(beyondRightNeighbour, delayMillis = 450L)
+            up()
+        }
+        composeRule.waitUntil {
+            settingsRepository.settings.value.outputMap.pressPositionAt(movedPoint) == 12
+        }
+        val clampedMap = settingsRepository.settings.value.outputMap
+        assertEquals(12, clampedMap.pressPositionAt(movedPoint))
+        assertIntegerGrid(clampedMap)
+        assertTrue(
+            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER).contains("，x 12，"),
+        )
     }
 
     @Test
@@ -335,10 +419,10 @@ class MainActivityTest {
         composeRule.waitUntil { settingsRepository.settings.value.outputMap != initialMap }
         val horizontallyMoved = settingsRepository.settings.value.outputMap
         assertEquals(
-            initialMap.normalizedXAt(2) + 1.0 / initialMap.pressCount.toDouble(),
-            horizontallyMoved.normalizedXAt(2),
-            1e-6,
+            initialMap.pressPositionAt(2) + 1,
+            horizontallyMoved.pressPositionAt(2),
         )
+        assertIntegerGrid(horizontallyMoved)
 
         val snapshot = checkNotNull(graph.mappingCoordinator.runtime.value.snapshot)
         val routeSpan = snapshot.range.maxIndex - snapshot.range.minIndex
@@ -365,18 +449,17 @@ class MainActivityTest {
             val yLockedMap = StepVolumeMap(
                 basisSpan = initialMap.basisSpan,
                 pressCount = initialMap.pressCount,
-                normalizedXs = initialMap.normalizedXs,
+                pressPositions = initialMap.pressPositions,
                 offsets = listOf(0, 1, 2, 3, initialMap.basisSpan),
             )
             replaceSettings(testSettings(outputMap = yLockedMap))
-            val xBefore = yLockedMap.normalizedXAt(2)
+            val xBefore = yLockedMap.pressPositionAt(2)
             performCurveAction("控制点右移一个按键位置")
             composeRule.waitUntil { settingsRepository.settings.value.outputMap != yLockedMap }
             assertEquals(
                 "横向无障碍步进不应被纵轴可用空间阻断",
-                xBefore + 1.0 / yLockedMap.pressCount.toDouble(),
-                settingsRepository.settings.value.outputMap.normalizedXAt(2),
-                1e-6,
+                xBefore + 1,
+                settingsRepository.settings.value.outputMap.pressPositionAt(2),
             )
         }
     }
@@ -479,7 +562,7 @@ class MainActivityTest {
     private fun testMap(): StepVolumeMap = StepVolumeMap(
         basisSpan = 30,
         pressCount = 18,
-        normalizedXs = listOf(0.0, 0.17, 0.42, 0.74, 1.0),
+        pressPositions = listOf(0, 3, 8, 13, 18),
         offsets = listOf(0, 3, 8, 18, 30),
     )
 
@@ -504,6 +587,14 @@ class MainActivityTest {
             stateDescription(VolumeMapperTestTags.LONG_PRESS_INTERVAL_VALUE),
         )
         assertEquals(expected, settingsRepository.settings.value.keyConfig.holdStepIntervalMillis)
+    }
+
+    private fun assertIntegerGrid(map: StepVolumeMap) {
+        assertEquals(0, map.pressPositions.first())
+        assertEquals(map.pressCount, map.pressPositions.last())
+        assertTrue(map.pressPositions.zipWithNext().all { (left, right) -> right > left })
+        assertTrue(map.offsets.zipWithNext().all { (left, right) -> right > left })
+        assertTrue(map.controlPointCount <= map.pressCount + 1)
     }
 
     private fun stateDescription(tag: String): String =

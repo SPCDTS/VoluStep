@@ -10,6 +10,7 @@ $gradle = Join-Path $script:ProjectRoot 'gradlew.bat'
 $tasks = @()
 if ($Clean) { $tasks += 'clean' }
 $tasks += ':app:testDebugUnitTest'
+$tasks += ':app:compileDebugAndroidTestKotlin'
 $tasks += ':app:lintDebug'
 $tasks += ':app:assembleDebug'
 if ($Release) {

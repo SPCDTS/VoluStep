@@ -124,12 +124,12 @@ class RealSystemVolumeE2eTest {
             val mappedUpOffset = ((initialOffset.toDouble() / routeSpan + 0.4) * routeSpan + 0.5)
                 .toInt()
             val testSettings = repository.settings.value.copy(
-                // K=5 的按键位置仍均匀；两个自由 x 控制点固定在第 2、3 个位置。
+                // K=5 的按键位置仍均匀；两个内部控制点固定在整数按键位置 2、3。
                 // 外部 E2E 从 1/3 档位起步：一次 UP 到约 +40%，再一次 DOWN 回原档。
                 outputMap = StepVolumeMap(
                     basisSpan = routeSpan,
                     pressCount = 5,
-                    normalizedXs = listOf(0.0, 0.4, 0.6, 1.0),
+                    pressPositions = listOf(0, 2, 3, 5),
                     offsets = listOf(0, initialOffset, mappedUpOffset, routeSpan),
                 ),
                 showSystemVolumeUi = false,

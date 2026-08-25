@@ -17,6 +17,7 @@ foreach ($name in $required) {
 
 & (Join-Path $script:ProjectRoot 'gradlew.bat') `
     :app:testDebugUnitTest `
+    :app:compileDebugAndroidTestKotlin `
     :app:lintRelease `
     :app:assembleRelease `
     :app:bundleRelease
