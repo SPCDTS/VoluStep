@@ -5,12 +5,11 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -25,7 +24,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -55,10 +53,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -69,11 +68,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.spcdts.volumemapper.AppGraph
+import dev.spcdts.volumemapper.R
 import dev.spcdts.volumemapper.core.AudioRouteType
 import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.ControllerRuntimeState
 import dev.spcdts.volumemapper.runtime.MappingControllerService
+import dev.spcdts.volumemapper.runtime.resolveLocalizedText
 
 @Composable
 fun VolumeMapperApp(graph: AppGraph) {
@@ -92,7 +93,6 @@ fun VolumeMapperApp(graph: AppGraph) {
             settings = settings,
             settingsLoaded = settingsLoaded,
             graph = graph,
-            onShowDisclosure = { showDisclosure = true },
             onOpenAccessibility = {
                 if (!settingsLoaded) {
                     Unit
@@ -117,7 +117,6 @@ fun VolumeMapperApp(graph: AppGraph) {
                 }
             },
             onStop = { MappingControllerService.stop(context) },
-            onRetry = graph.mappingCoordinator::retry,
             onOpenAppSettings = {
                 if (!AppDetailsSettingsLauncher.open(context)) {
                     showAppSettingsUnavailable = true
@@ -142,12 +141,17 @@ fun VolumeMapperApp(graph: AppGraph) {
     }
 
     if (showAppSettingsUnavailable) {
+        val appName = stringResource(R.string.app_name)
         AlertDialog(
             onDismissRequest = { showAppSettingsUnavailable = false },
-            title = { Text("无法打开系统设置") },
-            text = { Text("请手动进入系统设置并找到本应用。") },
+            title = { Text(stringResource(R.string.error_open_settings_title)) },
+            text = {
+                Text(stringResource(R.string.error_open_settings_message, appName))
+            },
             confirmButton = {
-                TextButton(onClick = { showAppSettingsUnavailable = false }) { Text("知道了") }
+                TextButton(onClick = { showAppSettingsUnavailable = false }) {
+                    Text(stringResource(R.string.action_ok))
+                }
             },
         )
     }
@@ -155,10 +159,14 @@ fun VolumeMapperApp(graph: AppGraph) {
     controllerStartError?.let { error ->
         AlertDialog(
             onDismissRequest = { controllerStartError = null },
-            title = { Text("控制器启动失败") },
-            text = { Text("系统未能启动前台控制器：$error") },
+            title = { Text(stringResource(R.string.error_controller_start_title)) },
+            text = {
+                Text(stringResource(R.string.error_controller_start_message, error))
+            },
             confirmButton = {
-                TextButton(onClick = { controllerStartError = null }) { Text("知道了") }
+                TextButton(onClick = { controllerStartError = null }) {
+                    Text(stringResource(R.string.action_ok))
+                }
             },
         )
     }
@@ -170,11 +178,9 @@ private fun MainScreen(
     settings: VolumeMapperSettings,
     settingsLoaded: Boolean,
     graph: AppGraph,
-    onShowDisclosure: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onRetry: () -> Unit,
     onOpenAppSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -192,24 +198,12 @@ private fun MainScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
-            Text(
-                text = "音量映射",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(start = 6.dp, top = 11.dp, bottom = 8.dp),
-            )
-        }
-
-        item {
-            ControllerCard(
+            BrandControlBar(
                 runtime = runtime,
                 disclosureAccepted = settings.disclosureAccepted,
                 settingsLoaded = settingsLoaded,
-                onShowDisclosure = onShowDisclosure,
-                onOpenAccessibility = onOpenAccessibility,
                 onStart = onStart,
                 onStop = onStop,
-                onRetry = onRetry,
             )
         }
 
@@ -242,7 +236,7 @@ private fun MainScreen(
                     )
                 } else {
                     Text(
-                        text = "正在加载…",
+                        text = stringResource(R.string.loading),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp),
                     )
@@ -276,119 +270,69 @@ private fun MainScreen(
 }
 
 @Composable
-private fun ControllerCard(
+private fun BrandControlBar(
     runtime: ControllerRuntimeState,
     disclosureAccepted: Boolean,
     settingsLoaded: Boolean,
-    onShowDisclosure: () -> Unit,
-    onOpenAccessibility: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onRetry: () -> Unit,
 ) {
-    val routeStatus = runtime.snapshot?.let { snapshot ->
-        "${routeMediaLabel(snapshot.route.type)} · " +
-            "${snapshot.range.minIndex}–${snapshot.range.maxIndex}"
+    val appName = stringResource(R.string.app_name)
+    val snapshot = runtime.snapshot
+    val routeStatus = if (snapshot != null) {
+        stringResource(
+            R.string.brand_control_status,
+            stringResource(routeMediaLabelResource(snapshot.route.type)),
+            snapshot.range.minIndex,
+            snapshot.range.maxIndex,
+        )
+    } else {
+        null
     }
     val status = when {
-        !settingsLoaded -> "正在加载"
-        !disclosureAccepted -> "需要授权"
+        !settingsLoaded -> stringResource(R.string.status_loading)
+        !disclosureAccepted -> stringResource(R.string.status_authorization_required)
         !runtime.isAccessibilityConnected -> if (runtime.isForegroundServiceRunning) {
-            "等待无障碍"
+            stringResource(R.string.status_waiting_accessibility)
         } else {
-            "开启无障碍"
+            stringResource(R.string.status_enable_accessibility)
         }
-        runtime.isFailOpen -> "已暂停"
-        runtime.canInterceptKeys -> routeStatus ?: "运行中"
-        runtime.isForegroundServiceRunning -> "等待媒体"
-        else -> "未启动"
+        runtime.isFailOpen -> stringResource(R.string.status_paused)
+        runtime.canInterceptKeys -> routeStatus ?: stringResource(R.string.status_running)
+        runtime.isForegroundServiceRunning -> stringResource(R.string.status_waiting_media)
+        else -> stringResource(R.string.status_not_started)
     }
-    val statusAction = when {
-        !settingsLoaded -> null
-        !disclosureAccepted -> onShowDisclosure
-        !runtime.isAccessibilityConnected -> onOpenAccessibility
-        runtime.isFailOpen -> onRetry
-        else -> null
-    }
-    val statusActionLabel = when {
-        !settingsLoaded -> null
-        !disclosureAccepted -> "查看授权说明"
-        !runtime.isAccessibilityConnected -> "打开无障碍设置"
-        runtime.isFailOpen -> "重试精细控制"
-        else -> null
-    }
-    val darkTheme = isSystemInDarkTheme()
-    val activeDotColor = if (darkTheme) Color(0xFF88CE9E) else Color(0xFF2D6D45)
-    val activeStatusColor = if (darkTheme) Color(0xFFA9D9B8) else Color(0xFF315C42)
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-            contentColor = MaterialTheme.colorScheme.onSurface,
-        ),
+    val switchContentDescription = stringResource(
+        R.string.master_switch_content_description,
+        appName,
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .padding(horizontal = 6.dp, vertical = 8.dp)
+            .testTag(VolumeMapperTestTags.BRAND_CONTROL_BAR),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag(VolumeMapperTestTags.CONTROLLER_STATUS_ACTION)
-                    .then(
-                        if (statusAction != null && statusActionLabel != null) {
-                            Modifier.clickable(
-                                onClickLabel = statusActionLabel,
-                                onClick = statusAction,
-                            )
-                        } else {
-                            Modifier
-                        },
-                    ),
-            ) {
-                Text("精细控制", style = MaterialTheme.typography.titleMedium)
-                Row(
-                    modifier = Modifier.padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (runtime.canInterceptKeys) {
-                                    activeDotColor
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                                },
-                            ),
-                    )
-                    Text(
-                        status,
-                        color = if (runtime.canInterceptKeys) {
-                            activeStatusColor
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        fontSize = 13.sp,
-                    )
-                }
-            }
-            Switch(
-                checked = runtime.isForegroundServiceRunning,
-                onCheckedChange = { enabled -> if (enabled) onStart() else onStop() },
-                enabled = settingsLoaded,
-                modifier = Modifier
-                    .size(width = 50.dp, height = 30.dp)
-                    .testTag(VolumeMapperTestTags.MASTER_SWITCH)
-                    .semantics {
-                        contentDescription = "启用精细音量控制"
-                        stateDescription = status
-                    },
-            )
-        }
+        Text(
+            text = appName,
+            modifier = Modifier.weight(1f),
+            fontSize = 24.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.sp,
+        )
+        Switch(
+            checked = runtime.isForegroundServiceRunning,
+            onCheckedChange = { enabled -> if (enabled) onStart() else onStop() },
+            enabled = settingsLoaded,
+            modifier = Modifier
+                .size(width = 50.dp, height = 30.dp)
+                .testTag(VolumeMapperTestTags.MASTER_SWITCH)
+                .semantics {
+                    contentDescription = switchContentDescription
+                    stateDescription = status
+                },
+        )
     }
 }
 
@@ -399,6 +343,13 @@ private fun LongPressIntervalCard(
     onIntervalChanged: (Long) -> Unit,
 ) {
     val value = intervalMillis.coerceIn(MINIMUM_HOLD_INTERVAL, MAXIMUM_HOLD_INTERVAL)
+    val valueAsInt = value.toInt()
+    val intervalContentDescription = stringResource(R.string.hold_interval_content_description)
+    val intervalStateDescription = pluralStringResource(
+        R.plurals.milliseconds_long,
+        valueAsInt,
+        valueAsInt,
+    )
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
@@ -415,7 +366,7 @@ private fun LongPressIntervalCard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "长按间隔",
+                text = stringResource(R.string.hold_interval),
                 modifier = Modifier.weight(1f),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.labelMedium,
@@ -431,16 +382,20 @@ private fun LongPressIntervalCard(
                     .size(40.dp)
                     .testTag(VolumeMapperTestTags.LONG_PRESS_INTERVAL_DECREMENT),
             ) {
-                Icon(Icons.Default.Remove, contentDescription = "长按间隔减少", modifier = Modifier.size(18.dp))
+                Icon(
+                    Icons.Default.Remove,
+                    contentDescription = stringResource(R.string.hold_interval_decrease),
+                    modifier = Modifier.size(18.dp),
+                )
             }
             Text(
-                text = "$value ms",
+                text = stringResource(R.string.milliseconds_short, valueAsInt),
                 modifier = Modifier
                     .width(52.dp)
                     .testTag(VolumeMapperTestTags.LONG_PRESS_INTERVAL_VALUE)
                     .semantics {
-                        contentDescription = "长按连续步进间隔"
-                        stateDescription = "$value 毫秒"
+                        contentDescription = intervalContentDescription
+                        stateDescription = intervalStateDescription
                     },
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Medium,
@@ -459,7 +414,11 @@ private fun LongPressIntervalCard(
                     .size(40.dp)
                     .testTag(VolumeMapperTestTags.LONG_PRESS_INTERVAL_INCREMENT),
             ) {
-                Icon(Icons.Default.Add, contentDescription = "长按间隔增加", modifier = Modifier.size(18.dp))
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = stringResource(R.string.hold_interval_increase),
+                    modifier = Modifier.size(18.dp),
+                )
             }
         }
     }
@@ -476,12 +435,50 @@ private fun DeviceCard(
     val context = LocalContext.current
     val manufacturer = manufacturerLabel()
     val summary = when {
-        runtime.isFailOpen -> "需处理"
-        runtime.canInterceptKeys -> "正常"
-        runtime.isForegroundServiceRunning -> "等待"
-        else -> "未启动"
+        runtime.isFailOpen -> stringResource(R.string.status_needs_attention)
+        runtime.canInterceptKeys -> stringResource(R.string.status_ready)
+        runtime.isForegroundServiceRunning -> stringResource(R.string.status_waiting)
+        else -> stringResource(R.string.status_not_started)
     }
     val snapshot = runtime.snapshot
+    val appName = stringResource(R.string.app_name)
+    val deviceLabel = stringResource(R.string.device)
+    val deviceInformation = stringResource(R.string.device_information)
+    val deviceExpansionState = stringResource(
+        if (expanded) R.string.state_expanded else R.string.state_collapsed,
+    )
+    val deviceSummary = stringResource(R.string.device_summary, manufacturer, summary)
+    val phoneLabel = stringResource(R.string.device_phone)
+    val outputLabel = stringResource(R.string.device_output)
+    val volumeRangeLabel = stringResource(R.string.device_volume_range)
+    val accessibilityLabel = stringResource(R.string.device_accessibility)
+    val backgroundLabel = stringResource(R.string.device_background)
+    val statusLabel = stringResource(R.string.device_status)
+    val outputName = snapshot?.route?.productName ?: stringResource(R.string.device_not_detected)
+    val volumeRange = snapshot?.let {
+        "${it.range.minIndex}–${it.range.maxIndex}"
+    } ?: stringResource(R.string.device_unknown)
+    val accessibilityState = stringResource(
+        if (runtime.isAccessibilityConnected) R.string.device_enabled else R.string.device_disabled,
+    )
+    val backgroundState = stringResource(
+        if (runtime.isForegroundServiceRunning) R.string.status_running else R.string.status_not_started,
+    )
+    val openAccessibilitySettings = stringResource(R.string.open_accessibility_settings)
+    val openAppSettings = stringResource(R.string.open_app_settings)
+    val clipboardLabel = stringResource(R.string.clipboard_status_label, appName)
+    val statusText = listOf(
+        stringResource(R.string.device_status_line, phoneLabel, manufacturer),
+        stringResource(R.string.device_status_line, outputLabel, outputName),
+        stringResource(R.string.device_status_line, volumeRangeLabel, volumeRange),
+        stringResource(R.string.device_status_line, accessibilityLabel, accessibilityState),
+        stringResource(R.string.device_status_line, backgroundLabel, backgroundState),
+        stringResource(
+            R.string.device_status_line,
+            statusLabel,
+            context.resolveLocalizedText(runtime.statusMessage),
+        ),
+    ).joinToString(separator = "\n")
     val borderedSurfaceColor = if (isSystemInDarkTheme()) {
         Color(0xFF3C3941)
     } else {
@@ -503,20 +500,20 @@ private fun DeviceCard(
                 .heightIn(min = 52.dp)
                 .testTag(VolumeMapperTestTags.DEVICE_TOGGLE)
                 .semantics {
-                    contentDescription = "设备信息"
-                    stateDescription = if (expanded) "已展开" else "已折叠"
+                    contentDescription = deviceInformation
+                    stateDescription = deviceExpansionState
                 },
             contentPadding = PaddingValues(horizontal = 14.dp),
         ) {
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
                 Text(
-                    "设备",
+                    deviceLabel,
                     color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    "$manufacturer · $summary",
+                    deviceSummary,
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -537,45 +534,43 @@ private fun DeviceCard(
                     .testTag(VolumeMapperTestTags.DEVICE_DETAILS),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                DeviceSettingRow(label = "手机", value = manufacturer)
+                DeviceSettingRow(label = phoneLabel, value = manufacturer)
                 DeviceSettingRow(
-                    label = "耳机名称",
-                    value = snapshot?.route?.productName ?: "未检测到",
+                    label = outputLabel,
+                    value = outputName,
                 )
                 DeviceSettingRow(
-                    label = "音量范围",
-                    value = snapshot?.let { "${it.range.minIndex}–${it.range.maxIndex}" } ?: "未知",
+                    label = volumeRangeLabel,
+                    value = volumeRange,
                 )
                 DeviceSettingRow(
-                    label = "无障碍",
-                    value = if (runtime.isAccessibilityConnected) "开启" else "关闭",
+                    label = accessibilityLabel,
+                    value = accessibilityState,
                     onClick = onOpenAccessibility,
+                    onClickLabel = openAccessibilitySettings,
                     testTag = VolumeMapperTestTags.DEVICE_ACCESSIBILITY_ROW,
                 )
                 DeviceSettingRow(
-                    label = "后台",
-                    value = if (runtime.isForegroundServiceRunning) "运行中" else "未启动",
+                    label = backgroundLabel,
+                    value = backgroundState,
                     onClick = onOpenAppSettings,
+                    onClickLabel = openAppSettings,
                     testTag = VolumeMapperTestTags.DEVICE_BACKGROUND_ROW,
                 )
                 TextButton(
                     onClick = {
-                        val statusText = buildString {
-                            appendLine("手机：$manufacturer")
-                            appendLine("耳机名称：${snapshot?.route?.productName ?: "未检测到"}")
-                            appendLine(
-                                "音量范围：${snapshot?.let { "${it.range.minIndex}–${it.range.maxIndex}" } ?: "未知"}",
-                            )
-                            appendLine("无障碍：${if (runtime.isAccessibilityConnected) "开启" else "关闭"}")
-                            appendLine("后台：${if (runtime.isForegroundServiceRunning) "运行中" else "未启动"}")
-                            append("状态：${runtime.statusMessage}")
-                        }
                         context.getSystemService(ClipboardManager::class.java)
-                            ?.setPrimaryClip(ClipData.newPlainText("音量映射状态", statusText))
+                            ?.setPrimaryClip(ClipData.newPlainText(clipboardLabel, statusText))
                         copied = true
                     },
                     contentPadding = PaddingValues(horizontal = 12.dp),
-                ) { Text(if (copied) "已复制" else "复制状态") }
+                ) {
+                    Text(
+                        stringResource(
+                            if (copied) R.string.action_copied else R.string.action_copy_status,
+                        ),
+                    )
+                }
             }
         }
     }
@@ -586,14 +581,10 @@ private fun DeviceSettingRow(
     label: String,
     value: String,
     onClick: (() -> Unit)? = null,
+    onClickLabel: String? = null,
     testTag: String? = null,
 ) {
     val valueColor = if (isSystemInDarkTheme()) Color(0xFFB8C7E5) else Color(0xFF515E77)
-    val rowActionLabel = when (label) {
-        "无障碍" -> "打开无障碍设置"
-        "后台" -> "打开应用后台设置"
-        else -> "打开设置"
-    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -601,7 +592,7 @@ private fun DeviceSettingRow(
             .heightIn(min = if (onClick == null) 42.dp else 48.dp)
             .then(
                 if (onClick != null) {
-                    Modifier.clickable(onClickLabel = rowActionLabel, onClick = onClick)
+                    Modifier.clickable(onClickLabel = onClickLabel, onClick = onClick)
                 } else {
                     Modifier
                 },
@@ -629,18 +620,19 @@ private fun DisclosureDialog(
     enabled: Boolean,
 ) {
     var confirmed by remember { mutableStateOf(false) }
+    val appName = stringResource(R.string.app_name)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("无障碍 API 显著披露") },
+        title = { Text(stringResource(R.string.accessibility_disclosure_title)) },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("为了在其他应用、桌面和锁屏场景接收手机实体音量键，本应用需要启用无障碍服务。")
-                Text("会处理：音量上/下键的键码与时间，并使用 AudioManager 修改全局媒体音量。")
-                Text("不会处理：屏幕文字、窗口内容、触摸、密码、账号信息；本应用不上传任何按键或音量数据。")
-                Text("消费音量键可能干扰截图、无障碍快捷方式和部分厂商快捷键；停止控制器即可恢复系统默认行为。")
+                Text(stringResource(R.string.accessibility_disclosure_purpose, appName))
+                Text(stringResource(R.string.accessibility_disclosure_processed, appName))
+                Text(stringResource(R.string.accessibility_disclosure_not_processed, appName))
+                Text(stringResource(R.string.accessibility_disclosure_conflicts, appName))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -653,40 +645,45 @@ private fun DisclosureDialog(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Checkbox(checked = confirmed, onCheckedChange = null)
-                    Text("我理解上述用途与按键冲突，并同意继续")
+                    Text(stringResource(R.string.accessibility_disclosure_consent))
                 }
             }
         },
         confirmButton = {
-            Button(onClick = onAccept, enabled = enabled && confirmed) { Text("同意") }
+            Button(onClick = onAccept, enabled = enabled && confirmed) {
+                Text(stringResource(R.string.action_agree))
+            }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         },
     )
 }
 
+@Composable
 private fun manufacturerLabel(): String {
     val manufacturer = Build.MANUFACTURER.trim()
     return when {
-        manufacturer.equals("xiaomi", ignoreCase = true) -> "小米"
-        manufacturer.isBlank() -> "未知厂商"
+        manufacturer.equals("xiaomi", ignoreCase = true) ->
+            stringResource(R.string.manufacturer_xiaomi)
+        manufacturer.isBlank() -> stringResource(R.string.manufacturer_unknown)
         else -> manufacturer.replaceFirstChar { character ->
             if (character.isLowerCase()) character.titlecase() else character.toString()
         }
     }
 }
 
-private fun routeMediaLabel(type: AudioRouteType): String = when (type) {
+@StringRes
+private fun routeMediaLabelResource(type: AudioRouteType): Int = when (type) {
     AudioRouteType.BLUETOOTH_A2DP,
     AudioRouteType.BLUETOOTH_LE,
-    -> "蓝牙媒体"
-    AudioRouteType.BUILT_IN_SPEAKER -> "手机媒体"
-    AudioRouteType.WIRED_HEADSET -> "有线媒体"
-    AudioRouteType.USB -> "USB 媒体"
-    AudioRouteType.HDMI -> "HDMI 媒体"
-    AudioRouteType.REMOTE -> "远程媒体"
-    AudioRouteType.UNKNOWN -> "媒体"
+    -> R.string.route_bluetooth
+    AudioRouteType.BUILT_IN_SPEAKER -> R.string.route_phone_speaker
+    AudioRouteType.WIRED_HEADSET -> R.string.route_wired
+    AudioRouteType.USB -> R.string.route_usb
+    AudioRouteType.HDMI -> R.string.route_hdmi
+    AudioRouteType.REMOTE -> R.string.route_remote
+    AudioRouteType.UNKNOWN -> R.string.route_unknown
 }
 
 private const val MINIMUM_HOLD_INTERVAL = KeyMappingConfig.MIN_HOLD_STEP_INTERVAL_MILLIS
@@ -695,8 +692,8 @@ private const val HOLD_INTERVAL_STEP = KeyMappingConfig.HOLD_STEP_INTERVAL_GRID_
 
 object VolumeMapperTestTags {
     const val SCREEN_MAIN = "screen_main"
+    const val BRAND_CONTROL_BAR = "brand_control_bar"
     const val MASTER_SWITCH = "master_switch"
-    const val CONTROLLER_STATUS_ACTION = "controller_status_action"
     const val LONG_PRESS_INTERVAL_VALUE = "long_press_interval_value"
     const val LONG_PRESS_INTERVAL_DECREMENT = "long_press_interval_decrement"
     const val LONG_PRESS_INTERVAL_INCREMENT = "long_press_interval_increment"

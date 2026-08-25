@@ -1,5 +1,6 @@
 package dev.spcdts.volumemapper.runtime
 
+import dev.spcdts.volumemapper.R
 import dev.spcdts.volumemapper.core.ActiveVolumePress
 import dev.spcdts.volumemapper.core.AudioRouteDescriptor
 import dev.spcdts.volumemapper.core.AudioRouteType
@@ -150,7 +151,7 @@ class MappingCoordinatorStateTest {
             isForegroundServiceRunning = true,
             isAccessibilityConnected = true,
             isMediaContextSafe = true,
-            statusMessage = "正在探测媒体音量能力",
+            statusMessage = localizedText(R.string.runtime_probing_volume),
         )
 
         val accepted = probing.withAcceptedSnapshot(
@@ -160,6 +161,6 @@ class MappingCoordinatorStateTest {
         )
 
         assertTrue(accepted.canInterceptKeys)
-        assertEquals("映射服务已就绪", accepted.statusMessage)
+        assertEquals(localizedText(R.string.runtime_ready), accepted.statusMessage)
     }
 }

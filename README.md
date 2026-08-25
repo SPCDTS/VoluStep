@@ -1,6 +1,6 @@
-# 音量映射器
+# VoluStep
 
-这是一个面向 Android 28–37 的全局媒体音量键映射应用。它用无障碍服务接收手机实体音量键，把按键状态 `x(t)` 交给可编辑曲线，再通过公开 `AudioManager` API 写入当前媒体路由实际支持的整数音量档位。
+VoluStep 是一个面向 Android 28–37 的全局媒体音量键映射应用。它用无障碍服务接收手机实体音量键，把按键状态 `x(t)` 交给可编辑曲线，再通过公开 `AudioManager` API 写入当前媒体路由实际支持的整数音量档位。
 
 项目当前实现：
 
@@ -13,6 +13,7 @@
 - 音量写入后的单周期两阶段回读、control/route epoch 失效、路由切换重置和连续失败自动放行；
 - A2DP、LE Audio、USB、HDMI、有线与扬声器的运行时能力探测，并区分 `CONFIRMED` 与 `HEURISTIC` 路由；
 - 显著披露、应用内停止开关，以及收纳在“设备”折叠区中的跨 OEM 状态与公开应用详情入口；API 33+ 不声明通知权限，FGS 只在系统“运行中的应用”入口留有状态；
+- 英文默认资源与简体中文 `zh-CN` 资源；品牌名 VoluStep 在两种语言中保持一致，界面、无障碍语义、运行状态和系统通知随应用语言切换；
 - JVM 单元测试、Android instrumentation 测试、API 28/36/37 模拟器 E2E、真机诊断采集和 Release/AAB 流程。
 
 ## 本机环境
@@ -70,17 +71,18 @@
 
 ```powershell
 .\gradlew.bat :app:connectedDebugAndroidTest
-.\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild
+.\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild -AppLocale en-US
+.\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild -AppLocale zh-CN
 ```
 
-完整 E2E 脚本只允许 `emulator-*`：它会清空测试应用数据、临时修改 secure accessibility settings、把可调试模拟器的 adbd 切到 root，并从 evdev 注入真正经过 Accessibility input filter 的音量键事件；结束时会恢复原无障碍配置、媒体/铃声音量和 adbd 身份。仓库中存在 AVD、脚本或测试源码，不代表任何 API 或真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)，本次实际执行结果见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
+完整 E2E 脚本只允许 `emulator-*`：它会清空测试应用数据、按 `-AppLocale` 选择英文或简体中文、临时修改 secure accessibility settings、把可调试模拟器的 adbd 切到 root，并从 evdev 注入真正经过 Accessibility input filter 的音量键事件；结束时会恢复原无障碍配置、媒体/铃声音量和 adbd 身份。仓库保持 30 个唯一测试入口；语言矩阵复用同一测试与 E2E 旅程，不靠复制 `@Test` 增加条数。仓库中存在 AVD、脚本或测试源码，不代表任何 API 或真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)，本次实际执行结果见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
 ## 小米真机使用
 
 1. 在开发者选项开启 USB 调试，连接后运行 `adb devices -l`。
 2. 安装 Debug APK，打开应用并阅读、勾选显著披露。
-3. 进入“无障碍设置”，启用“音量键映射服务”。
-4. 回到应用，打开顶部“控制”开关；Android 17 必须由这个可见界面启动前台服务。
+3. 进入“无障碍设置”，启用“VoluStep 音量控制”。
+4. 回到应用，打开顶部 VoluStep 主开关；Android 17 必须由这个可见界面启动前台服务。
 5. 启动后可以划掉最近任务卡片；控制器与无障碍服务应继续运行，重新打开应用可从主开关停止。
 6. 在主界面的“设备”折叠区确认蓝牙路由、系统 min/max 和运行状态。
 7. HyperOS 若连续回读失败，检查“调节媒体音量”权限、后台运行和省电限制。

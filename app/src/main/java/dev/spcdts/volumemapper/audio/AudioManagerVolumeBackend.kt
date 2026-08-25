@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import dev.spcdts.volumemapper.R
 import dev.spcdts.volumemapper.core.AbsoluteVolumeSupport
 import dev.spcdts.volumemapper.core.AudioRouteDescriptor
 import dev.spcdts.volumemapper.core.AudioRouteType
@@ -78,7 +79,7 @@ class AudioManagerVolumeBackend(context: Context) {
     }
 
     fun setMediaVolume(index: Int, showSystemUi: Boolean): Result<Unit> = runCatching {
-        check(!isVolumeFixed) { "该设备报告固定音量，系统不允许应用调整" }
+        check(!isVolumeFixed) { applicationContext.getString(R.string.audio_error_fixed_volume) }
         val flags = if (showSystemUi) AudioManager.FLAG_SHOW_UI else 0
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, index, flags)
     }
@@ -186,7 +187,7 @@ class AudioManagerVolumeBackend(context: Context) {
             .orEmpty()
         val candidates = selectedRouteOutputs.ifEmpty { outputs }
         val device = candidates.maxByOrNull { routePriority(it.type) }
-            ?: error("系统没有报告媒体输出设备")
+            ?: error(applicationContext.getString(R.string.audio_error_no_output))
         return ResolvedOutputDevice(device, RouteConfidence.HEURISTIC)
     }
 

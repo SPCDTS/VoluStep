@@ -1,5 +1,13 @@
 # 本机验证记录
 
+## 2026-08-25 VoluStep 品牌与中英本地化
+
+本轮把正式应用名统一为 VoluStep，默认资源使用英文，简体中文放在 `values-zh-rCN`；界面、显著披露、无障碍语义 action、运行状态和前台服务文案均通过 Android 字符串资源解析。运行时状态保存资源标识与格式化参数，不在无 Activity 的协调器中提前固化某一种语言。
+
+测试总量继续限制为 30 个唯一 `@Test` 入口：首屏资源与布局测试固定覆盖英文，无障碍点/线段 action 测试固定覆盖简体中文，其余行为测试从当前 locale 的资源构造语义期望；没有把语言矩阵扩成新的参数化测试或巨型聚合方法。宿主 E2E 新增 `-AppLocale en-US|zh-CN`，由现有 instrumentation fixture 把当前语言下的主开关描述和通知标题传给 PowerShell，脚本不再硬编码中文选择器。
+
+当前已执行 `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest :app:bundleRelease`：`BUILD SUCCESSFUL`，JVM 21/21 与 API 37 模拟器 instrumentation 9/9 全部通过，lint 为 0 error。英文 `en-US` 与简体中文 `zh-CN` 分别复用同一条宿主 E2E 旅程，两次均验证划掉任务卡片后后台映射 `5 -> 11 -> 5`，关闭主开关后由系统恢复默认按键处理；两种语言的主界面截图也已人工检查，VoluStep 品牌名保持一致且未发现截断或重叠。最终 Debug APK 已通过标准 ADB 覆盖安装到小米真机，版本为 `0.1.0-debug`，原无障碍授权仍在；覆盖安装会停止前台控制器，需由用户在可见界面重新打开主开关。PowerShell E2E 脚本语法检查和 `git diff --check` 通过。
+
 ## 2026-08-25 API 33+ 静默前台服务
 
 本轮保留 Android 17 后台音量修改所需的 `specialUse` FGS，但移除了 `POST_NOTIFICATIONS` Manifest 声明、运行时权限请求、拒绝弹窗和启动门槛。服务仍向 `startForeground()` 提交平台要求的 `Notification` 对象；Android 13 及以上不在普通通知抽屉显示该控制器，系统“运行中的应用”入口仍可见。应用主开关继续提供明确的启动与停止入口，设备区后台状态由“允许”改为“运行中”。
@@ -16,7 +24,7 @@
 
 ## 2026-08-25 正式单屏 UI、选择式增删与图标对齐
 
-本轮按正式发布界面收口为单一主屏：顶部只保留“精细控制”总开关与状态，曲线卡片承载全部高频编辑，设备与授权信息收纳在可折叠的“设备”区域；不再提供 Tab、常驻诊断页、Undo/Redo 或按键说明菜单。
+本轮按正式发布界面收口为单一主屏：顶部只保留应用名“VoluStep”与总开关，曲线卡片承载全部高频编辑，设备与授权信息收纳在可折叠的“设备”区域；不再提供 Tab、常驻诊断页、Undo/Redo 或按键说明菜单。
 
 本轮曲线编辑与图标目标如下：
 

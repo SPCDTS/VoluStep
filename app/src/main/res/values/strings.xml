@@ -1,11 +1,142 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">音量映射器</string>
-    <string name="accessibility_service_name">音量键映射服务</string>
-    <string name="accessibility_service_description">仅接收实体音量键事件，用用户配置的曲线控制媒体音量；不读取屏幕内容。</string>
-    <string name="controller_channel_name">音量映射运行状态</string>
-    <string name="controller_channel_description">供系统标识后台音量键映射的运行状态</string>
-    <string name="controller_notification_title">音量键映射正在运行</string>
-    <string name="controller_notification_text">实体音量键将按当前曲线控制媒体音量</string>
-    <string name="controller_stop">停止映射</string>
+    <string name="app_name" translatable="false">VoluStep</string>
+
+    <string name="accessibility_service_name">VoluStep volume control</string>
+    <string name="accessibility_service_description">Detects physical volume-button presses and uses your custom curve to control media volume. Does not read screen content.</string>
+    <string name="controller_channel_name">VoluStep status</string>
+    <string name="controller_channel_description">Shows whether background volume-button mapping is running.</string>
+    <string name="controller_notification_title">VoluStep is running</string>
+    <string name="controller_notification_text">Physical volume buttons use your current curve.</string>
+    <string name="controller_stop">Stop</string>
+
+    <string name="action_ok">OK</string>
+    <string name="action_agree">Agree</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_copy_status">Copy status</string>
+    <string name="action_copied">Copied</string>
+    <string name="error_open_settings_title">Cannot open system settings</string>
+    <string name="error_open_settings_message">Open system settings manually and find %1$s.</string>
+    <string name="error_controller_start_title">Could not start controller</string>
+    <string name="error_controller_start_message">Android could not start the foreground controller: %1$s</string>
+    <string name="loading">Loading…</string>
+
+    <string name="status_loading">Loading</string>
+    <string name="status_authorization_required">Authorization required</string>
+    <string name="status_waiting_accessibility">Waiting for Accessibility</string>
+    <string name="status_enable_accessibility">Enable Accessibility</string>
+    <string name="status_paused">Paused</string>
+    <string name="status_running">Running</string>
+    <string name="status_waiting_media">Waiting for media</string>
+    <string name="status_not_started">Not started</string>
+    <string name="status_needs_attention">Action needed</string>
+    <string name="status_ready">Ready</string>
+    <string name="status_waiting">Waiting</string>
+    <string name="brand_control_status">%1$s · %2$d–%3$d</string>
+    <string name="master_switch_content_description">%1$s master switch</string>
+
+    <string name="hold_interval">Hold interval</string>
+    <string name="hold_interval_decrease">Decrease hold interval</string>
+    <string name="hold_interval_increase">Increase hold interval</string>
+    <string name="hold_interval_content_description">Continuous long-press step interval</string>
+    <string name="milliseconds_short">%1$d ms</string>
+    <plurals name="milliseconds_long">
+        <item quantity="one">%1$d millisecond</item>
+        <item quantity="other">%1$d milliseconds</item>
+    </plurals>
+
+    <string name="device">Device</string>
+    <string name="device_information">Device information</string>
+    <string name="state_expanded">Expanded</string>
+    <string name="state_collapsed">Collapsed</string>
+    <string name="device_summary">%1$s · %2$s</string>
+    <string name="device_phone">Phone</string>
+    <string name="device_output">Output</string>
+    <string name="device_volume_range">Volume range</string>
+    <string name="device_accessibility">Accessibility</string>
+    <string name="device_background">Background</string>
+    <string name="device_status">Status</string>
+    <string name="device_not_detected">Not detected</string>
+    <string name="device_unknown">Unknown</string>
+    <string name="device_enabled">Enabled</string>
+    <string name="device_disabled">Disabled</string>
+    <string name="device_status_line">%1$s: %2$s</string>
+    <string name="clipboard_status_label">%1$s status</string>
+    <string name="open_accessibility_settings">Open Accessibility settings</string>
+    <string name="open_app_settings">Open app settings</string>
+    <string name="manufacturer_xiaomi" translatable="false">Xiaomi</string>
+    <string name="manufacturer_unknown">Unknown manufacturer</string>
+
+    <string name="accessibility_disclosure_title">Accessibility API disclosure</string>
+    <string name="accessibility_disclosure_purpose">To detect physical volume buttons in other apps, on the Home screen, and on the lock screen, %1$s uses an Accessibility service.</string>
+    <string name="accessibility_disclosure_processed">Processed: volume-up and volume-down key codes and timing. %1$s uses AudioManager to change system media volume.</string>
+    <string name="accessibility_disclosure_not_processed">Not processed: screen text, window content, touches, passwords, or account data. %1$s does not upload key or volume data.</string>
+    <string name="accessibility_disclosure_conflicts">Intercepting volume buttons may affect screenshots, accessibility shortcuts, and some manufacturer shortcuts. Turn off %1$s to restore default behavior.</string>
+    <string name="accessibility_disclosure_consent">I understand the purpose and possible button conflicts, and agree to continue.</string>
+
+    <string name="route_bluetooth">Bluetooth media</string>
+    <string name="route_phone_speaker">Phone media</string>
+    <string name="route_wired">Wired media</string>
+    <string name="route_usb">USB media</string>
+    <string name="route_hdmi">HDMI media</string>
+    <string name="route_remote">Remote media</string>
+    <string name="route_unknown">Media</string>
+
+    <string name="curve_control_points">Control points</string>
+    <string name="curve_button_presses">Button presses</string>
+    <string name="curve_chart_description">Volume mapping chart. The horizontal axis is integer button presses; the vertical axis is integer volume indices. Tap a control point or segment to select it.</string>
+    <string name="curve_current_volume_line">Current volume line: %1$d.</string>
+    <string name="curve_state_summary">Button presses: %1$d. Control points: %2$d.</string>
+    <string name="curve_state_selected_point">Selected control point: %1$d.</string>
+    <string name="curve_state_selected_segment">Selected segment: %1$d.</string>
+    <string name="curve_state_x">X: %1$d.</string>
+    <string name="curve_state_index">Volume index: %1$d.</string>
+    <string name="curve_state_x_range">X: %1$d to %2$d.</string>
+    <string name="curve_state_index_range">Volume indices: %1$d to %2$d.</string>
+    <string name="curve_state_vertical_hint">Up and down actions move through levels available on the current output.</string>
+    <string name="curve_state_current_volume">Current volume: %1$d.</string>
+    <string name="curve_current_badge">Current %1$d</string>
+    <string name="curve_no_adjustable_levels">This output has no adjustable volume levels.</string>
+    <string name="curve_empty_value">Empty</string>
+    <string name="curve_decrease_value">Decrease %1$s</string>
+    <string name="curve_increase_value">Increase %1$s</string>
+    <string name="curve_action_select_previous_point">Select previous control point</string>
+    <string name="curve_action_select_next_point">Select next control point</string>
+    <string name="curve_action_select_previous_segment">Select previous segment</string>
+    <string name="curve_action_select_next_segment">Select next segment</string>
+    <string name="curve_action_move_point_left">Move control point left by one press</string>
+    <string name="curve_action_move_point_right">Move control point right by one press</string>
+    <string name="curve_action_move_point_up">Move control point up one available volume level</string>
+    <string name="curve_action_move_point_down">Move control point down one available volume level</string>
+    <string name="curve_action_delete_point">Delete selected control point</string>
+    <string name="curve_action_insert_point">Insert a control point in the selected segment</string>
+
+    <string name="runtime_mapping_disabled">Mapping is off</string>
+    <string name="runtime_fixed_volume">The system reports fixed volume; default key behavior is restored</string>
+    <string name="runtime_unsafe_media_context">Volume keys are not intercepted during calls or protected system audio</string>
+    <string name="runtime_ready">Mapping is ready</string>
+    <string name="runtime_stopped_by_user">Mapping stopped</string>
+    <string name="runtime_probing_volume">Checking media-volume capabilities</string>
+    <string name="runtime_waiting_accessibility">Controller running; waiting for Accessibility</string>
+    <string name="runtime_reprobing_volume">Rechecking media-volume capabilities</string>
+    <string name="runtime_controller_stopped">Foreground controller stopped</string>
+    <string name="runtime_accessibility_connected">Accessibility connected; start the controller</string>
+    <string name="runtime_enable_accessibility">Enable VoluStep volume control in system settings</string>
+    <string name="runtime_curve_updated">Mapping curve updated</string>
+    <string name="runtime_read_volume_failed">Could not read media volume: %1$s</string>
+    <string name="runtime_up_timeout">Volume-key UP timed out; continuous adjustment stopped</string>
+    <string name="runtime_stale_gesture_cleared">Cleared a stale volume-key gesture without UP</string>
+    <string name="runtime_delayed_gesture_ignored">Ignored a delayed volume-key gesture</string>
+    <string name="runtime_audio_environment_changed">Audio environment changed; rechecking</string>
+    <string name="runtime_route_check_failed">Could not verify the output route during continuous adjustment: %1$s</string>
+    <string name="runtime_probe_failed">Volume capability check failed: %1$s</string>
+    <string name="runtime_route_changed">Output route or volume range changed; the current key gesture was cancelled</string>
+    <string name="runtime_requested">Requested %1$d/%2$d</string>
+    <string name="runtime_write_rejected">The system rejected the volume change: %1$s</string>
+    <string name="runtime_read_after_write_failed">Could not read media volume after the write</string>
+    <string name="runtime_write_confirmed">Confirmed %1$d/%2$d</string>
+    <string name="runtime_readback_mismatch">Readback mismatch: requested %1$d, system kept %2$d</string>
+    <string name="runtime_fail_open">%1$s; subsequent volume keys now pass through</string>
+    <string name="audio_error_fixed_volume">The device reports fixed volume; apps cannot adjust it</string>
+    <string name="audio_error_no_output">The system reported no media output device</string>
 </resources>

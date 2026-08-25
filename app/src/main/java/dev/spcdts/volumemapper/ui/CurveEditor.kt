@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
@@ -70,6 +71,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.spcdts.volumemapper.R
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import kotlin.math.abs
@@ -208,7 +210,6 @@ fun MappingCurveEditor(
         displayIndexForOffset(renderedMap, offset)
     }
     val currentDisplayIndex = snapshot?.currentIndex?.toDouble()
-    val currentIndexLabel = snapshot?.currentIndex?.toString()
     val currentX = currentDisplayIndex?.let { index ->
         renderedMap.normalizedXForDisplayedIndex(displayedControlIndices, index)
     }
@@ -368,9 +369,84 @@ fun MappingCurveEditor(
         renderedMap,
         renderedMap.offsets[selectedIndex],
     )
+    val controlPointsLabel = stringResource(R.string.curve_control_points)
+    val buttonPressesLabel = stringResource(R.string.curve_button_presses)
+    val selectPreviousPointAction = stringResource(
+        R.string.curve_action_select_previous_point,
+    )
+    val selectNextPointAction = stringResource(R.string.curve_action_select_next_point)
+    val selectPreviousSegmentAction = stringResource(
+        R.string.curve_action_select_previous_segment,
+    )
+    val selectNextSegmentAction = stringResource(R.string.curve_action_select_next_segment)
+    val movePointLeftAction = stringResource(R.string.curve_action_move_point_left)
+    val movePointRightAction = stringResource(R.string.curve_action_move_point_right)
+    val movePointUpAction = stringResource(R.string.curve_action_move_point_up)
+    val movePointDownAction = stringResource(R.string.curve_action_move_point_down)
+    val deletePointAction = stringResource(R.string.curve_action_delete_point)
+    val insertPointAction = stringResource(R.string.curve_action_insert_point)
+    val chartDescription = stringResource(R.string.curve_chart_description)
+    val currentVolumeLineDescription = if (snapshot != null) {
+        stringResource(R.string.curve_current_volume_line, snapshot.currentIndex)
+    } else {
+        null
+    }
+    val chartContentDescription = listOfNotNull(
+        chartDescription,
+        currentVolumeLineDescription,
+    ).joinToString(separator = " ")
+    val summaryStateDescription = stringResource(
+        R.string.curve_state_summary,
+        renderedMap.pressCount,
+        renderedMap.controlPointCount,
+    )
+    val selectionStateDescriptions = if (selectedSegmentIndex == null) {
+        listOf(
+            stringResource(R.string.curve_state_selected_point, selectedIndex + 1),
+            stringResource(
+                R.string.curve_state_x,
+                renderedMap.pressPositionAt(selectedIndex),
+            ),
+            stringResource(R.string.curve_state_index, selectedDisplayIndex),
+            stringResource(R.string.curve_state_vertical_hint),
+        )
+    } else {
+        listOf(
+            stringResource(
+                R.string.curve_state_selected_segment,
+                selectedSegmentIndex + 1,
+            ),
+            stringResource(
+                R.string.curve_state_x_range,
+                renderedMap.pressPositionAt(selectedSegmentIndex),
+                renderedMap.pressPositionAt(selectedSegmentIndex + 1),
+            ),
+            stringResource(
+                R.string.curve_state_index_range,
+                displayedControlIndices[selectedSegmentIndex],
+                displayedControlIndices[selectedSegmentIndex + 1],
+            ),
+        )
+    }
+    val currentVolumeStateDescription = if (snapshot != null) {
+        stringResource(R.string.curve_state_current_volume, snapshot.currentIndex)
+    } else {
+        null
+    }
+    val chartStateDescription = buildList {
+        add(summaryStateDescription)
+        addAll(selectionStateDescriptions)
+        currentVolumeStateDescription?.let(::add)
+    }.joinToString(separator = " ")
+    val currentBadgeText = if (snapshot != null) {
+        stringResource(R.string.curve_current_badge, snapshot.currentIndex)
+    } else {
+        null
+    }
+    val noAdjustableLevelsText = stringResource(R.string.curve_no_adjustable_levels)
     val chartCustomActions = buildList {
         add(
-            CustomAccessibilityAction("选择上一个控制点") {
+            CustomAccessibilityAction(selectPreviousPointAction) {
                 val base = selectedSegment?.plus(1) ?: selectedControlPoint
                 if (base <= 0) {
                     false
@@ -382,7 +458,7 @@ fun MappingCurveEditor(
             },
         )
         add(
-            CustomAccessibilityAction("选择下一个控制点") {
+            CustomAccessibilityAction(selectNextPointAction) {
                 val base = selectedSegment ?: selectedControlPoint
                 if (base >= editorMap.controlSegmentCount) {
                     false
@@ -394,7 +470,7 @@ fun MappingCurveEditor(
             },
         )
         add(
-            CustomAccessibilityAction("选择上一条线段") {
+            CustomAccessibilityAction(selectPreviousSegmentAction) {
                 val target = selectedSegment?.minus(1) ?: (selectedControlPoint - 1)
                 if (target !in 0 until editorMap.controlSegmentCount) {
                     false
@@ -405,7 +481,7 @@ fun MappingCurveEditor(
             },
         )
         add(
-            CustomAccessibilityAction("选择下一条线段") {
+            CustomAccessibilityAction(selectNextSegmentAction) {
                 val target = selectedSegment?.plus(1) ?: selectedControlPoint
                 if (target !in 0 until editorMap.controlSegmentCount) {
                     false
@@ -417,29 +493,29 @@ fun MappingCurveEditor(
         )
         if (selectedSegmentIndex == null && canDeleteSelectedPoint && editorReady) {
             add(
-                CustomAccessibilityAction("控制点左移一个按键位置") {
+                CustomAccessibilityAction(movePointLeftAction) {
                     moveSelectedControlPoint(pressDelta = -1)
                 },
             )
             add(
-                CustomAccessibilityAction("控制点右移一个按键位置") {
+                CustomAccessibilityAction(movePointRightAction) {
                     moveSelectedControlPoint(pressDelta = 1)
                 },
             )
             add(
-                CustomAccessibilityAction("控制点上移一个可表示档位") {
+                CustomAccessibilityAction(movePointUpAction) {
                     moveSelectedControlPoint(displayIndexDelta = 1)
                 },
             )
             add(
-                CustomAccessibilityAction("控制点下移一个可表示档位") {
+                CustomAccessibilityAction(movePointDownAction) {
                     moveSelectedControlPoint(displayIndexDelta = -1)
                 },
             )
-            add(CustomAccessibilityAction("删除选中控制点") { deleteSelectedControlPoint() })
+            add(CustomAccessibilityAction(deletePointAction) { deleteSelectedControlPoint() })
         }
         if (selectedSegmentIndex != null && canInsertSelectedSegment && editorReady) {
-            add(CustomAccessibilityAction("在线段中插入控制点") { insertSelectedSegment() })
+            add(CustomAccessibilityAction(insertPointAction) { insertSelectedSegment() })
         }
     }
 
@@ -448,7 +524,7 @@ fun MappingCurveEditor(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         CompactCurveStepper(
-            label = "控制点数量",
+            label = controlPointsLabel,
             value = renderedMap.controlPointCount,
             minimum = 2,
             maximum = maximumControlPointCount,
@@ -473,36 +549,8 @@ fun MappingCurveEditor(
                 .height(chartHeight)
                 .testTag(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
                 .semantics {
-                    contentDescription = buildString {
-                        append(
-                            "音量映射图。横轴是整数按键次数，纵轴是整数音量 index；" +
-                                "点击控制点或线段进行选择。",
-                        )
-                        snapshot?.let { append("当前音量水平线 ${it.currentIndex}。") }
-                    }
-                    stateDescription = buildString {
-                        append(
-                            "按键次数 ${renderedMap.pressCount}，" +
-                                "控制点数量 ${renderedMap.controlPointCount}",
-                        )
-                        if (selectedSegmentIndex == null) {
-                            append("，已选第 ${selectedIndex + 1} 个控制点")
-                            append("，x ${renderedMap.pressPositionAt(selectedIndex)}")
-                            append("，index $selectedDisplayIndex")
-                            append("，上下操作按当前路由可表示档位移动")
-                        } else {
-                            append("，已选第 ${selectedSegmentIndex + 1} 条线段")
-                            append(
-                                "，x ${renderedMap.pressPositionAt(selectedSegmentIndex)}" +
-                                    " 到 ${renderedMap.pressPositionAt(selectedSegmentIndex + 1)}",
-                            )
-                            append(
-                                "，index ${displayedControlIndices[selectedSegmentIndex]}" +
-                                    " 到 ${displayedControlIndices[selectedSegmentIndex + 1]}",
-                            )
-                        }
-                        snapshot?.let { append("，当前音量 ${it.currentIndex}") }
-                    }
+                    contentDescription = chartContentDescription
+                    stateDescription = chartStateDescription
                     customActions = chartCustomActions
                 }
                 .focusable(),
@@ -951,7 +999,7 @@ fun MappingCurveEditor(
                 }
 
                 val currentIntersection = if (
-                    currentY != null && currentX != null && currentIndexLabel != null
+                    currentY != null && currentX != null && currentBadgeText != null
                 ) {
                     Offset(
                         x = plotLeft + currentX.toFloat() * plotWidth,
@@ -1050,8 +1098,8 @@ fun MappingCurveEditor(
                     )
                 }
 
-                if (currentY != null && currentX != null && currentIndexLabel != null) {
-                    val tagText = "当前 $currentIndexLabel"
+                if (currentY != null && currentX != null && currentBadgeText != null) {
+                    val tagText = currentBadgeText
                     val tagPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
                         color = currentContent.toArgb()
                         textSize = 11.sp.toPx()
@@ -1105,7 +1153,7 @@ fun MappingCurveEditor(
         }
 
         CompactCurveStepper(
-            label = "按键次数",
+            label = buttonPressesLabel,
             value = renderedMap.pressCount,
             minimum = renderedMap.controlSegmentCount,
             maximum = renderedMap.basisSpan,
@@ -1127,7 +1175,7 @@ fun MappingCurveEditor(
 
         if (snapshot != null && snapshot.range.minIndex == snapshot.range.maxIndex) {
             Text(
-                text = "当前输出设备不提供可调音量档位",
+                text = noAdjustableLevelsText,
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -1158,6 +1206,17 @@ private fun CompactCurveStepper(
     val darkTheme = isSystemInDarkTheme()
     val containerColor = if (darkTheme) Color(0xFF28262C) else Color(0xFFF0EDF4)
     val contentColor = MaterialTheme.colorScheme.onSurface
+    val emptyValueDescription = stringResource(R.string.curve_empty_value)
+    val decreaseDescription = if (valueEditable) {
+        stringResource(R.string.curve_decrease_value, label)
+    } else {
+        stringResource(R.string.curve_action_delete_point)
+    }
+    val increaseDescription = if (valueEditable) {
+        stringResource(R.string.curve_increase_value, label)
+    } else {
+        stringResource(R.string.curve_action_insert_point)
+    }
 
     LaunchedEffect(value, inputHasFocus, draftEdited) {
         if (!inputHasFocus || !draftEdited) {
@@ -1234,11 +1293,7 @@ private fun CompactCurveStepper(
         ) {
             Icon(
                 Icons.Default.Remove,
-                contentDescription = if (valueEditable) {
-                    "$label 减少"
-                } else {
-                    "删除选中的控制点"
-                },
+                contentDescription = decreaseDescription,
                 modifier = Modifier.size(18.dp),
             )
         }
@@ -1263,7 +1318,7 @@ private fun CompactCurveStepper(
                     }
                     .semantics {
                         contentDescription = label
-                        stateDescription = draftValue.ifBlank { "空" }
+                        stateDescription = draftValue.ifBlank { emptyValueDescription }
                     },
                 textStyle = MaterialTheme.typography.bodyLarge.copy(
                     color = contentColor.copy(alpha = if (enabled) 1f else 0.38f),
@@ -1321,11 +1376,7 @@ private fun CompactCurveStepper(
         ) {
             Icon(
                 Icons.Default.Add,
-                contentDescription = if (valueEditable) {
-                    "$label 增加"
-                } else {
-                    "在选中的线段中插入控制点"
-                },
+                contentDescription = increaseDescription,
                 modifier = Modifier.size(18.dp),
             )
         }

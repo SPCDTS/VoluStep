@@ -72,6 +72,11 @@ android {
         buildConfig = true
     }
 
+    androidResources {
+        generateLocaleConfig = true
+        localeFilters += listOf("en", "zh-rCN")
+    }
+
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }

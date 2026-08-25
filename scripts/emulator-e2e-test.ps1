@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$Serial = 'emulator-5554',
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [ValidateSet('en-US', 'zh-CN')]
+    [string]$AppLocale = 'en-US'
 )
 
 . (Join-Path $PSScriptRoot 'android-env.ps1')
@@ -45,6 +47,23 @@ function Wait-ForCondition {
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
     throw $FailureMessage
+}
+
+function Get-InstrumentationStatusValue {
+    param(
+        [string]$Output,
+        [string]$Key
+    )
+
+    $escapedKey = [regex]::Escape($Key)
+    $match = [regex]::Match(
+        $Output,
+        "(?m)^INSTRUMENTATION_STATUS:\s+${escapedKey}=(.*)\r?$"
+    )
+    if (-not $match.Success) {
+        throw "Instrumentation 未返回资源契约：$Key"
+    }
+    return $match.Groups[1].Value.Trim()
 }
 
 function Invoke-CleanupStep {
@@ -518,6 +537,7 @@ try {
     $instrumentLines = Invoke-Adb shell am instrument '-w' '-r' `
         '-e' class $fixtureTest `
         '-e' e2ePrepareOnly true `
+        '-e' e2eLocale $AppLocale `
         $runnerComponent
     $instrumentOutput = [string]::Join([Environment]::NewLine, [string[]]$instrumentLines)
     Write-Host $instrumentOutput
@@ -528,13 +548,19 @@ try {
     ) {
         throw '显著披露/设置准备阶段 instrumentation 未通过。'
     }
+    $masterSwitchDescription = Get-InstrumentationStatusValue `
+        -Output $instrumentOutput `
+        -Key 'e2eMasterSwitchDescription'
+    $notificationTitle = Get-InstrumentationStatusValue `
+        -Output $instrumentOutput `
+        -Key 'e2eNotificationTitle'
 
     Invoke-Adb shell am start '-W' '-n' $activityComponent | Out-Null
 
     # 先在目标服务尚未启用时取得主开关坐标，避免 uiautomator dump 注册的
     # UiAutomation 与真实 AccessibilityService 反复断连/重绑。服务 bound 后再点击缓存坐标。
     $startButtonPoint = Get-UiTapPointByTextWithScroll `
-        -Text '启用精细音量控制' `
+        -Text $masterSwitchDescription `
         -AllowNonClickable
 
     $serviceEntries = @($originalServices.Split(':') | Where-Object { $_ -and $_ -ne 'null' })
@@ -564,7 +590,7 @@ try {
         Test-ControllerServiceRunning
     }
     if ([int]([string](Invoke-Adb shell getprop ro.build.version.sdk)).Trim() -ge 33) {
-        Assert-NotificationAbsentFromShade -Title '音量键映射正在运行'
+        Assert-NotificationAbsentFromShade -Title $notificationTitle
         Wait-ForCondition -FailureMessage '通知抽屉检查后 AccessibilityService 未重新绑定。' -Condition {
             Test-AccessibilityServiceBound
         }

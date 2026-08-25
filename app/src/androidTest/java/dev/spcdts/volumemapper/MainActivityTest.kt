@@ -1,5 +1,9 @@
 package dev.spcdts.volumemapper
 
+import android.app.LocaleManager
+import android.os.Build
+import android.os.LocaleList
+import androidx.annotation.StringRes
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -25,6 +29,7 @@ import dev.spcdts.volumemapper.data.SettingsRepository
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.ui.CurveEditorTestTags
 import dev.spcdts.volumemapper.ui.VolumeMapperTestTags
+import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -40,9 +45,15 @@ class MainActivityTest {
 
     private lateinit var settingsRepository: SettingsRepository
     private lateinit var originalSettings: VolumeMapperSettings
+    private var originalApplicationLocales: LocaleList? = null
 
     @Before
     fun captureSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            originalApplicationLocales = composeRule.activity
+                .getSystemService(LocaleManager::class.java)
+                .applicationLocales
+        }
         val graph = (composeRule.activity.application as VolumeMapperApplication).graph
         val repository = graph.settingsRepository
         composeRule.waitUntil(10_000L) { repository.hasLoadedInitialSettings }
@@ -52,37 +63,44 @@ class MainActivityTest {
 
     @After
     fun restoreSettings() {
-        runBlocking { settingsRepository.replaceSettingsAndAwait(originalSettings) }
+        try {
+            runBlocking { settingsRepository.replaceSettingsAndAwait(originalSettings) }
+        } finally {
+            restoreApplicationLocales()
+        }
     }
 
     @Test
     fun singlePageShowsCoreControlsLargeChartAndCurrentVolumeSemantics() {
+        useApplicationLocale("en-US")
         replaceSettings(testSettings(disclosureAccepted = false))
         val graph = (composeRule.activity.application as VolumeMapperApplication).graph
         graph.mappingCoordinator.refreshSnapshot()
         composeRule.waitUntil(10_000L) { graph.mappingCoordinator.runtime.value.snapshot != null }
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            assertEquals("en", composeRule.activity.resources.configuration.locales[0].language)
+        }
+        assertEquals("VoluStep", appString(R.string.app_name))
         composeRule.onNodeWithTag(VolumeMapperTestTags.SCREEN_MAIN).assertIsDisplayed()
-        composeRule.onNodeWithText("音量映射").assertIsDisplayed()
-        composeRule.onNodeWithText("精细控制").assertIsDisplayed()
+        composeRule.onNodeWithText(appString(R.string.app_name)).assertIsDisplayed()
+        composeRule.onAllNodesWithTag(VolumeMapperTestTags.BRAND_CONTROL_BAR)
+            .assertCountEquals(1)
         composeRule.onNodeWithTag(VolumeMapperTestTags.MASTER_SWITCH)
             .assertIsDisplayed()
             .assert(isToggleable())
             .assert(hasClickAction())
         assertEquals(
-            "启用精细音量控制",
+            appString(
+                R.string.master_switch_content_description,
+                appString(R.string.app_name),
+            ),
             contentDescription(VolumeMapperTestTags.MASTER_SWITCH),
-        )
-        composeRule.onNodeWithTag(VolumeMapperTestTags.CONTROLLER_STATUS_ACTION)
-            .assert(hasClickAction())
-        assertEquals(
-            "查看授权说明",
-            onClickLabel(VolumeMapperTestTags.CONTROLLER_STATUS_ACTION),
         )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT)
             .assertIsDisplayed()
         assertEquals(
-            "控制点数量",
+            appString(R.string.curve_control_points),
             contentDescription(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT),
         )
         val screenBounds = composeRule.onNodeWithTag(VolumeMapperTestTags.SCREEN_MAIN)
@@ -105,7 +123,7 @@ class MainActivityTest {
             .performScrollTo()
             .assertIsDisplayed()
         assertEquals(
-            "按键次数",
+            appString(R.string.curve_button_presses),
             contentDescription(CurveEditorTestTags.PRESS_COUNT_INPUT),
         )
         composeRule.onNodeWithTag(VolumeMapperTestTags.LONG_PRESS_INTERVAL_VALUE)
@@ -127,15 +145,28 @@ class MainActivityTest {
             composeRule.onAllNodesWithTag(removedTag).assertCountEquals(0)
         }
 
-        val currentIndex = checkNotNull(graph.mappingCoordinator.runtime.value.snapshot).currentIndex
+        val snapshot = checkNotNull(graph.mappingCoordinator.runtime.value.snapshot)
+        val currentIndex = snapshot.currentIndex
         val markerDescription = contentDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
+        assertTrue(markerDescription.contains(appString(R.string.curve_chart_description)))
         assertTrue(
             "当前音量水平线必须向无障碍服务暴露实际 index",
-            markerDescription.contains("当前音量水平线 $currentIndex"),
+            markerDescription.contains(
+                appString(R.string.curve_current_volume_line, currentIndex),
+            ),
         )
         val markerState = stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-        assertTrue(markerState.contains("按键次数 18，控制点数量 5"))
-        assertTrue(markerState.contains("，x 8，index "))
+        val routeSpan = snapshot.range.maxIndex - snapshot.range.minIndex
+        val selectedDisplayIndex = snapshot.range.minIndex +
+            (testMap().offsets[2].toDouble() * routeSpan / testMap().basisSpan).roundToInt()
+        assertTrue(markerState.contains(appString(R.string.curve_state_summary, 18, 5)))
+        assertTrue(markerState.contains(appString(R.string.curve_state_selected_point, 3)))
+        assertTrue(markerState.contains(appString(R.string.curve_state_x, 8)))
+        assertTrue(
+            markerState.contains(
+                appString(R.string.curve_state_index, selectedDisplayIndex),
+            ),
+        )
     }
 
     @Test
@@ -161,10 +192,10 @@ class MainActivityTest {
             canvasHeight = canvasBounds.height,
         )
         canvas.performTouchInput { click(midpoint(segmentStart, segmentEnd)) }
-        composeRule.waitUntil {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 2 条线段，x 3 到 8")
-        }
+        waitForCurveState(
+            appString(R.string.curve_state_selected_segment, 2),
+            appString(R.string.curve_state_x_range, 3, 8),
+        )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
             .performScrollTo()
             .assertIsNotEnabled()
@@ -178,9 +209,9 @@ class MainActivityTest {
             offsets = listOf(0, 3, 5, 8, 18, 30),
         )
         composeRule.waitUntil { settingsRepository.settings.value.outputMap == insertedMap }
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 3 个控制点，x 5"),
+        waitForCurveState(
+            appString(R.string.curve_state_selected_point, 3),
+            appString(R.string.curve_state_x, 5),
         )
         assertIntegerGrid(insertedMap)
 
@@ -192,19 +223,19 @@ class MainActivityTest {
             canvasHeight = canvasBounds.height,
         )
         canvas.performTouchInput { click(insertedPoint) }
-        composeRule.waitUntil {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 3 个控制点，x 5")
-        }
+        waitForCurveState(
+            appString(R.string.curve_state_selected_point, 3),
+            appString(R.string.curve_state_x, 5),
+        )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
             .assertIsNotEnabled()
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
             .assertIsEnabled()
             .performClick()
         composeRule.waitUntil { settingsRepository.settings.value.outputMap == initialMap }
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 2 条线段，x 3 到 8"),
+        waitForCurveState(
+            appString(R.string.curve_state_selected_segment, 2),
+            appString(R.string.curve_state_x_range, 3, 8),
         )
     }
 
@@ -225,10 +256,10 @@ class MainActivityTest {
             canvasHeight = canvasBounds.height,
         )
         canvas.performTouchInput { click(firstPoint) }
-        composeRule.waitUntil {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 1 个控制点，x 0")
-        }
+        waitForCurveState(
+            appString(R.string.curve_state_selected_point, 1),
+            appString(R.string.curve_state_x, 0),
+        )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
             .assertIsNotEnabled()
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
@@ -261,10 +292,10 @@ class MainActivityTest {
                 ),
             )
         }
-        composeRule.waitUntil {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 1 条线段，x 0 到 1")
-        }
+        waitForCurveState(
+            appString(R.string.curve_state_selected_segment, 1),
+            appString(R.string.curve_state_x_range, 0, 1),
+        )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
             .assertIsNotEnabled()
 
@@ -294,10 +325,10 @@ class MainActivityTest {
                 ),
             )
         }
-        composeRule.waitUntil {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 1 条线段，x 0 到 3")
-        }
+        waitForCurveState(
+            appString(R.string.curve_state_selected_segment, 1),
+            appString(R.string.curve_state_x_range, 0, 3),
+        )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
             .assertIsNotEnabled()
 
@@ -327,10 +358,10 @@ class MainActivityTest {
                 ),
             )
         }
-        composeRule.waitUntil {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 15 条线段，x 14 到 18")
-        }
+        waitForCurveState(
+            appString(R.string.curve_state_selected_segment, 15),
+            appString(R.string.curve_state_x_range, 14, 18),
+        )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
             .assertIsNotEnabled()
     }
@@ -360,19 +391,16 @@ class MainActivityTest {
                 ),
             )
         }
-        composeRule.waitUntil {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 2 个控制点")
-        }
+        waitForCurveState(appString(R.string.curve_state_selected_point, 2))
         val pressCountInput = composeRule
             .onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INPUT)
             .performScrollTo()
         pressCountInput.performTextReplacement("2")
         pressCountInput.performImeAction()
         composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 2 }
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 2 个控制点，x 1"),
+        waitForCurveState(
+            appString(R.string.curve_state_selected_point, 2),
+            appString(R.string.curve_state_x, 1),
         )
 
         // K 不能小于 P - 1；最密整数网格同时禁止继续插入。
@@ -404,10 +432,10 @@ class MainActivityTest {
                 ),
             )
         }
-        composeRule.waitUntil {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 3 条线段，x 2 到 3")
-        }
+        waitForCurveState(
+            appString(R.string.curve_state_selected_segment, 3),
+            appString(R.string.curve_state_x_range, 2, 3),
+        )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
             .assertIsNotEnabled()
         assertIntegerGrid(denseMap)
@@ -460,15 +488,14 @@ class MainActivityTest {
             initialMap.offsets[movedPoint],
             settingsRepository.settings.value.outputMap.offsets[movedPoint],
         )
-        composeRule.waitUntil(5_000L) {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("，x 10，")
-        }
+        waitForCurveState(appString(R.string.curve_state_x, 10))
         replaceSettings(testSettings(outputMap = initialMap))
-        composeRule.waitUntil(5_000L) {
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("，x ${initialMap.pressPositionAt(movedPoint)}，")
-        }
+        waitForCurveState(
+            appString(
+                R.string.curve_state_x,
+                initialMap.pressPositionAt(movedPoint),
+            ),
+        )
 
         canvas.performTouchInput {
             down(start)
@@ -524,19 +551,21 @@ class MainActivityTest {
         val clampedMap = settingsRepository.settings.value.outputMap
         assertEquals(12, clampedMap.pressPositionAt(movedPoint))
         assertIntegerGrid(clampedMap)
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER).contains("，x 12，"),
-        )
+        waitForCurveState(appString(R.string.curve_state_x, 12))
     }
 
     @Test
     fun chartAccessibilityActionsFollowPointAndSegmentSelection() {
+        useApplicationLocale("zh-CN")
         val initialMap = testMap()
         replaceSettings(testSettings(outputMap = initialMap))
         val graph = (composeRule.activity.application as VolumeMapperApplication).graph
         graph.mappingCoordinator.refreshSnapshot()
         composeRule.waitUntil(10_000L) { graph.mappingCoordinator.runtime.value.snapshot != null }
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            assertEquals("zh", composeRule.activity.resources.configuration.locales[0].language)
+        }
         val chart = composeRule.onNodeWithTag(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
             .performScrollTo()
             .assertIsDisplayed()
@@ -548,35 +577,38 @@ class MainActivityTest {
         val labels = chart.fetchSemanticsNode()
             .config[SemanticsActions.CustomActions]
             .map { it.label }
-        assertTrue(labels.contains("选择上一个控制点"))
-        assertTrue(labels.contains("选择下一个控制点"))
-        assertTrue(labels.contains("选择上一条线段"))
-        assertTrue(labels.contains("选择下一条线段"))
-        assertTrue(labels.contains("控制点左移一个按键位置"))
-        assertTrue(labels.contains("控制点右移一个按键位置"))
-        assertTrue(labels.contains("控制点上移一个可表示档位"))
-        assertTrue(labels.contains("控制点下移一个可表示档位"))
-        assertTrue(labels.contains("删除选中控制点"))
+        val pointActionLabels = listOf(
+            R.string.curve_action_select_previous_point,
+            R.string.curve_action_select_next_point,
+            R.string.curve_action_select_previous_segment,
+            R.string.curve_action_select_next_segment,
+            R.string.curve_action_move_point_left,
+            R.string.curve_action_move_point_right,
+            R.string.curve_action_move_point_up,
+            R.string.curve_action_move_point_down,
+            R.string.curve_action_delete_point,
+        ).map { appString(it) }
+        assertTrue(labels.containsAll(pointActionLabels))
         assertTrue(
             stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("上下操作按当前路由可表示档位移动"),
+                .contains(appString(R.string.curve_state_vertical_hint)),
         )
 
         // Canvas 是一个低层自绘控件；线段选择、插入和删除必须有等价的无障碍动作。
-        performCurveAction("选择下一条线段")
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 3 条线段，x 8 到 13"),
+        performCurveAction(R.string.curve_action_select_next_segment)
+        waitForCurveState(
+            appString(R.string.curve_state_selected_segment, 3),
+            appString(R.string.curve_state_x_range, 8, 13),
         )
         val segmentLabels = chart.fetchSemanticsNode()
             .config[SemanticsActions.CustomActions]
             .map { it.label }
-        assertTrue(segmentLabels.contains("在线段中插入控制点"))
-        assertTrue(!segmentLabels.contains("删除选中控制点"))
-        assertTrue(!segmentLabels.contains("控制点左移一个按键位置"))
-        assertTrue(!segmentLabels.contains("控制点上移一个可表示档位"))
+        assertTrue(segmentLabels.contains(appString(R.string.curve_action_insert_point)))
+        assertTrue(!segmentLabels.contains(appString(R.string.curve_action_delete_point)))
+        assertTrue(!segmentLabels.contains(appString(R.string.curve_action_move_point_left)))
+        assertTrue(!segmentLabels.contains(appString(R.string.curve_action_move_point_up)))
 
-        performCurveAction("在线段中插入控制点")
+        performCurveAction(R.string.curve_action_insert_point)
         val accessibilityInsertedMap = StepVolumeMap(
             basisSpan = 30,
             pressCount = 18,
@@ -586,15 +618,15 @@ class MainActivityTest {
         composeRule.waitUntil {
             settingsRepository.settings.value.outputMap == accessibilityInsertedMap
         }
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 4 个控制点，x 10"),
+        waitForCurveState(
+            appString(R.string.curve_state_selected_point, 4),
+            appString(R.string.curve_state_x, 10),
         )
-        performCurveAction("删除选中控制点")
+        performCurveAction(R.string.curve_action_delete_point)
         composeRule.waitUntil { settingsRepository.settings.value.outputMap == initialMap }
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 3 条线段，x 8 到 13"),
+        waitForCurveState(
+            appString(R.string.curve_state_selected_segment, 3),
+            appString(R.string.curve_state_x_range, 8, 13),
         )
     }
 
@@ -606,23 +638,14 @@ class MainActivityTest {
         graph.mappingCoordinator.refreshSnapshot()
         composeRule.waitUntil(10_000L) { graph.mappingCoordinator.runtime.value.snapshot != null }
 
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 3 个控制点"),
-        )
+        waitForCurveState(appString(R.string.curve_state_selected_point, 3))
 
-        performCurveAction("选择下一个控制点")
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 4 个控制点"),
-        )
-        performCurveAction("选择上一个控制点")
-        assertTrue(
-            stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
-                .contains("已选第 3 个控制点"),
-        )
+        performCurveAction(R.string.curve_action_select_next_point)
+        waitForCurveState(appString(R.string.curve_state_selected_point, 4))
+        performCurveAction(R.string.curve_action_select_previous_point)
+        waitForCurveState(appString(R.string.curve_state_selected_point, 3))
 
-        performCurveAction("控制点右移一个按键位置")
+        performCurveAction(R.string.curve_action_move_point_right)
         composeRule.waitUntil { settingsRepository.settings.value.outputMap != initialMap }
         val horizontallyMoved = settingsRepository.settings.value.outputMap
         assertEquals(
@@ -645,7 +668,7 @@ class MainActivityTest {
                     ).roundToInt()
             }
             .first { candidateIndex -> candidateIndex > beforeDisplayIndex }
-        performCurveAction("控制点上移一个可表示档位")
+        performCurveAction(R.string.curve_action_move_point_up)
         val verticallyMoved = settingsRepository.settings.value.outputMap
         val afterDisplayIndex = snapshot.range.minIndex + (
             verticallyMoved.offsets[2].toDouble() * routeSpan / verticallyMoved.basisSpan
@@ -661,7 +684,7 @@ class MainActivityTest {
             )
             replaceSettings(testSettings(outputMap = yLockedMap))
             val xBefore = yLockedMap.pressPositionAt(2)
-            performCurveAction("控制点右移一个按键位置")
+            performCurveAction(R.string.curve_action_move_point_right)
             composeRule.waitUntil { settingsRepository.settings.value.outputMap != yLockedMap }
             assertEquals(
                 "横向无障碍步进不应被纵轴可用空间阻断",
@@ -749,13 +772,51 @@ class MainActivityTest {
             .config[SemanticsProperties.ContentDescription]
             .joinToString(separator = "")
 
-    private fun onClickLabel(tag: String): String? =
-        composeRule.onNodeWithTag(tag)
-            .fetchSemanticsNode()
-            .config[SemanticsActions.OnClick]
-            .label
+    private fun appString(
+        @StringRes resourceId: Int,
+        vararg arguments: Any,
+    ): String = composeRule.activity.getString(resourceId, *arguments)
 
-    private fun performCurveAction(label: String) {
+    private fun waitForCurveState(vararg expectedClauses: String) {
+        composeRule.waitUntil(5_000L) {
+            val state = stateDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
+            expectedClauses.all(state::contains)
+        }
+    }
+
+    private fun useApplicationLocale(languageTag: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val requestedLocales = LocaleList.forLanguageTags(languageTag)
+        composeRule.runOnUiThread {
+            composeRule.activity
+                .getSystemService(LocaleManager::class.java)
+                .applicationLocales = requestedLocales
+        }
+        val requestedLanguage = Locale.forLanguageTag(languageTag).language
+        composeRule.waitUntil(10_000L) {
+            composeRule.activity.resources.configuration.locales[0].language == requestedLanguage
+        }
+        composeRule.waitForIdle()
+    }
+
+    private fun restoreApplicationLocales() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val locales = originalApplicationLocales ?: return
+        composeRule.runOnUiThread {
+            composeRule.activity
+                .getSystemService(LocaleManager::class.java)
+                .applicationLocales = locales
+        }
+        composeRule.waitUntil(10_000L) {
+            composeRule.activity
+                .getSystemService(LocaleManager::class.java)
+                .applicationLocales == locales
+        }
+        composeRule.waitForIdle()
+    }
+
+    private fun performCurveAction(@StringRes labelResourceId: Int) {
+        val label = appString(labelResourceId)
         val action = composeRule.onNodeWithTag(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
             .fetchSemanticsNode()
             .config[SemanticsActions.CustomActions]

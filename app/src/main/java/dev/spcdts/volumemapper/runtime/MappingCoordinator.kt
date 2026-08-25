@@ -2,6 +2,7 @@ package dev.spcdts.volumemapper.runtime
 
 import android.os.SystemClock
 import android.view.KeyEvent
+import dev.spcdts.volumemapper.R
 import dev.spcdts.volumemapper.audio.AudioManagerVolumeBackend
 import dev.spcdts.volumemapper.core.BoundStepVolumeMap
 import dev.spcdts.volumemapper.core.RouteVolumeRange
@@ -91,7 +92,7 @@ data class ControllerRuntimeState(
     val logicalPosition: Double? = null,
     val expectedIndex: Int? = null,
     val consecutiveWriteFailures: Int = 0,
-    val statusMessage: String = "尚未启用映射",
+    val statusMessage: LocalizedText = localizedText(R.string.runtime_mapping_disabled),
     val lastUpdatedAtMillis: Long = 0L,
 ) {
     val canInterceptKeys: Boolean
@@ -118,10 +119,10 @@ internal fun ControllerRuntimeState.withAcceptedSnapshot(
     )
     return acceptedState.copy(
         statusMessage = when {
-            acceptedState.isVolumeFixed -> "系统报告固定音量，已交还默认按键行为"
-            !acceptedState.isMediaContextSafe -> "当前通话或系统音频场景不接管音量键"
+            acceptedState.isVolumeFixed -> localizedText(R.string.runtime_fixed_volume)
+            !acceptedState.isMediaContextSafe -> localizedText(R.string.runtime_unsafe_media_context)
             acceptedState.isFailOpen -> acceptedState.statusMessage
-            acceptedState.canInterceptKeys -> "映射服务已就绪"
+            acceptedState.canInterceptKeys -> localizedText(R.string.runtime_ready)
             else -> acceptedState.statusMessage
         },
     )
@@ -253,7 +254,7 @@ class MappingCoordinator(
     fun disarm() {
         desiredArmed.set(false)
         val stamp = beginControlTransition()
-        enqueueGuaranteed(Command.Disarm("映射已由用户停止", stamp))
+        enqueueGuaranteed(Command.Disarm(localizedText(R.string.runtime_stopped_by_user), stamp))
     }
 
     fun retry() {
@@ -415,9 +416,9 @@ class MappingCoordinator(
                 expectedIndex = null,
                 consecutiveWriteFailures = 0,
                 statusMessage = if (isAccessibilityConnected) {
-                    "正在探测媒体音量能力"
+                    localizedText(R.string.runtime_probing_volume)
                 } else {
-                    "控制器运行中，等待无障碍服务连接"
+                    localizedText(R.string.runtime_waiting_accessibility)
                 },
             )
         }
@@ -446,7 +447,7 @@ class MappingCoordinator(
                 logicalPosition = null,
                 expectedIndex = null,
                 consecutiveWriteFailures = 0,
-                statusMessage = "正在重新探测音量能力",
+                statusMessage = localizedText(R.string.runtime_reprobing_volume),
             )
         }
         refreshSnapshotInternal(command.stamp, allowRouteChange = true)
@@ -458,7 +459,11 @@ class MappingCoordinator(
             copy(
                 isForegroundServiceRunning = command.running,
                 isArmed = if (command.running) isArmed else false,
-                statusMessage = if (command.running) statusMessage else "前台控制器已停止",
+                statusMessage = if (command.running) {
+                    statusMessage
+                } else {
+                    localizedText(R.string.runtime_controller_stopped)
+                },
             )
         }
     }
@@ -469,9 +474,10 @@ class MappingCoordinator(
             copy(
                 isAccessibilityConnected = command.connected,
                 statusMessage = when {
-                    command.connected && isForegroundServiceRunning -> "映射服务已就绪"
-                    command.connected -> "无障碍已连接，请启动控制器"
-                    else -> "请在系统设置中启用音量键映射服务"
+                    command.connected && isForegroundServiceRunning ->
+                        localizedText(R.string.runtime_ready)
+                    command.connected -> localizedText(R.string.runtime_accessibility_connected)
+                    else -> localizedText(R.string.runtime_enable_accessibility)
                 },
             )
         }
@@ -491,7 +497,11 @@ class MappingCoordinator(
             copy(
                 logicalPosition = null,
                 expectedIndex = snapshot?.currentIndex,
-                statusMessage = if (canInterceptKeys) "映射曲线已更新" else statusMessage,
+                statusMessage = if (canInterceptKeys) {
+                    localizedText(R.string.runtime_curve_updated)
+                } else {
+                    statusMessage
+                },
             )
         }
     }
@@ -515,7 +525,10 @@ class MappingCoordinator(
         val observedSnapshot = backend.snapshot().getOrElse { throwable ->
             if (isGestureStartCurrent(command)) {
                 registerFailure(
-                    "读取媒体音量失败：${throwable.message ?: throwable.javaClass.simpleName}",
+                    localizedText(
+                        R.string.runtime_read_volume_failed,
+                        throwable.message ?: throwable.javaClass.simpleName,
+                    ),
                     command.stamp,
                 )
                 startOwnerDrainWatchdog(command.token)
@@ -641,7 +654,7 @@ class MappingCoordinator(
 
         cancelOwnerDrainWatchdog()
         cancelActiveGesture(resetMapping = false)
-        publish { copy(statusMessage = "音量键 UP 超时，已停止本次连续调整") }
+        publish { copy(statusMessage = localizedText(R.string.runtime_up_timeout)) }
     }
 
     private fun handleOwnerDrainExpired(command: Command.OwnerDrainExpired) {
@@ -650,12 +663,12 @@ class MappingCoordinator(
         if (activeGesture?.token == command.token) {
             cancelActiveGesture(resetMapping = false)
         }
-        publish { copy(statusMessage = "已清理未收到 UP 的旧音量键手势") }
+        publish { copy(statusMessage = localizedText(R.string.runtime_stale_gesture_cleared)) }
     }
 
     private fun handleExpiredKeyGestureDrained(command: Command.ExpiredKeyGestureDrained) {
         if (!adoptTransition(command.stamp)) return
-        publish { copy(statusMessage = "已忽略系统延迟送达的旧音量键手势") }
+        publish { copy(statusMessage = localizedText(R.string.runtime_delayed_gesture_ignored)) }
     }
 
     private fun handleEnvironmentChanged(command: Command.EnvironmentChanged) {
@@ -667,7 +680,7 @@ class MappingCoordinator(
                 isMediaContextSafe = backend.isMediaContextSafe,
                 logicalPosition = null,
                 expectedIndex = null,
-                statusMessage = "音频环境已变化，正在重新探测",
+                statusMessage = localizedText(R.string.runtime_audio_environment_changed),
             )
         }
         refreshSnapshotInternal(command.stamp, allowRouteChange = true)
@@ -705,7 +718,10 @@ class MappingCoordinator(
         val guardedSnapshot = backend.snapshot().getOrElse {
             if (isStampCurrent(gesture.stamp)) {
                 registerFailure(
-                    "连续调整时无法核对输出路由：${it.message ?: it.javaClass.simpleName}",
+                    localizedText(
+                        R.string.runtime_route_check_failed,
+                        it.message ?: it.javaClass.simpleName,
+                    ),
                     gesture.stamp,
                 )
             }
@@ -734,7 +750,7 @@ class MappingCoordinator(
         publish {
             copy(
                 isMediaContextSafe = false,
-                statusMessage = "当前通话或系统音频场景不接管音量键",
+                statusMessage = localizedText(R.string.runtime_unsafe_media_context),
             )
         }
     }
@@ -749,7 +765,7 @@ class MappingCoordinator(
                 isVolumeFixed = true,
                 logicalPosition = null,
                 expectedIndex = snapshot.currentIndex,
-                statusMessage = "系统报告固定音量，已交还默认按键行为",
+                statusMessage = localizedText(R.string.runtime_fixed_volume),
             )
         }
     }
@@ -765,7 +781,7 @@ class MappingCoordinator(
             copy(
                 isMediaContextSafe = mediaContextSafe,
                 statusMessage = if (!mediaContextSafe) {
-                    "当前通话或系统音频场景不接管音量键"
+                    localizedText(R.string.runtime_unsafe_media_context)
                 } else {
                     statusMessage
                 },
@@ -776,7 +792,10 @@ class MappingCoordinator(
         val snapshot = backend.snapshot().getOrElse {
             if (isStampCurrent(stamp)) {
                 registerFailure(
-                    "音量能力探测失败：${it.message ?: it.javaClass.simpleName}",
+                    localizedText(
+                        R.string.runtime_probe_failed,
+                        it.message ?: it.javaClass.simpleName,
+                    ),
                     stamp,
                 )
             }
@@ -830,7 +849,7 @@ class MappingCoordinator(
                 isMediaContextSafe = backend.isMediaContextSafe,
                 logicalPosition = null,
                 expectedIndex = snapshot.currentIndex,
-                statusMessage = "检测到输出路由或音量范围变化，已取消本次按键手势",
+                statusMessage = localizedText(R.string.runtime_route_changed),
             )
         }
     }
@@ -878,13 +897,20 @@ class MappingCoordinator(
             publish {
                 copy(
                     expectedIndex = targetIndex,
-                    statusMessage = "已请求 $targetIndex/${snapshot.range.maxIndex}",
+                    statusMessage = localizedText(
+                        R.string.runtime_requested,
+                        targetIndex,
+                        snapshot.range.maxIndex,
+                    ),
                 )
             }
             scheduleVerification(context, targetIndex, writtenAtMillis)
         }.onFailure {
             registerFailure(
-                "系统拒绝修改音量：${it.message ?: it.javaClass.simpleName}",
+                localizedText(
+                    R.string.runtime_write_rejected,
+                    it.message ?: it.javaClass.simpleName,
+                ),
                 context.stamp,
             )
         }
@@ -940,7 +966,10 @@ class MappingCoordinator(
         val observed = backend.snapshot().getOrElse {
             if (command.final && verificationCycle?.id == cycle.id) {
                 cancelVerification()
-                registerFailure("写后无法读取媒体音量", cycle.context.stamp)
+                registerFailure(
+                    localizedText(R.string.runtime_read_after_write_failed),
+                    cycle.context.stamp,
+                )
             }
             return
         }
@@ -967,7 +996,11 @@ class MappingCoordinator(
                     isMediaContextSafe = backend.isMediaContextSafe,
                     expectedIndex = observed.currentIndex,
                     consecutiveWriteFailures = 0,
-                    statusMessage = "写入已确认：${observed.currentIndex}/${observed.range.maxIndex}",
+                    statusMessage = localizedText(
+                        R.string.runtime_write_confirmed,
+                        observed.currentIndex,
+                        observed.range.maxIndex,
+                    ),
                 )
             }
             return
@@ -1009,7 +1042,11 @@ class MappingCoordinator(
 
         cancelVerification()
         registerFailure(
-            "写后回读不一致：请求 $targetIndex，系统保持 ${observed.currentIndex}",
+            localizedText(
+                R.string.runtime_readback_mismatch,
+                targetIndex,
+                observed.currentIndex,
+            ),
             cycle.context.stamp,
         )
         if (!isStampCurrent(cycle.context.stamp)) return
@@ -1049,7 +1086,7 @@ class MappingCoordinator(
         return true
     }
 
-    private fun registerFailure(message: String, stamp: EpochStamp) {
+    private fun registerFailure(message: LocalizedText, stamp: EpochStamp) {
         if (!isStampCurrent(stamp)) return
         val failures = _runtime.value.consecutiveWriteFailures + 1
         val failOpen = failures >= FAILURE_LIMIT
@@ -1062,7 +1099,11 @@ class MappingCoordinator(
             copy(
                 consecutiveWriteFailures = failures,
                 isFailOpen = failOpen,
-                statusMessage = if (failOpen) "$message；已自动放行后续音量键" else message,
+                statusMessage = if (failOpen) {
+                    localizedText(R.string.runtime_fail_open, message)
+                } else {
+                    message
+                },
             )
         }
     }
@@ -1303,7 +1344,7 @@ class MappingCoordinator(
 
     private sealed interface Command {
         data class Arm(val stamp: EpochStamp) : Command
-        data class Disarm(val reason: String, val stamp: EpochStamp) : Command
+        data class Disarm(val reason: LocalizedText, val stamp: EpochStamp) : Command
         data class Retry(val stamp: EpochStamp) : Command
         data class ForegroundChanged(val running: Boolean, val stamp: EpochStamp) : Command
         data class AccessibilityChanged(val connected: Boolean, val stamp: EpochStamp) : Command

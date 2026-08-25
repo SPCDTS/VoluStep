@@ -1,9 +1,12 @@
 package dev.spcdts.volumemapper
 
 import android.Manifest
+import android.app.LocaleManager
 import android.app.UiAutomation
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Bundle
+import android.os.LocaleList
 import android.os.ParcelFileDescriptor
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
@@ -48,9 +51,11 @@ class RealSystemVolumeE2eTest {
     @Test
     fun disclosureAccessibilityControllerAndSilentForegroundStop() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val prepareExternalJourney =
-            InstrumentationRegistry.getArguments().getString(ARG_PREPARE_EXTERNAL) == "true"
+        val arguments = InstrumentationRegistry.getArguments()
+        val prepareExternalJourney = arguments.getString(ARG_PREPARE_EXTERNAL) == "true"
+        val requestedLocale = arguments.getString(ARG_LOCALE)
         assumeTrue("本测试会修改 secure settings，只允许在模拟器执行", isEmulator())
+        useApplicationLocale(requestedLocale)
         val automation = instrumentation.getUiAutomation(
             UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES,
         )
@@ -64,6 +69,24 @@ class RealSystemVolumeE2eTest {
         val packageName = composeRule.activity.packageName
         val accessibilityComponent =
             "$packageName/dev.spcdts.volumemapper.runtime.VolumeKeyAccessibilityService"
+        if (prepareExternalJourney) {
+            instrumentation.sendStatus(
+                STATUS_RESOURCE_CONTRACT,
+                Bundle().apply {
+                    putString(
+                        STATUS_MASTER_SWITCH_DESCRIPTION,
+                        appString(
+                            R.string.master_switch_content_description,
+                            appString(R.string.app_name),
+                        ),
+                    )
+                    putString(
+                        STATUS_NOTIFICATION_TITLE,
+                        appString(R.string.controller_notification_title),
+                    )
+                },
+            )
+        }
 
         val originalAccessibilityServices =
             shell(automation, "settings get secure enabled_accessibility_services")
@@ -87,12 +110,16 @@ class RealSystemVolumeE2eTest {
             // 外部 E2E runner 会先 pm clear；若单独重跑且已接受过披露，则仍验证已持久化状态。
             if (!repository.settings.value.disclosureAccepted) {
                 composeRule.onNodeWithTag(VolumeMapperTestTags.MASTER_SWITCH).performClick()
-                composeRule.onNodeWithText("无障碍 API 显著披露").assertIsDisplayed()
-                composeRule.onNodeWithText("同意").assertIsNotEnabled()
+                composeRule.onNodeWithText(appString(R.string.accessibility_disclosure_title))
+                    .assertIsDisplayed()
+                composeRule.onNodeWithText(appString(R.string.action_agree))
+                    .assertIsNotEnabled()
                 composeRule
-                    .onNodeWithText("我理解上述用途与按键冲突，并同意继续")
+                    .onNodeWithText(appString(R.string.accessibility_disclosure_consent))
                     .performClick()
-                composeRule.onNodeWithText("同意").assertIsEnabled().performClick()
+                composeRule.onNodeWithText(appString(R.string.action_agree))
+                    .assertIsEnabled()
+                    .performClick()
                 composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
                     repository.settings.value.disclosureAccepted
                 }
@@ -293,6 +320,27 @@ class RealSystemVolumeE2eTest {
         }
     }
 
+    private fun appString(resourceId: Int, vararg arguments: Any): String =
+        composeRule.activity.getString(resourceId, *arguments)
+
+    private fun useApplicationLocale(languageTag: String?) {
+        if (languageTag.isNullOrBlank()) return
+        check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            "宿主 E2E 的应用语言参数只支持 Android 13 及以上版本"
+        }
+        val requestedLocales = LocaleList.forLanguageTags(languageTag)
+        composeRule.runOnUiThread {
+            composeRule.activity
+                .getSystemService(LocaleManager::class.java)
+                .applicationLocales = requestedLocales
+        }
+        val requestedLanguage = Locale.forLanguageTag(languageTag).language
+        composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
+            composeRule.activity.resources.configuration.locales[0].language == requestedLanguage
+        }
+        composeRule.waitForIdle()
+    }
+
     private fun isEmulator(): Boolean {
         val fingerprint = Build.FINGERPRINT.lowercase(Locale.ROOT)
         val model = Build.MODEL.lowercase(Locale.ROOT)
@@ -308,5 +356,9 @@ class RealSystemVolumeE2eTest {
         const val CONTROLLER_TIMEOUT_MILLIS = 10_000L
         const val SETTINGS_TIMEOUT_MILLIS = 5_000L
         const val ARG_PREPARE_EXTERNAL = "e2ePrepareOnly"
+        const val ARG_LOCALE = "e2eLocale"
+        const val STATUS_RESOURCE_CONTRACT = 2
+        const val STATUS_MASTER_SWITCH_DESCRIPTION = "e2eMasterSwitchDescription"
+        const val STATUS_NOTIFICATION_TITLE = "e2eNotificationTitle"
     }
 }
