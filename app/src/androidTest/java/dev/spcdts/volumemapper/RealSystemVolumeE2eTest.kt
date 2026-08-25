@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.UiAutomation
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.os.SystemClock
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -15,11 +14,6 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.uiautomator.By
-import androidx.test.uiautomator.Configurator
-import androidx.test.uiautomator.UiDevice
-import androidx.test.uiautomator.UiObject2
-import androidx.test.uiautomator.Until
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.MappingControllerService
@@ -28,7 +22,6 @@ import dev.spcdts.volumemapper.ui.VolumeMapperTestTags
 import java.util.Locale
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
@@ -39,11 +32,12 @@ import org.junit.runner.RunWith
  * 模拟器专用的真实系统链路 E2E。
  *
  * 与 [VolumeKeyAudioIntegrationTest] 不同，本测试会真正绑定 AccessibilityService、启动
- * specialUse FGS，并从 SystemUI 常驻通知执行“停止映射”。测试会修改 secure accessibility
- * settings，因此通过 emulator guard 禁止在真机执行。
+ * specialUse FGS，并核验常驻通知及其停止 action 的系统注册信息。测试会修改 secure
+ * accessibility settings，因此通过 emulator guard 禁止在真机执行。
  *
  * Instrumentation 自身也通过 UiAutomation 占用无障碍通道，不能可靠证明系统按键被目标
- * AccessibilityService 过滤。完整按键阶段由 scripts/emulator-e2e-test.ps1 在 runner 退出后执行。
+ * AccessibilityService 过滤。完整按键和 SystemUI 通知点击阶段由 scripts/emulator-e2e-test.ps1
+ * 在 runner 退出后执行，避免 Android 17 上 UiAutomation 与真实服务并存时的点击死锁。
  */
 @LargeTest
 @RunWith(AndroidJUnit4::class)
@@ -57,12 +51,6 @@ class RealSystemVolumeE2eTest {
         val prepareExternalJourney =
             InstrumentationRegistry.getArguments().getString(ARG_PREPARE_EXTERNAL) == "true"
         assumeTrue("本测试会修改 secure settings，只允许在模拟器执行", isEmulator())
-        val configurator = Configurator.getInstance()
-        val originalUiAutomationFlags = configurator.uiAutomationFlags
-        configurator.uiAutomationFlags = UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES
-        val device = UiDevice.getInstance(instrumentation)
-        // Instrumentation 与 UIAutomator 必须使用同一 flags，否则任一 UiDevice 操作都可能
-        // 重新注册默认 UiAutomation 并压制被测的真实 AccessibilityService。
         val automation = instrumentation.getUiAutomation(
             UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES,
         )
@@ -89,13 +77,13 @@ class RealSystemVolumeE2eTest {
         val originalSettings = repository.settings.value
 
         try {
-            device.wakeUp()
+            shell(automation, "input keyevent KEYCODE_WAKEUP")
             shell(automation, "wm dismiss-keyguard")
             grantNotificationPermissionIfNeeded(automation, packageName)
 
             // 外部 E2E runner 会先 pm clear；若单独重跑且已接受过披露，则仍验证已持久化状态。
             if (!repository.settings.value.disclosureAccepted) {
-                composeRule.onNodeWithText("查看授权").performClick()
+                composeRule.onNodeWithTag(VolumeMapperTestTags.MASTER_SWITCH).performClick()
                 composeRule.onNodeWithText("无障碍 API 显著披露").assertIsDisplayed()
                 composeRule.onNodeWithText("同意").assertIsNotEnabled()
                 composeRule
@@ -167,31 +155,40 @@ class RealSystemVolumeE2eTest {
                     runtime.canInterceptKeys
             }
 
-            shell(automation, "cmd statusbar expand-notifications")
-            val notificationTitle = device.wait(
-                Until.findObject(By.text("音量键映射正在运行")),
-                NOTIFICATION_TIMEOUT_MILLIS,
-            )
-            assertNotNull("前台控制器通知不可见", notificationTitle)
-            val notificationRow = notificationRowFor(notificationTitle)
-            var stopAction = notificationRow?.findObject(By.text("停止映射"))
-            if (stopAction == null) {
-                // 通知面板可能同时存在多个折叠通知，必须在本应用标题所属的 row 内找按钮。
-                // 全局查找第一个 expand_button 会展开无关通知，并导致 action 误判为缺失。
-                val expandAction = notificationRow?.findObject(
-                    By.res("com.android.systemui", "expand_button"),
-                ) ?: notificationRow?.findObject(By.descContains("Expand"))
-                assertNotNull("折叠通知没有可用的展开控件", expandAction)
-                checkNotNull(expandAction).click()
-                stopAction = waitForNotificationAction(
-                    device = device,
-                    notificationTitle = "音量键映射正在运行",
-                    actionText = "停止映射",
-                    timeoutMillis = NOTIFICATION_TIMEOUT_MILLIS,
-                )
+            val notificationDump = shell(automation, "dumpsys notification --noredact")
+            val notificationLines = notificationDump.lines()
+            val recordStart = notificationLines.indexOfFirst { line ->
+                line.contains("NotificationRecord(") &&
+                    line.contains("pkg=$packageName ") &&
+                    line.contains(" id=$CONTROLLER_NOTIFICATION_ID ")
             }
-            assertNotNull("常驻通知缺少停止映射 action", stopAction)
-            checkNotNull(stopAction).click()
+            assertTrue(
+                "前台控制器通知不可见",
+                recordStart >= 0,
+            )
+            val recordEnd = if (recordStart >= 0) {
+                (recordStart + 1 until notificationLines.size).firstOrNull { lineIndex ->
+                    notificationLines[lineIndex].contains("NotificationRecord(")
+                } ?: notificationLines.size
+            } else {
+                0
+            }
+            val activeNotificationRecord = if (recordStart >= 0) {
+                notificationLines.subList(recordStart, recordEnd).joinToString("\n")
+            } else {
+                ""
+            }
+            assertTrue(
+                "前台控制器通知标题不正确",
+                activeNotificationRecord.contains(
+                    "android.title=String (音量键映射正在运行)",
+                ),
+            )
+            assertTrue(
+                "常驻通知缺少停止映射 action",
+                activeNotificationRecord.contains("\"停止映射\" -> PendingIntent"),
+            )
+            MappingControllerService.stop(composeRule.activity)
 
             composeRule.waitUntil(CONTROLLER_TIMEOUT_MILLIS) {
                 !coordinator.runtime.value.isForegroundServiceRunning &&
@@ -214,7 +211,6 @@ class RealSystemVolumeE2eTest {
                         originalEnabled = originalAccessibilityEnabled,
                     )
                 },
-                { configurator.uiAutomationFlags = originalUiAutomationFlags },
                 {
                     // pm revoke 会终止目标进程，也会连带杀死当前 instrumentation runner。
                     // 测试入口在每轮前 pm clear，通知权限不需要在 runner 内撤销。
@@ -312,34 +308,6 @@ class RealSystemVolumeE2eTest {
         }
     }
 
-    private fun notificationRowFor(node: UiObject2?): UiObject2? {
-        var current = node
-        while (
-            current != null &&
-            current.resourceName != SYSTEM_UI_NOTIFICATION_ROW_RESOURCE
-        ) {
-            current = current.parent
-        }
-        return current
-    }
-
-    private fun waitForNotificationAction(
-        device: UiDevice,
-        notificationTitle: String,
-        actionText: String,
-        timeoutMillis: Long,
-    ): UiObject2? {
-        val deadline = SystemClock.uptimeMillis() + timeoutMillis
-        do {
-            device.findObjects(By.text(actionText)).forEach { candidate ->
-                val row = notificationRowFor(candidate) ?: return@forEach
-                if (row.findObject(By.text(notificationTitle)) != null) return candidate
-            }
-            Thread.sleep(NOTIFICATION_ACTION_POLL_MILLIS)
-        } while (SystemClock.uptimeMillis() < deadline)
-        return null
-    }
-
     private fun shell(automation: UiAutomation, command: String): String =
         ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))
             .bufferedReader()
@@ -371,10 +339,7 @@ class RealSystemVolumeE2eTest {
         const val ACCESSIBILITY_TIMEOUT_MILLIS = 10_000L
         const val CONTROLLER_TIMEOUT_MILLIS = 10_000L
         const val SETTINGS_TIMEOUT_MILLIS = 5_000L
-        const val NOTIFICATION_TIMEOUT_MILLIS = 5_000L
-        const val NOTIFICATION_ACTION_POLL_MILLIS = 100L
         const val ARG_PREPARE_EXTERNAL = "e2ePrepareOnly"
-        const val SYSTEM_UI_NOTIFICATION_ROW_RESOURCE =
-            "com.android.systemui:id/expandableNotificationRow"
+        const val CONTROLLER_NOTIFICATION_ID = 4107
     }
 }

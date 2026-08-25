@@ -1,32 +1,41 @@
 package dev.spcdts.volumemapper.ui
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -50,6 +59,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -57,9 +68,13 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import dev.spcdts.volumemapper.AppGraph
+import dev.spcdts.volumemapper.core.AudioRouteType
 import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.ControllerRuntimeState
@@ -108,6 +123,8 @@ fun VolumeMapperApp(graph: AppGraph) {
                     Unit
                 } else if (!settings.disclosureAccepted) {
                     showDisclosure = true
+                } else if (!runtime.isAccessibilityConnected) {
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                 } else if (
                     Build.VERSION.SDK_INT >= 33 &&
                     ContextCompat.checkSelfPermission(
@@ -125,7 +142,6 @@ fun VolumeMapperApp(graph: AppGraph) {
             },
             onStop = { MappingControllerService.stop(context) },
             onRetry = graph.mappingCoordinator::retry,
-            onRefresh = graph.mappingCoordinator::refreshSnapshot,
             onOpenAppSettings = {
                 if (!AppDetailsSettingsLauncher.open(context)) {
                     showAppSettingsUnavailable = true
@@ -207,24 +223,28 @@ private fun MainScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRetry: () -> Unit,
-    onRefresh: () -> Unit,
     onOpenAppSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val borderedSurfaceColor = if (isSystemInDarkTheme()) {
+        Color(0xFF3C3941)
+    } else {
+        Color(0xFFE1DEE6)
+    }
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
             .imePadding()
             .testTag(VolumeMapperTestTags.SCREEN_MAIN),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+        contentPadding = PaddingValues(start = 14.dp, top = 4.dp, end = 14.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
             Text(
                 text = "音量映射",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(horizontal = 2.dp, vertical = 4.dp),
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(start = 6.dp, top = 13.dp, bottom = 12.dp),
             )
         }
 
@@ -244,9 +264,11 @@ private fun MainScreen(
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    containerColor = MaterialTheme.colorScheme.surface,
                 ),
+                border = BorderStroke(1.dp, borderedSurfaceColor),
             ) {
                 if (settingsLoaded) {
                     MappingCurveEditor(
@@ -259,7 +281,12 @@ private fun MainScreen(
                                 graph.settingsRepository.flushPendingWrite()
                             }
                         },
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(
+                            start = 10.dp,
+                            top = 22.dp,
+                            end = 10.dp,
+                            bottom = 12.dp,
+                        ),
                     )
                 } else {
                     Text(
@@ -289,7 +316,6 @@ private fun MainScreen(
         item {
             DeviceCard(
                 runtime = runtime,
-                onRefresh = onRefresh,
                 onOpenAccessibility = onOpenAccessibility,
                 onOpenAppSettings = onOpenAppSettings,
             )
@@ -308,77 +334,108 @@ private fun ControllerCard(
     onStop: () -> Unit,
     onRetry: () -> Unit,
 ) {
+    val routeStatus = runtime.snapshot?.let { snapshot ->
+        "${routeMediaLabel(snapshot.route.type)} · " +
+            "${snapshot.range.minIndex}–${snapshot.range.maxIndex}"
+    }
     val status = when {
         !settingsLoaded -> "正在加载"
         !disclosureAccepted -> "需要授权"
+        !runtime.isAccessibilityConnected -> if (runtime.isForegroundServiceRunning) {
+            "等待无障碍"
+        } else {
+            "开启无障碍"
+        }
         runtime.isFailOpen -> "已暂停"
-        runtime.canInterceptKeys -> "运行中"
-        runtime.isForegroundServiceRunning && !runtime.isAccessibilityConnected -> "等待无障碍"
+        runtime.canInterceptKeys -> routeStatus ?: "运行中"
         runtime.isForegroundServiceRunning -> "等待媒体"
         else -> "未启动"
     }
+    val statusAction = when {
+        !settingsLoaded -> null
+        !disclosureAccepted -> onShowDisclosure
+        !runtime.isAccessibilityConnected -> onOpenAccessibility
+        runtime.isFailOpen -> onRetry
+        else -> null
+    }
+    val statusActionLabel = when {
+        !settingsLoaded -> null
+        !disclosureAccepted -> "查看授权说明"
+        !runtime.isAccessibilityConnected -> "打开无障碍设置"
+        runtime.isFailOpen -> "重试精细控制"
+        else -> null
+    }
+    val darkTheme = isSystemInDarkTheme()
+    val activeDotColor = if (darkTheme) Color(0xFF88CE9E) else Color(0xFF2D6D45)
+    val activeStatusColor = if (darkTheme) Color(0xFFA9D9B8) else Color(0xFF315C42)
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (runtime.canInterceptKeys) {
-                MaterialTheme.colorScheme.secondaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerLow
-            },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            contentColor = MaterialTheme.colorScheme.onSurface,
         ),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("控制", style = MaterialTheme.typography.titleMedium)
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag(VolumeMapperTestTags.CONTROLLER_STATUS_ACTION)
+                    .then(
+                        if (statusAction != null && statusActionLabel != null) {
+                            Modifier.clickable(
+                                onClickLabel = statusActionLabel,
+                                onClick = statusAction,
+                            )
+                        } else {
+                            Modifier
+                        },
+                    ),
+            ) {
+                Text("精细控制", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    modifier = Modifier.padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (runtime.canInterceptKeys) {
+                                    activeDotColor
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                                },
+                            ),
+                    )
                     Text(
                         status,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
+                        color = if (runtime.canInterceptKeys) {
+                            activeStatusColor
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        fontSize = 13.sp,
                     )
                 }
-                Switch(
-                    checked = runtime.isForegroundServiceRunning,
-                    onCheckedChange = { enabled -> if (enabled) onStart() else onStop() },
-                    enabled = settingsLoaded,
-                    modifier = Modifier
-                        .testTag(VolumeMapperTestTags.MASTER_SWITCH)
-                        .semantics {
-                            contentDescription = "音量映射开关"
-                            stateDescription = status
-                        },
-                )
             }
-
-            when {
-                !settingsLoaded -> Unit
-                !disclosureAccepted -> {
-                    TextButton(
-                        onClick = onShowDisclosure,
-                        contentPadding = PaddingValues(horizontal = 0.dp),
-                    ) { Text("查看授权") }
-                }
-                !runtime.isAccessibilityConnected -> {
-                    TextButton(
-                        onClick = onOpenAccessibility,
-                        contentPadding = PaddingValues(horizontal = 0.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.AccessibilityNew,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.size(6.dp))
-                        Text("开启无障碍")
-                    }
-                }
-                runtime.isFailOpen -> {
-                    TextButton(
-                        onClick = onRetry,
-                        contentPadding = PaddingValues(horizontal = 0.dp),
-                    ) { Text("重试") }
-                }
-            }
+            Switch(
+                checked = runtime.isForegroundServiceRunning,
+                onCheckedChange = { enabled -> if (enabled) onStart() else onStop() },
+                enabled = settingsLoaded,
+                modifier = Modifier
+                    .size(width = 50.dp, height = 30.dp)
+                    .testTag(VolumeMapperTestTags.MASTER_SWITCH)
+                    .semantics {
+                        contentDescription = "启用精细音量控制"
+                        stateDescription = status
+                    },
+            )
         }
     }
 }
@@ -392,18 +449,24 @@ private fun LongPressIntervalCard(
     val value = intervalMillis.coerceIn(MINIMUM_HOLD_INTERVAL, MAXIMUM_HOLD_INTERVAL)
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            contentColor = MaterialTheme.colorScheme.onSurface,
         ),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .padding(start = 10.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = "长按间隔",
                 modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium,
             )
             IconButton(
                 onClick = {
@@ -421,14 +484,17 @@ private fun LongPressIntervalCard(
             Text(
                 text = "$value ms",
                 modifier = Modifier
+                    .width(52.dp)
                     .testTag(VolumeMapperTestTags.LONG_PRESS_INTERVAL_VALUE)
                     .semantics {
                         contentDescription = "长按连续步进间隔"
                         stateDescription = "$value 毫秒"
-                    }
-                    .padding(horizontal = 6.dp),
-                style = MaterialTheme.typography.titleSmall,
+                    },
+                fontSize = 15.sp,
                 fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                softWrap = false,
             )
             IconButton(
                 onClick = {
@@ -450,11 +516,12 @@ private fun LongPressIntervalCard(
 @Composable
 private fun DeviceCard(
     runtime: ControllerRuntimeState,
-    onRefresh: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onOpenAppSettings: () -> Unit,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
+    var copied by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
     val manufacturer = manufacturerLabel()
     val summary = when {
         runtime.isFailOpen -> "需处理"
@@ -463,29 +530,42 @@ private fun DeviceCard(
         else -> "未启动"
     }
     val snapshot = runtime.snapshot
+    val borderedSurfaceColor = if (isSystemInDarkTheme()) {
+        Color(0xFF3C3941)
+    } else {
+        Color(0xFFE1DEE6)
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            containerColor = MaterialTheme.colorScheme.surface,
         ),
+        border = BorderStroke(1.dp, borderedSurfaceColor),
     ) {
         TextButton(
             onClick = { expanded = !expanded },
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 52.dp)
                 .testTag(VolumeMapperTestTags.DEVICE_TOGGLE)
                 .semantics {
                     contentDescription = "设备信息"
                     stateDescription = if (expanded) "已展开" else "已折叠"
                 },
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp),
         ) {
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                Text("设备", color = MaterialTheme.colorScheme.onSurface)
+                Text(
+                    "设备",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                )
                 Text(
                     "$manufacturer · $summary",
-                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -501,44 +581,92 @@ private fun DeviceCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(start = 14.dp, end = 14.dp, bottom = 14.dp)
                     .testTag(VolumeMapperTestTags.DEVICE_DETAILS),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(
-                    snapshot?.route?.productName ?: "未检测到输出设备",
-                    style = MaterialTheme.typography.titleSmall,
+                DeviceSettingRow(label = "手机", value = manufacturer)
+                DeviceSettingRow(
+                    label = "耳机名称",
+                    value = snapshot?.route?.productName ?: "未检测到",
                 )
-                snapshot?.let {
-                    Text(
-                        "媒体 index ${it.range.minIndex}…${it.range.maxIndex} · 当前 ${it.currentIndex}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Text(
-                    runtime.statusMessage,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
+                DeviceSettingRow(
+                    label = "音量范围",
+                    value = snapshot?.let { "${it.range.minIndex}–${it.range.maxIndex}" } ?: "未知",
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    TextButton(onClick = onRefresh) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = null,
-                            modifier = Modifier.size(17.dp),
-                        )
-                        Spacer(Modifier.size(4.dp))
-                        Text("刷新")
-                    }
-                    TextButton(onClick = onOpenAccessibility) { Text("无障碍") }
-                    TextButton(onClick = onOpenAppSettings) { Text("应用设置") }
-                }
+                DeviceSettingRow(
+                    label = "无障碍",
+                    value = if (runtime.isAccessibilityConnected) "开启" else "关闭",
+                    onClick = onOpenAccessibility,
+                    testTag = VolumeMapperTestTags.DEVICE_ACCESSIBILITY_ROW,
+                )
+                DeviceSettingRow(
+                    label = "后台",
+                    value = if (runtime.isForegroundServiceRunning) "允许" else "未启动",
+                    onClick = onOpenAppSettings,
+                    testTag = VolumeMapperTestTags.DEVICE_BACKGROUND_ROW,
+                )
+                TextButton(
+                    onClick = {
+                        val statusText = buildString {
+                            appendLine("手机：$manufacturer")
+                            appendLine("耳机名称：${snapshot?.route?.productName ?: "未检测到"}")
+                            appendLine(
+                                "音量范围：${snapshot?.let { "${it.range.minIndex}–${it.range.maxIndex}" } ?: "未知"}",
+                            )
+                            appendLine("无障碍：${if (runtime.isAccessibilityConnected) "开启" else "关闭"}")
+                            appendLine("后台：${if (runtime.isForegroundServiceRunning) "允许" else "未启动"}")
+                            append("状态：${runtime.statusMessage}")
+                        }
+                        context.getSystemService(ClipboardManager::class.java)
+                            ?.setPrimaryClip(ClipData.newPlainText("音量映射状态", statusText))
+                        copied = true
+                    },
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                ) { Text(if (copied) "已复制" else "复制状态") }
             }
         }
+    }
+}
+
+@Composable
+private fun DeviceSettingRow(
+    label: String,
+    value: String,
+    onClick: (() -> Unit)? = null,
+    testTag: String? = null,
+) {
+    val valueColor = if (isSystemInDarkTheme()) Color(0xFFB8C7E5) else Color(0xFF515E77)
+    val rowActionLabel = when (label) {
+        "无障碍" -> "打开无障碍设置"
+        "后台" -> "打开应用后台设置"
+        else -> "打开设置"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
+            .heightIn(min = if (onClick == null) 42.dp else 48.dp)
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(onClickLabel = rowActionLabel, onClick = onClick)
+                } else {
+                    Modifier
+                },
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        Text(
+            text = value,
+            modifier = Modifier.weight(1f),
+            color = valueColor,
+            fontSize = 13.sp,
+            textAlign = TextAlign.End,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -597,6 +725,18 @@ private fun manufacturerLabel(): String {
     }
 }
 
+private fun routeMediaLabel(type: AudioRouteType): String = when (type) {
+    AudioRouteType.BLUETOOTH_A2DP,
+    AudioRouteType.BLUETOOTH_LE,
+    -> "蓝牙媒体"
+    AudioRouteType.BUILT_IN_SPEAKER -> "手机媒体"
+    AudioRouteType.WIRED_HEADSET -> "有线媒体"
+    AudioRouteType.USB -> "USB 媒体"
+    AudioRouteType.HDMI -> "HDMI 媒体"
+    AudioRouteType.REMOTE -> "远程媒体"
+    AudioRouteType.UNKNOWN -> "媒体"
+}
+
 private const val MINIMUM_HOLD_INTERVAL = KeyMappingConfig.MIN_HOLD_STEP_INTERVAL_MILLIS
 private const val MAXIMUM_HOLD_INTERVAL = KeyMappingConfig.MAX_HOLD_STEP_INTERVAL_MILLIS
 private const val HOLD_INTERVAL_STEP = KeyMappingConfig.HOLD_STEP_INTERVAL_GRID_MILLIS
@@ -604,11 +744,14 @@ private const val HOLD_INTERVAL_STEP = KeyMappingConfig.HOLD_STEP_INTERVAL_GRID_
 object VolumeMapperTestTags {
     const val SCREEN_MAIN = "screen_main"
     const val MASTER_SWITCH = "master_switch"
+    const val CONTROLLER_STATUS_ACTION = "controller_status_action"
     const val LONG_PRESS_INTERVAL_VALUE = "long_press_interval_value"
     const val LONG_PRESS_INTERVAL_DECREMENT = "long_press_interval_decrement"
     const val LONG_PRESS_INTERVAL_INCREMENT = "long_press_interval_increment"
     const val DEVICE_TOGGLE = "device_toggle"
     const val DEVICE_DETAILS = "device_details"
+    const val DEVICE_ACCESSIBILITY_ROW = "device_accessibility_row"
+    const val DEVICE_BACKGROUND_ROW = "device_background_row"
 
     // Source-compatible names for test clients compiled against the former tabbed UI.
     const val NAV_CONTROL = "nav_control"

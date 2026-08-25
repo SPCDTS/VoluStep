@@ -1,5 +1,26 @@
 # 本机验证记录
 
+## 2026-08-25 正式单屏 UI 与曲线交互对齐
+
+本轮按正式发布界面收口为单一主屏：顶部只保留“精细控制”总开关与状态，曲线卡片承载全部高频编辑，设备与授权信息收纳在可折叠的“设备”区域；不再提供 Tab、常驻诊断页、Undo/Redo 或按键说明菜单。
+
+曲线编辑交互已按最终设计实现并复核：
+
+- `P` 位于图表上方、`K` 位于 x 轴下方；两者都支持直接输入整数，也支持 `−` / `+` 单步调整，正式界面的 `P` 范围为 `2…16`，且 `P` 与 `K` 保持独立；
+- 中间控制点可同时调整 x/y：x 靠近均匀按键位置时吸附并显示竖向参考线，y 吸附到整数 audio index 并显示横向参考线；
+- 当前系统音量不再使用 `8/30` 一类文本占位，而是在图中用绿色水平线标示；
+- 图表下方保留长按间隔设置；设备名称、音量范围、无障碍与后台状态统一放入设备折叠区。
+
+验证结果：
+
+- JVM 测试入口 22 个，全部通过；
+- API 37 模拟器 `connectedDebugAndroidTest` 8 个，全部通过；instrumentation 通过 `dumpsys` 核验前台通知及停止 action 的契约，没有把程序化触发 action 表述为真实点击 SystemUI；
+- 宿主 `emulator-e2e-test.ps1`：PASS；宿主脚本实际展开 SystemUI 并点击常驻通知的“停止映射”，同时完成显著披露、真实 AccessibilityService、`specialUse` FGS、后台实体按键映射和 fail-open 链路；
+- `build.ps1 -Release` 与补充的 `:app:lintRelease`：PASS，Debug / Release lint 均为 0 error，仅保留 4 条工具或依赖版本更新 warning；Debug APK、未签名 Release APK 与未签名 Release AAB 均已生成；
+- JVM 与 instrumentation 合计保持 30 个测试入口，没有为纯视觉细节继续膨胀测试数量。
+
+本节验证针对模拟器上的本轮正式 UI 与公开 Android 音量链路，不替代 Xiaomi / HyperOS 和真实蓝牙耳机的厂商矩阵复测。
+
 ## 2026-08-24 自由控制点与正式单页收口
 
 本轮把“从最小到最大需要的按键次数 `K`”与“搭建折线的控制点总数 `P`（含两端）”完全解耦，并允许中间控制点保存自由 x。只有 `K+1` 个实际按键位置按 `n/K` 均匀分布；控制点在 x 轴吸附到邻近按键位置、在 y 轴吸附到整数 audio index。保存格式升级为 `v3|basisSpan|K|x,offset;…`，同时保留 `v1` / `v2` 和 legacy shadow 迁移。
@@ -8,8 +29,8 @@
 
 - `scripts/build.ps1 -Release` 与补充的 `:app:lintRelease`：通过；22/22 个 JVM 场景组无 failure、error 或 skip，Debug / Release lint 均无阻断项，R8/资源压缩后的未签名 Release APK 与 AAB 均成功生成；原细粒度断言保留在场景组内；
 - 最终 Release lint 为 0 error、3 个工具/依赖版本更新 warning、1 个 Compose 状态类型优化 hint；Debug APK、未签名 Release APK、Release AAB 的 SHA-256 依次为 `AEC89128D0AA16B5BC02746ECCD823F6A1024477C019C5C81A6E87EE46FB2B14`、`01922E018D74A203C0CF3FC589D8B5B757C8C6E8802737E113ED9A5CFE3CC8D9`、`4DCF3EF9383486EDADBDA1A9F7938D2D46104FEBC1C07298FB1E615BE88A334C`；
-- `:app:connectedDebugAndroidTest`：API 37 模拟器 8/8 通过，0 skip、0 failure；其中单页 UI 6 项，真实 `AudioManager` 集成 1 项，显著披露、真实 AccessibilityService、`specialUse` FGS 与通知停止 1 项；与 JVM 合计 30 个测试入口；
-- `scripts/emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild`：通过，真实 AccessibilityService、`specialUse` FGS 与 evdev 链路完成后台映射 `5 → 11 → 5`，通知停止后由系统接管；
+- `:app:connectedDebugAndroidTest`：API 37 模拟器 8/8 通过，0 skip、0 failure；其中单页 UI 6 项，真实 `AudioManager` 集成 1 项，显著披露、真实 AccessibilityService 与 `specialUse` FGS 1 项；通知停止部分通过 `dumpsys` 核验通知及 action 契约，不等同于点击 SystemUI；与 JVM 合计 30 个测试入口；
+- `scripts/emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild`：通过，真实 AccessibilityService、`specialUse` FGS 与 evdev 链路完成后台映射 `5 → 11 → 5`；宿主脚本实际展开 SystemUI 并点击“停止映射”，停止后由系统接管；
 - 视觉与交互检查使用 Android CLI 和 1080×2400 的 `VolumeMapper_API_37`：全新数据默认 `basis=30、K=18、P=5`，0…15 路由按实际 index 显示；浅色与深色模式均确认正式版只有一个主界面，当前音量为绿色水平线、交点和“当前 n”标签，y 轴音量图标不与刻度重叠，`P` 位于图上、`K` 位于 x 轴下、长按间隔与折叠设备区均无裁切。截图保存在被 Git 忽略的 `app/build/verification/final-*.png`。
 
 本轮没有连接 Xiaomi 真机或蓝牙耳机，因此这里只确认模型、持久化、Android 公开音量链路和模拟器实体按键分派；耳机端可听档位仍需在目标设备上复测。

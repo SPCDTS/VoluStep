@@ -15,7 +15,9 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.core.StepVolumeMap
@@ -63,10 +65,21 @@ class MainActivityTest {
 
         composeRule.onNodeWithTag(VolumeMapperTestTags.SCREEN_MAIN).assertIsDisplayed()
         composeRule.onNodeWithText("音量映射").assertIsDisplayed()
+        composeRule.onNodeWithText("精细控制").assertIsDisplayed()
         composeRule.onNodeWithTag(VolumeMapperTestTags.MASTER_SWITCH)
             .assertIsDisplayed()
             .assert(isToggleable())
             .assert(hasClickAction())
+        assertEquals(
+            "启用精细音量控制",
+            contentDescription(VolumeMapperTestTags.MASTER_SWITCH),
+        )
+        composeRule.onNodeWithTag(VolumeMapperTestTags.CONTROLLER_STATUS_ACTION)
+            .assert(hasClickAction())
+        assertEquals(
+            "查看授权说明",
+            onClickLabel(VolumeMapperTestTags.CONTROLLER_STATUS_ACTION),
+        )
         composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT)
             .assertIsDisplayed()
         composeRule.onNodeWithTag(CurveEditorTestTags.CANVAS).assertIsDisplayed()
@@ -104,51 +117,112 @@ class MainActivityTest {
             .performScrollTo()
             .performClick()
         composeRule.onNodeWithText("无障碍 API 显著披露").assertIsDisplayed()
+        composeRule.onNodeWithText("我理解上述用途与按键冲突，并同意继续").performClick()
+        composeRule.onNodeWithText("同意").assertIsEnabled().performClick()
+        composeRule.waitUntil { settingsRepository.settings.value.disclosureAccepted }
+        composeRule.onNodeWithText("开启无障碍").assertIsDisplayed()
+        assertEquals(
+            "打开无障碍设置",
+            onClickLabel(VolumeMapperTestTags.CONTROLLER_STATUS_ACTION),
+        )
     }
 
     @Test
-    fun pAndKSteppersRemainIndependent() {
+    fun pAndKSupportDirectInputAndRemainIndependent() {
         replaceSettings(testSettings())
 
         assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 5)
         assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 18)
 
-        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
+        val pointCountInput = composeRule
+            .onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT)
+            .performScrollTo()
+        assertTrue(
+            pointCountInput.fetchSemanticsNode().boundsInRoot.height >=
+                48f * composeRule.activity.resources.displayMetrics.density,
+        )
+        pointCountInput.performTextReplacement("7")
+        pointCountInput.performImeAction()
+        composeRule.waitUntil {
+            settingsRepository.settings.value.outputMap.controlPointCount == 7
+        }
+        assertEquals(18, settingsRepository.settings.value.outputMap.pressCount)
+        assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 7)
+        assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 18)
+
+        val pressCountInput = composeRule
+            .onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INPUT)
+            .performScrollTo()
+        pressCountInput.performTextReplacement("12")
+        pressCountInput.performImeAction()
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 12 }
+        assertEquals(7, settingsRepository.settings.value.outputMap.controlPointCount)
+        assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 7)
+        assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 12)
+
+        // 直接输入与 −/+共享同一份状态，且 P/K 不会隐式联动。
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
             .performScrollTo()
             .performClick()
         composeRule.waitUntil {
             settingsRepository.settings.value.outputMap.controlPointCount == 6
         }
-        assertEquals(18, settingsRepository.settings.value.outputMap.pressCount)
-        assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 6)
-        assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 18)
+        assertEquals(12, settingsRepository.settings.value.outputMap.pressCount)
 
-        composeRule.onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_DECREMENT)
+        composeRule.onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INCREMENT)
             .performScrollTo()
             .performClick()
-        composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 17 }
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.pressCount == 13 }
         assertEquals(6, settingsRepository.settings.value.outputMap.controlPointCount)
         assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 6)
-        assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 17)
+        assertStepperValue(CurveEditorTestTags.PRESS_COUNT_INPUT, 13)
 
-        val graph = (composeRule.activity.application as VolumeMapperApplication).graph
-        graph.mappingCoordinator.refreshSnapshot()
-        composeRule.waitUntil(10_000L) { graph.mappingCoordinator.runtime.value.snapshot != null }
-        val routeSpan = checkNotNull(graph.mappingCoordinator.runtime.value.snapshot).range.let {
-            it.maxIndex - it.minIndex
+        // 边界值后的未提交草稿也必须立即驱动 −/+，不能沿用旧值造成按钮假禁用。
+        pointCountInput.performTextReplacement("2")
+        pointCountInput.performImeAction()
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.controlPointCount == 2 }
+        pointCountInput.performTextReplacement("5")
+        assertEquals("5", stateDescription(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT))
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
+            .performScrollTo()
+            .assertIsEnabled()
+            .performClick()
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.controlPointCount == 4 }
+
+        pressCountInput.performTextReplacement(initialBasisSpan.toString())
+        pressCountInput.performImeAction()
+        composeRule.waitUntil {
+            settingsRepository.settings.value.outputMap.pressCount == initialBasisSpan
         }
-        if (routeSpan in 1 until initialBasisSpan) {
-            val routeLimitedPointCount = routeSpan + 1
-            val denseMap = testMap().resampleControlPoints(routeLimitedPointCount)
-            replaceSettings(testSettings(outputMap = denseMap))
-            composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
-                .performScrollTo()
-                .assertIsEnabled()
-                .performClick()
-            composeRule.waitUntil {
-                settingsRepository.settings.value.outputMap.controlPointCount ==
-                    routeLimitedPointCount + 1
-            }
+        pressCountInput.performTextReplacement("10")
+        composeRule.onNodeWithTag(CurveEditorTestTags.PRESS_COUNT_INCREMENT)
+            .performScrollTo()
+            .assertIsEnabled()
+            .performClick()
+        composeRule.waitUntil(5_000L) {
+            settingsRepository.settings.value.outputMap.pressCount == 11
+        }
+
+        // 正式界面最多 16 个控制点；P 仍可大于 K，二者保持独立。
+        pointCountInput.performTextReplacement("16")
+        pointCountInput.performImeAction()
+        composeRule.waitUntil { settingsRepository.settings.value.outputMap.controlPointCount == 16 }
+        assertEquals(11, settingsRepository.settings.value.outputMap.pressCount)
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_INCREMENT)
+            .performScrollTo()
+            .assertIsNotEnabled()
+
+        // 旧版本可能已持久化超过正式上限的合法密集曲线，减号必须逐点收敛而非 31→15。
+        val legacyDenseMap = settingsRepository.settings.value.outputMap
+            .resampleControlPoints(initialBasisSpan + 1)
+        replaceSettings(testSettings(outputMap = legacyDenseMap))
+        assertStepperValue(CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT, 31)
+        composeRule.onNodeWithTag(CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT)
+            .performScrollTo()
+            .assertIsEnabled()
+            .performClick()
+        composeRule.waitUntil(5_000L) {
+            settingsRepository.settings.value.outputMap.controlPointCount == 30
         }
     }
 
@@ -162,9 +236,9 @@ class MainActivityTest {
             .assertIsDisplayed()
         val bounds = canvas.fetchSemanticsNode().boundsInRoot
         val density = composeRule.activity.resources.displayMetrics.density
-        val plotLeft = 36f * density
-        val plotRight = bounds.width - 10f * density
-        val plotTop = 24f * density
+        val plotLeft = 38f * density
+        val plotRight = bounds.width - 12f * density
+        val plotTop = 28f * density
         val plotBottom = bounds.height - 28f * density
         val plotWidth = plotRight - plotLeft
         val plotHeight = plotBottom - plotTop
@@ -357,6 +431,32 @@ class MainActivityTest {
             .performScrollTo()
             .assertIsDisplayed()
 
+        val density = composeRule.activity.resources.displayMetrics.density
+        listOf(
+            Triple(
+                VolumeMapperTestTags.DEVICE_ACCESSIBILITY_ROW,
+                "无障碍",
+                "打开无障碍设置",
+            ),
+            Triple(
+                VolumeMapperTestTags.DEVICE_BACKGROUND_ROW,
+                "后台",
+                "打开应用后台设置",
+            ),
+        ).forEach { (tag, label, actionLabel) ->
+            val row = composeRule.onNodeWithTag(tag)
+                .performScrollTo()
+                .assert(hasClickAction())
+            val semanticsNode = row.fetchSemanticsNode()
+            assertTrue(semanticsNode.boundsInRoot.height >= 48f * density)
+            assertTrue(
+                semanticsNode.config[SemanticsProperties.Text]
+                    .joinToString(separator = "") { it.text }
+                    .contains(label),
+            )
+            assertEquals(actionLabel, onClickLabel(tag))
+        }
+
         composeRule.onNodeWithTag(VolumeMapperTestTags.DEVICE_TOGGLE)
             .performScrollTo()
             .performClick()
@@ -416,6 +516,12 @@ class MainActivityTest {
             .fetchSemanticsNode()
             .config[SemanticsProperties.ContentDescription]
             .joinToString(separator = "")
+
+    private fun onClickLabel(tag: String): String? =
+        composeRule.onNodeWithTag(tag)
+            .fetchSemanticsNode()
+            .config[SemanticsActions.OnClick]
+            .label
 
     private fun performCurveAction(label: String) {
         val action = composeRule.onNodeWithTag(CurveEditorTestTags.CURRENT_VOLUME_MARKER)

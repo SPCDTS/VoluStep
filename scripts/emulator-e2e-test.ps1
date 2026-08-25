@@ -621,7 +621,7 @@ try {
     # 先在目标服务尚未启用时取得主开关坐标，避免 uiautomator dump 注册的
     # UiAutomation 与真实 AccessibilityService 反复断连/重绑。服务 bound 后再点击缓存坐标。
     $startButtonPoint = Get-UiTapPointByTextWithScroll `
-        -Text '音量映射开关' `
+        -Text '启用精细音量控制' `
         -AllowNonClickable
 
     $serviceEntries = @($originalServices.Split(':') | Where-Object { $_ -and $_ -ne 'null' })

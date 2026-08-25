@@ -2,6 +2,7 @@ package dev.spcdts.volumemapper.ui
 
 import android.graphics.Paint as AndroidPaint
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -16,6 +17,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
@@ -27,23 +33,30 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
@@ -51,12 +64,16 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import kotlin.math.abs
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -77,7 +94,9 @@ fun MappingCurveEditor(
 ) {
     var editorMap by remember { mutableStateOf(outputMap) }
     var selectedControlPoint by remember {
-        mutableStateOf((outputMap.controlPointCount / 2).coerceIn(outputMap.normalizedXs.indices))
+        mutableIntStateOf(
+            (outputMap.controlPointCount / 2).coerceIn(outputMap.normalizedXs.indices),
+        )
     }
     var gestureInProgress by remember { mutableStateOf(false) }
     var xSnapGuide by remember { mutableStateOf<Double?>(null) }
@@ -167,21 +186,24 @@ fun MappingCurveEditor(
     )
 
     val selectedIndex = selectedControlPoint.coerceIn(renderedMap.normalizedXs.indices)
-    val maximumControlPointCount = renderedMap.basisSpan + 1
+    val maximumControlPointCount = maxOf(
+        renderedMap.controlPointCount,
+        min(MAXIMUM_CONTROL_POINT_COUNT, renderedMap.basisSpan + 1),
+    )
     val density = LocalDensity.current
-    val leftPaddingPx = with(density) { 36.dp.toPx() }
-    val rightPaddingPx = with(density) { 10.dp.toPx() }
-    val topPaddingPx = with(density) { 24.dp.toPx() }
+    val leftPaddingPx = with(density) { 38.dp.toPx() }
+    val rightPaddingPx = with(density) { 12.dp.toPx() }
+    val topPaddingPx = with(density) { 28.dp.toPx() }
     val bottomPaddingPx = with(density) { 28.dp.toPx() }
     val hitRadiusPx = with(density) { 22.dp.toPx() }
-    val xSnapDistancePx = with(density) { 11.dp.toPx() }
+    val xSnapDistancePx = with(density) { 10.dp.toPx() }
 
     val primary = MaterialTheme.colorScheme.primary
     val surface = MaterialTheme.colorScheme.surface
     val grid = MaterialTheme.colorScheme.outlineVariant
     val tick = MaterialTheme.colorScheme.onSurfaceVariant
-    val snap = MaterialTheme.colorScheme.tertiary
     val darkTheme = isSystemInDarkTheme()
+    val snap = if (darkTheme) Color(0xFFE5A8C4) else Color(0xFF96516F)
     val current = if (darkTheme) Color(0xFF8ED4A5) else Color(0xFF2D7A4B)
     val currentContent = if (darkTheme) Color(0xFF14351F) else Color.White
 
@@ -311,7 +333,7 @@ fun MappingCurveEditor(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(246.dp)
+                .height(224.dp)
                 .testTag(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
                 .semantics {
                     contentDescription = buildString {
@@ -418,8 +440,20 @@ fun MappingCurveEditor(
                                         val nearestPressX =
                                             (rawX * gestureMap.pressCount).roundToInt().toDouble() /
                                                 gestureMap.pressCount.toDouble()
-                                        val shouldSnapX =
-                                            abs(nearestPressX - rawX) * plotWidth <= xSnapDistancePx
+                                        val leftX = gestureMap.normalizedXAt(hitIndex - 1)
+                                        val rightX = gestureMap.normalizedXAt(hitIndex + 1)
+                                        val nearestPressIsMovable =
+                                            nearestPressX > leftX +
+                                            StepVolumeMap.MINIMUM_CONTROL_X_SPACING &&
+                                                nearestPressX < rightX -
+                                                StepVolumeMap.MINIMUM_CONTROL_X_SPACING
+                                        val effectiveSnapDistancePx = min(
+                                            xSnapDistancePx,
+                                            plotWidth * 0.4f / gestureMap.pressCount.toFloat(),
+                                        )
+                                        val shouldSnapX = nearestPressIsMovable &&
+                                            abs(nearestPressX - rawX) * plotWidth <=
+                                            effectiveSnapDistancePx
                                         val requestedX = if (shouldSnapX) nearestPressX else rawX
                                         val rawDisplayIndex = displayMinimum +
                                             (plotBottom - change.position.y) / plotHeight *
@@ -572,29 +606,36 @@ fun MappingCurveEditor(
                 ySnapGuide?.let { displayIndex ->
                     val guideY = pointFor(0.0, displayIndex.toDouble()).y
                     drawLine(
-                        color = snap.copy(alpha = 0.55f),
+                        color = snap,
                         start = Offset(plotLeft, guideY),
                         end = Offset(plotRight, guideY),
-                        strokeWidth = 1.dp.toPx(),
+                        strokeWidth = 1.5.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(
+                            floatArrayOf(4.dp.toPx(), 4.dp.toPx()),
+                        ),
                     )
                 }
                 xSnapGuide?.let { normalizedX ->
                     val guideX = plotLeft + normalizedX.toFloat() * plotWidth
                     drawLine(
-                        color = snap.copy(alpha = 0.55f),
+                        color = snap,
                         start = Offset(guideX, plotTop),
                         end = Offset(guideX, plotBottom),
-                        strokeWidth = 1.dp.toPx(),
+                        strokeWidth = 1.5.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(
+                            floatArrayOf(4.dp.toPx(), 4.dp.toPx()),
+                        ),
                     )
                 }
 
                 val currentY = currentDisplayIndex?.let { pointFor(0.0, it).y }
                 if (currentY != null) {
                     drawLine(
-                        color = current.copy(alpha = 0.88f),
+                        color = current.copy(alpha = 0.8f),
                         start = Offset(plotLeft, currentY),
                         end = Offset(plotRight, currentY),
-                        strokeWidth = 1.5.dp.toPx(),
+                        strokeWidth = 1.75.dp.toPx(),
+                        cap = StrokeCap.Round,
                     )
                 }
 
@@ -653,24 +694,30 @@ fun MappingCurveEditor(
                         y = currentY,
                     )
                     drawCircle(
-                        color = surface,
-                        radius = 5.dp.toPx(),
+                        color = current.copy(alpha = 0.18f),
+                        radius = 7.5.dp.toPx(),
                         center = intersection,
                     )
                     drawCircle(
                         color = current,
-                        radius = 3.2.dp.toPx(),
+                        radius = 4.dp.toPx(),
                         center = intersection,
+                    )
+                    drawCircle(
+                        color = surface,
+                        radius = 4.dp.toPx(),
+                        center = intersection,
+                        style = Stroke(width = 2.dp.toPx()),
                     )
 
                     val tagText = "当前 $currentIndexLabel"
                     val tagPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
                         color = currentContent.toArgb()
-                        textSize = 10.sp.toPx()
+                        textSize = 11.sp.toPx()
                         textAlign = AndroidPaint.Align.CENTER
                         typeface = android.graphics.Typeface.create(
-                            android.graphics.Typeface.DEFAULT,
-                            android.graphics.Typeface.BOLD,
+                            "sans-serif-medium",
+                            android.graphics.Typeface.NORMAL,
                         )
                     }
                     val fontMetrics = tagPaint.fontMetrics
@@ -685,11 +732,7 @@ fun MappingCurveEditor(
                         20.dp.toPx(),
                         textHeight + 2f * tagVerticalPadding,
                     ).coerceAtMost(plotHeight)
-                    val tagLeft = if (currentX > 0.7) {
-                        plotLeft
-                    } else {
-                        (plotRight - tagWidth).coerceAtLeast(plotLeft)
-                    }
+                    val tagLeft = (plotRight - tagWidth).coerceAtLeast(plotLeft)
                     val tagTop = (currentY - tagHeight / 2f).coerceIn(
                         plotTop,
                         plotBottom - tagHeight,
@@ -698,7 +741,7 @@ fun MappingCurveEditor(
                         color = current,
                         topLeft = Offset(tagLeft, tagTop),
                         size = Size(tagWidth, tagHeight),
-                        cornerRadius = CornerRadius(10.dp.toPx()),
+                        cornerRadius = CornerRadius(7.dp.toPx()),
                     )
                     drawContext.canvas.nativeCanvas.drawText(
                         tagText,
@@ -758,21 +801,60 @@ private fun CompactCurveStepper(
     decrementTag: String,
     incrementTag: String,
 ) {
+    var draftValue by remember { mutableStateOf(value.toString()) }
+    var inputHasFocus by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val darkTheme = isSystemInDarkTheme()
+    val containerColor = if (darkTheme) Color(0xFF28262C) else Color(0xFFF0EDF4)
+    val contentColor = MaterialTheme.colorScheme.onSurface
+
+    LaunchedEffect(value, inputHasFocus) {
+        if (!inputHasFocus) draftValue = value.toString()
+    }
+
+    fun commitDraft() {
+        val requested = draftValue.toIntOrNull()
+        if (requested == null) {
+            draftValue = value.toString()
+            return
+        }
+        val accepted = requested.coerceIn(minimum, maximum)
+        draftValue = accepted.toString()
+        if (accepted != value) onValueChange(accepted)
+    }
+
+    fun updateFromButton(delta: Int) {
+        val base = draftValue.toIntOrNull()?.coerceIn(minimum, maximum) ?: value
+        val accepted = (base + delta).coerceIn(minimum, maximum)
+        draftValue = accepted.toString()
+        if (accepted != value) onValueChange(accepted)
+        inputHasFocus = false
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
+
+    val buttonBase = draftValue.toIntOrNull()?.coerceIn(minimum, maximum) ?: value
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(48.dp),
+            .padding(horizontal = 4.dp)
+            .height(50.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(containerColor)
+            .padding(start = 10.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = label,
             modifier = Modifier.weight(1f),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.labelMedium,
         )
         IconButton(
-            onClick = { onValueChange((value - 1).coerceAtLeast(minimum)) },
-            enabled = enabled && value > minimum,
+            onClick = { updateFromButton(-1) },
+            enabled = enabled && buttonBase > minimum,
             modifier = Modifier
                 .size(40.dp)
                 .testTag(decrementTag),
@@ -783,21 +865,57 @@ private fun CompactCurveStepper(
                 modifier = Modifier.size(18.dp),
             )
         }
-        Text(
-            text = value.toString(),
+        BasicTextField(
+            value = draftValue,
+            onValueChange = { requested ->
+                if (requested.all(Char::isDigit) && requested.length <= 9) {
+                    draftValue = requested
+                }
+            },
+            enabled = enabled,
+            singleLine = true,
             modifier = Modifier
+                .width(52.dp)
+                .height(48.dp)
                 .testTag(valueTag)
+                .onFocusChanged { focusState ->
+                    if (inputHasFocus && !focusState.isFocused) commitDraft()
+                    inputHasFocus = focusState.isFocused
+                }
                 .semantics {
                     contentDescription = label
-                    stateDescription = value.toString()
+                    stateDescription = draftValue.ifBlank { "空" }
+                },
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                color = contentColor.copy(alpha = if (enabled) 1f else 0.38f),
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+            ),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = {
+                    commitDraft()
+                    inputHasFocus = false
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
+                },
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            decorationBox = { innerTextField ->
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    innerTextField()
                 }
-                .padding(horizontal = 8.dp),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Medium,
+            },
         )
         IconButton(
-            onClick = { onValueChange((value + 1).coerceAtMost(maximum)) },
-            enabled = enabled && value < maximum,
+            onClick = { updateFromButton(1) },
+            enabled = enabled && buttonBase < maximum,
             modifier = Modifier
                 .size(40.dp)
                 .testTag(incrementTag),
@@ -810,6 +928,8 @@ private fun CompactCurveStepper(
         }
     }
 }
+
+private const val MAXIMUM_CONTROL_POINT_COUNT = 16
 
 private fun StepVolumeMap.normalizedXForDisplayedIndex(
     displayedIndices: List<Int>,

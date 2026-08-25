@@ -13,7 +13,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.core.MappingCurve
 import dev.spcdts.volumemapper.core.MappingPoint
-import dev.spcdts.volumemapper.core.MappingPreset
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import java.io.IOException
 import kotlin.math.ceil
@@ -33,11 +32,11 @@ import kotlinx.coroutines.withTimeoutOrNull
 private val Context.volumeMapperDataStore by preferencesDataStore(name = "volume_mapper")
 
 data class VolumeMapperSettings(
-    val outputMap: StepVolumeMap = StepVolumeMap.fromCurve(
-        curve = MappingPreset.LOW_VOLUME_FINE.createCurve(),
+    val outputMap: StepVolumeMap = StepVolumeMap(
         basisSpan = DEFAULT_OUTPUT_BASIS_SPAN,
         pressCount = DEFAULT_OUTPUT_PRESS_COUNT,
-        controlPointCount = DEFAULT_OUTPUT_CONTROL_POINT_COUNT,
+        normalizedXs = listOf(0.0, 0.12, 0.34, 0.70, 1.0),
+        offsets = listOf(0, 1, 5, 16, DEFAULT_OUTPUT_BASIS_SPAN),
     ),
     val keyConfig: KeyMappingConfig = KeyMappingConfig(
         holdDelayMillis = 350L,
@@ -54,7 +53,6 @@ data class SettingsRepositoryState(
 
 private const val DEFAULT_OUTPUT_BASIS_SPAN = 30
 private const val DEFAULT_OUTPUT_PRESS_COUNT = 18
-private const val DEFAULT_OUTPUT_CONTROL_POINT_COUNT = 5
 private const val LEGACY_OUTPUT_BASIS_SPAN = 150
 
 /** 单进程设置仓库。内存状态立即更新，DataStore 写入做短暂防抖以适配拖动曲线。 */
