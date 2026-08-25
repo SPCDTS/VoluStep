@@ -71,7 +71,7 @@ $aab = '.\app\build\outputs\bundle\release\app-release.aab'
 
 ### specialUse 前台服务
 
-应用不播放媒体，不能申报 `mediaPlayback`。`specialUse` 的申报说明应与 Manifest subtype 一致：用户显式启用的实体音量键映射，需要持续、即时、用户可感知的全局媒体音量控制；中断会使映射立即失效。还要展示持续通知和停止 action。
+应用不播放媒体，不能申报 `mediaPlayback`。`specialUse` 的申报说明应与 Manifest subtype 一致：用户显式启用的实体音量键映射，需要持续、即时、用户可感知的全局媒体音量控制；中断会使映射立即失效。演示材料应展示应用主开关、系统“运行中的应用”入口，以及两处停止控制器的行为。应用仍按平台要求提交启动 FGS 所需的 `Notification` 对象，但 Android 13+ 不声明通知权限，因此它不进入普通通知抽屉。
 
 Play 审核可能不接受该用途；技术可行不等于政策必然批准。若被拒，应保留个人侧载/企业分发版本，或重新设计为仅在可见 Activity 中操作，不能伪造其他 FGS 类型。
 

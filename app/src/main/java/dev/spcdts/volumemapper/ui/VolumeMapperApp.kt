@@ -1,14 +1,10 @@
 package dev.spcdts.volumemapper.ui
 
-import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -72,7 +68,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import dev.spcdts.volumemapper.AppGraph
 import dev.spcdts.volumemapper.core.AudioRouteType
 import dev.spcdts.volumemapper.core.KeyMappingConfig
@@ -87,20 +82,9 @@ fun VolumeMapperApp(graph: AppGraph) {
     val settings = settingsState.settings
     val settingsLoaded = settingsState.initialSettingsLoaded
     var showDisclosure by remember { mutableStateOf(false) }
-    var showNotificationPermissionRequired by remember { mutableStateOf(false) }
     var showAppSettingsUnavailable by remember { mutableStateOf(false) }
     var controllerStartError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
-    val notificationPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) {
-            runCatching { MappingControllerService.start(context) }
-                .onFailure { controllerStartError = it.message ?: it.javaClass.simpleName }
-        } else {
-            showNotificationPermissionRequired = true
-        }
-    }
 
     Scaffold { innerPadding ->
         MainScreen(
@@ -125,14 +109,6 @@ fun VolumeMapperApp(graph: AppGraph) {
                     showDisclosure = true
                 } else if (!runtime.isAccessibilityConnected) {
                     context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                } else if (
-                    Build.VERSION.SDK_INT >= 33 &&
-                    ContextCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.POST_NOTIFICATIONS,
-                    ) != PackageManager.PERMISSION_GRANTED
-                ) {
-                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 } else {
                     runCatching { MappingControllerService.start(context) }
                         .onFailure {
@@ -162,30 +138,6 @@ fun VolumeMapperApp(graph: AppGraph) {
                 showDisclosure = false
             },
             enabled = settingsLoaded,
-        )
-    }
-
-    if (showNotificationPermissionRequired) {
-        AlertDialog(
-            onDismissRequest = { showNotificationPermissionRequired = false },
-            title = { Text("需要显示控制器通知") },
-            text = { Text("映射运行期间必须显示可随时停止的前台控制器通知。") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showNotificationPermissionRequired = false
-                        context.startActivity(
-                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
-                        )
-                    },
-                ) { Text("通知设置") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showNotificationPermissionRequired = false }) {
-                    Text("稍后")
-                }
-            },
         )
     }
 
@@ -602,7 +554,7 @@ private fun DeviceCard(
                 )
                 DeviceSettingRow(
                     label = "后台",
-                    value = if (runtime.isForegroundServiceRunning) "允许" else "未启动",
+                    value = if (runtime.isForegroundServiceRunning) "运行中" else "未启动",
                     onClick = onOpenAppSettings,
                     testTag = VolumeMapperTestTags.DEVICE_BACKGROUND_ROW,
                 )
@@ -615,7 +567,7 @@ private fun DeviceCard(
                                 "音量范围：${snapshot?.let { "${it.range.minIndex}–${it.range.maxIndex}" } ?: "未知"}",
                             )
                             appendLine("无障碍：${if (runtime.isAccessibilityConnected) "开启" else "关闭"}")
-                            appendLine("后台：${if (runtime.isForegroundServiceRunning) "允许" else "未启动"}")
+                            appendLine("后台：${if (runtime.isForegroundServiceRunning) "运行中" else "未启动"}")
                             append("状态：${runtime.statusMessage}")
                         }
                         context.getSystemService(ClipboardManager::class.java)

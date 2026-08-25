@@ -12,7 +12,7 @@ $testPackageName = 'dev.spcdts.volumemapper.debug.test'
 $activityComponent = "$packageName/dev.spcdts.volumemapper.MainActivity"
 $accessibilityComponent = "$packageName/dev.spcdts.volumemapper.runtime.VolumeKeyAccessibilityService"
 $runnerComponent = "$testPackageName/androidx.test.runner.AndroidJUnitRunner"
-$fixtureTest = 'dev.spcdts.volumemapper.RealSystemVolumeE2eTest#disclosureAccessibilityControllerAndNotificationStop'
+$fixtureTest = 'dev.spcdts.volumemapper.RealSystemVolumeE2eTest#disclosureAccessibilityControllerAndSilentForegroundStop'
 $remoteWindowDump = '/sdcard/volumemapper-e2e-window.xml'
 $localWindowDump = Join-Path ([IO.Path]::GetTempPath()) "volumemapper-e2e-$PID.xml"
 
@@ -149,6 +149,90 @@ function Find-UiNodeByText {
     return $null
 }
 
+function Assert-NotificationAbsentFromShade {
+    param([string]$Title)
+
+    Invoke-Adb shell cmd statusbar expand-notifications | Out-Null
+    try {
+        $script:shadeDocument = $null
+        Wait-ForCondition `
+            -TimeoutSeconds 8 `
+            -FailureMessage '通知抽屉未成功展开，无法验证静默前台服务。' `
+            -Condition {
+                try {
+                    $candidate = Get-WindowXml
+                    $shadeMarker = $candidate.SelectNodes('//node') | Where-Object {
+                        $resourceId = $_.GetAttribute('resource-id')
+                        $resourceId.EndsWith(':id/notification_panel') -or
+                            $resourceId.EndsWith(':id/notification_stack_scroller') -or
+                            $resourceId.EndsWith(':id/quick_settings_panel') -or
+                            $resourceId.EndsWith(':id/split_shade_status_bar') -or
+                            $resourceId.EndsWith(':id/dismiss_text')
+                    } | Select-Object -First 1
+                    if ($null -ne $shadeMarker) {
+                        $script:shadeDocument = $candidate
+                        return $true
+                    }
+                } catch {
+                    return $false
+                }
+                return $false
+            }
+        $document = $script:shadeDocument
+        if ($null -ne (Find-UiNodeByText -Document $document -Text $Title)) {
+            throw "静默前台服务仍显示在普通通知抽屉：${Title}"
+        }
+    } finally {
+        Invoke-Adb shell cmd statusbar collapse | Out-Null
+    }
+}
+
+function Get-AppTaskId {
+    $dump = [string]::Join(
+        [Environment]::NewLine,
+        [string[]](Invoke-Adb shell dumpsys activity activities)
+    )
+    $escapedPackage = [regex]::Escape($packageName)
+    $match = [regex]::Match(
+        $dump,
+        "\* Task\{[^\r\n]*#(\d+)[^\r\n]*A=\d+:${escapedPackage}(?:\s|$)"
+    )
+    if (-not $match.Success) { return $null }
+    return [int]$match.Groups[1].Value
+}
+
+function Remove-AppTaskFromRecents {
+    $originalTaskId = Get-AppTaskId
+    if ($null -eq $originalTaskId) {
+        throw '进入最近任务前未找到本应用 task，无法验证划卡生命周期。'
+    }
+
+    Invoke-Adb shell input keyevent KEYCODE_APP_SWITCH | Out-Null
+    Start-Sleep -Milliseconds 800
+
+    $sizeOutput = [string]::Join(
+        [Environment]::NewLine,
+        [string[]](Invoke-Adb shell wm size)
+    )
+    $sizeMatches = [regex]::Matches($sizeOutput, '(\d+)x(\d+)')
+    if ($sizeMatches.Count -eq 0) {
+        throw "无法解析模拟器屏幕尺寸：$sizeOutput"
+    }
+    $sizeMatch = $sizeMatches[$sizeMatches.Count - 1]
+    $width = [int]$sizeMatch.Groups[1].Value
+    $height = [int]$sizeMatch.Groups[2].Value
+    $x = [int]($width / 2)
+    $startY = [int]($height * 0.55)
+    $endY = [int]($height * 0.08)
+    Invoke-Adb shell input swipe $x $startY $x $endY 350 | Out-Null
+
+    Wait-ForCondition -FailureMessage "最近任务卡片划掉后，task $originalTaskId 仍然存在。" -Condition {
+        $currentTaskId = Get-AppTaskId
+        $null -eq $currentTaskId -or $currentTaskId -ne $originalTaskId
+    }
+    Invoke-Adb shell input keyevent KEYCODE_HOME | Out-Null
+}
+
 function Wait-ForUiText {
     param(
         [string]$Text,
@@ -198,161 +282,6 @@ function Get-UiTapPointByText {
     $x = [int](($left + $right) / 2)
     $y = [int](($top + $bottom) / 2)
     return [pscustomobject]@{ X = $x; Y = $y }
-}
-
-function Get-NotificationExpandPoint {
-    param(
-        [string]$Title,
-        [string]$ActionText = '停止映射',
-        [int]$TimeoutSeconds = 5
-    )
-
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    do {
-        try {
-            $document = Get-WindowXml
-            $titleNode = Find-UiNodeByText -Document $document -Text $Title
-            $row = $titleNode
-            while (
-                $row -is [System.Xml.XmlElement] -and
-                -not $row.GetAttribute('resource-id').EndsWith(
-                    ':id/expandableNotificationRow',
-                    [StringComparison]::Ordinal
-                )
-            ) {
-                $row = $row.ParentNode
-            }
-            if ($row -is [System.Xml.XmlElement]) {
-                foreach ($node in $row.SelectNodes('.//node')) {
-                    if (
-                        $node.GetAttribute('text').IndexOf(
-                            $ActionText,
-                            [StringComparison]::Ordinal
-                        ) -ge 0 -or
-                        $node.GetAttribute('content-desc').IndexOf(
-                            $ActionText,
-                            [StringComparison]::Ordinal
-                        ) -ge 0
-                    ) {
-                        # action 已可见，不能再点击同一 id、语义为 Collapse 的按钮。
-                        return $null
-                    }
-                }
-                foreach ($node in $row.SelectNodes('.//node')) {
-                    $description = $node.GetAttribute('content-desc')
-                    if (
-                        $node.GetAttribute('resource-id').EndsWith(
-                            ':id/expand_button',
-                            [StringComparison]::Ordinal
-                        ) -and (
-                            $description.IndexOf(
-                                'Expand',
-                                [StringComparison]::OrdinalIgnoreCase
-                            ) -ge 0 -or
-                            $description.IndexOf(
-                                '展开',
-                                [StringComparison]::Ordinal
-                            ) -ge 0
-                        )
-                    ) {
-                        $match = [regex]::Match(
-                            $node.GetAttribute('bounds'),
-                            '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$'
-                        )
-                        if ($match.Success) {
-                            return [pscustomobject]@{
-                                X = [int]((
-                                    [int]$match.Groups[1].Value +
-                                    [int]$match.Groups[3].Value
-                                ) / 2)
-                                Y = [int]((
-                                    [int]$match.Groups[2].Value +
-                                    [int]$match.Groups[4].Value
-                                ) / 2)
-                            }
-                        }
-                    }
-                }
-            }
-        } catch {
-            # SystemUI 正在重排时 XML 可能短暂不可读，继续轮询。
-        }
-        Start-Sleep -Milliseconds 250
-    } while ([DateTime]::UtcNow -lt $deadline)
-    return $null
-}
-
-function Get-NotificationActionPoint {
-    param(
-        [string]$Title,
-        [string]$ActionText,
-        [int]$TimeoutSeconds = 15
-    )
-
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    do {
-        try {
-            $document = Get-WindowXml
-            $titleNode = Find-UiNodeByText -Document $document -Text $Title
-            $row = $titleNode
-            while (
-                $row -is [System.Xml.XmlElement] -and
-                -not $row.GetAttribute('resource-id').EndsWith(
-                    ':id/expandableNotificationRow',
-                    [StringComparison]::Ordinal
-                )
-            ) {
-                $row = $row.ParentNode
-            }
-            if ($row -is [System.Xml.XmlElement]) {
-                foreach ($candidate in $row.SelectNodes('.//node')) {
-                    if (
-                        $candidate.GetAttribute('text').IndexOf(
-                            $ActionText,
-                            [StringComparison]::Ordinal
-                        ) -lt 0 -and
-                        $candidate.GetAttribute('content-desc').IndexOf(
-                            $ActionText,
-                            [StringComparison]::Ordinal
-                        ) -lt 0
-                    ) {
-                        continue
-                    }
-                    $node = $candidate
-                    while (
-                        $node -is [System.Xml.XmlElement] -and
-                        $node -ne $row -and
-                        $node.GetAttribute('clickable') -ne 'true'
-                    ) {
-                        $node = $node.ParentNode
-                    }
-                    if ($node -isnot [System.Xml.XmlElement] -or $node -eq $row) {
-                        continue
-                    }
-                    $match = [regex]::Match(
-                        $node.GetAttribute('bounds'),
-                        '^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$'
-                    )
-                    if ($match.Success) {
-                        return [pscustomobject]@{
-                            X = [int]((
-                                [int]$match.Groups[1].Value +
-                                [int]$match.Groups[3].Value
-                            ) / 2)
-                            Y = [int]((
-                                [int]$match.Groups[2].Value +
-                                [int]$match.Groups[4].Value
-                            ) / 2)
-                        }
-                    }
-                }
-            }
-        } catch {
-            # SystemUI 展开动画期间重抓目标通知行。
-        }
-        Start-Sleep -Milliseconds 250
-    } while ([DateTime]::UtcNow -lt $deadline)
-    throw "目标通知中未找到 action：${ActionText}"
 }
 
 function Invoke-UiTapPoint {
@@ -479,18 +408,6 @@ function Test-AudioEventAdvanced {
     return $afterTime -gt $beforeTime
 }
 
-function Get-NotificationManagerDump {
-    $lastMessage = ''
-    for ($attempt = 0; $attempt -lt 5; $attempt++) {
-        $lines = & $adb -s $Serial shell dumpsys notification --noredact 2>&1
-        $exitCode = $LASTEXITCODE
-        $lastMessage = [string]::Join([Environment]::NewLine, [string[]]$lines)
-        if ($exitCode -eq 0) { return $lastMessage }
-        Start-Sleep -Milliseconds 400
-    }
-    throw "读取 NotificationManager 状态失败：$lastMessage"
-}
-
 function Get-AppServicesDump {
     return [string]::Join(
         [Environment]::NewLine,
@@ -612,10 +529,6 @@ try {
         throw '显著披露/设置准备阶段 instrumentation 未通过。'
     }
 
-    if ([int]([string](Invoke-Adb shell getprop ro.build.version.sdk)).Trim() -ge 33) {
-        Invoke-Adb shell pm grant $packageName android.permission.POST_NOTIFICATIONS | Out-Null
-    }
-
     Invoke-Adb shell am start '-W' '-n' $activityComponent | Out-Null
 
     # 先在目标服务尚未启用时取得主开关坐标，避免 uiautomator dump 注册的
@@ -650,14 +563,10 @@ try {
     Wait-ForCondition -FailureMessage 'MappingControllerService 未以前台状态运行。' -Condition {
         Test-ControllerServiceRunning
     }
-    Wait-ForCondition -FailureMessage '前台控制器通知未出现。' -Condition {
-        try {
-            (Get-NotificationManagerDump).IndexOf(
-                '音量键映射正在运行',
-                [StringComparison]::Ordinal
-            ) -ge 0
-        } catch {
-            $false
+    if ([int]([string](Invoke-Adb shell getprop ro.build.version.sdk)).Trim() -ge 33) {
+        Assert-NotificationAbsentFromShade -Title '音量键映射正在运行'
+        Wait-ForCondition -FailureMessage '通知抽屉检查后 AccessibilityService 未重新绑定。' -Condition {
+            Test-AccessibilityServiceBound
         }
     }
     Start-Sleep -Milliseconds 750
@@ -670,8 +579,14 @@ try {
     $expectedMappedDown = $range.Minimum + [int][Math]::Floor(
         ([Math]::Max(0.0, $logicalAfterUp - 0.4) * $span) + 0.5
     )
-    Write-Host "[5/7] Activity 退到后台后注入 evdev 音量键（映射目标 $expectedMappedUp）"
-    Invoke-Adb shell input keyevent KEYCODE_HOME | Out-Null
+    Write-Host "[5/7] 划掉最近任务卡片后注入 evdev 音量键（映射目标 $expectedMappedUp）"
+    Remove-AppTaskFromRecents
+    Wait-ForCondition -FailureMessage '划掉最近任务卡片后前台控制器停止运行。' -Condition {
+        Test-ControllerServiceRunning
+    }
+    Wait-ForCondition -FailureMessage '划掉最近任务卡片后 AccessibilityService 未保持绑定。' -Condition {
+        Test-AccessibilityServiceBound
+    }
     Send-EmulatorVolumeKey -Direction UP
     Wait-ForCondition -FailureMessage '后台系统音量加键没有到达 40% 映射目标。' -Condition {
         (Get-MediaVolume).Current -eq $expectedMappedUp
@@ -683,28 +598,15 @@ try {
     }
     $mappedDownIndex = (Get-MediaVolume).Current
 
-    Write-Host "[6/7] 从 SystemUI 常驻通知执行【停止映射】"
-    Invoke-Adb shell cmd statusbar expand-notifications | Out-Null
-    $expandButtonPoint = Get-NotificationExpandPoint `
-        -Title '音量键映射正在运行' `
-        -TimeoutSeconds 3
-    if ($null -ne $expandButtonPoint) {
-        Invoke-UiTapPoint -Point $expandButtonPoint
-    }
-    $stopButtonPoint = Get-NotificationActionPoint `
-        -Title '音量键映射正在运行' `
-        -ActionText '停止映射'
-    # XML dump 退出后等待目标无障碍服务重新绑定，再点击缓存的通知 action。
-    Wait-ForCondition -FailureMessage '通知面板检查后 AccessibilityService 未重新绑定。' -Condition {
-        Test-AccessibilityServiceBound
-    }
-    Invoke-UiTapPoint -Point $stopButtonPoint
-    Wait-ForCondition -FailureMessage '通知停止 action 后前台控制器仍在运行。' -Condition {
+    Write-Host "[6/7] 回到应用并通过主开关停止映射"
+    Invoke-Adb shell am start '-W' '-n' $activityComponent | Out-Null
+    Start-Sleep -Milliseconds 750
+    Invoke-UiTapPoint -Point $startButtonPoint
+    Wait-ForCondition -FailureMessage '应用主开关停止后前台控制器仍在运行。' -Condition {
         -not (Test-ControllerServiceRunning)
     }
 
     Write-Host "[7/7] 验证停止后的 fail-open：系统恢复默认音量流调整"
-    Invoke-Adb shell cmd statusbar collapse | Out-Null
     Set-MediaVolume -Index $initialIndex
     $ringRange = Get-StreamVolume -Stream 2
     $ringInitial = $ringRange.Minimum + [int][Math]::Floor(
@@ -736,7 +638,7 @@ try {
         -Dump $audioDumpAfter `
         -EventPattern $appWritePattern
     if (Test-AudioEventAdvanced -Before $appWriteMarkerBefore -After $appWriteMarkerAfter) {
-        throw '通知停止后仍出现应用媒体音量写入，fail-open 失败。'
+        throw '主开关停止后仍出现应用媒体音量写入，fail-open 失败。'
     }
     $nativeMediaIndex = (Get-MediaVolume).Current
     $nativeRingIndex = (Get-StreamVolume -Stream 2).Current
@@ -782,6 +684,9 @@ try {
     }
     Invoke-CleanupStep -Description '收起通知面板' -Action {
         Invoke-Adb shell cmd statusbar collapse | Out-Null
+    }
+    Invoke-CleanupStep -Description '返回桌面' -Action {
+        Invoke-Adb shell input keyevent KEYCODE_HOME | Out-Null
     }
     Invoke-CleanupStep -Description '删除设备端临时 UI dump' -Action {
         Invoke-Adb shell rm -f $remoteWindowDump | Out-Null

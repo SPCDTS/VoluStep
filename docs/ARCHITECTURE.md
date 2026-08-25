@@ -79,9 +79,9 @@ Android 17 对后台音频焦点、播放和系统音量修改进行了强化。
 
 1. 用户在可见 Activity 中打开顶部“控制”开关；
 2. Activity 启动 `foregroundServiceType="specialUse"` 服务；
-3. 服务立即显示可停止的常驻通知；
+3. 服务立即向系统提交启动 FGS 所需的 `Notification` 对象；应用不声明通知权限，因此 Android 13+ 的普通通知抽屉不显示它，系统“运行中的应用”入口仍可见；
 4. AccessibilityService 只有在 FGS 健康时才消费新手势；
-5. 服务使用 `START_NOT_STICKY`，不在开机或无障碍回调中后台自启。
+5. `android:stopWithTask="false"` 明确规定划掉最近任务卡片不停止控制器；服务使用 `START_NOT_STICKY`，不在开机或无障碍回调中后台自启。
 
 应用并不播放媒体，因此不能把 FGS 冒充 `mediaPlayback`。`specialUse` 是否获准上架仍由 Play 审核决定。
 
@@ -114,7 +114,7 @@ API 33+ 为媒体属性恰好返回一个设备时标记 `CONFIRMED`；返回多
 - 新写入尚未获得完整 settling 窗口时，mismatch 不覆盖 exact state、长按余量或更新的 pending target；成熟 mismatch 才清除旧 pending 并以系统 observed index 重锚，final mismatch 计一次失败；settling 时间从阻塞 Binder 写入成功返回后开始；
 - 连续三次失败进入 fail-open，后续新按键恢复系统默认行为；
 - 后端报告 fixed volume，或 min/max 实际只有一个 index 时，都不消费按键；
-- 用户可在 UI 重新探测，或从通知停止服务。
+- 用户可在 UI 重新探测，并通过应用主开关或系统“运行中的应用”入口停止服务；API 28–32 还可使用可见 FGS 通知的停止 action。
 
 小米可能把两个系统 index 映射到相同 AVRCP 值；“系统回读一致”只能证明 AudioService 接受了请求，不能证明耳机产生了可听响度差异。
 

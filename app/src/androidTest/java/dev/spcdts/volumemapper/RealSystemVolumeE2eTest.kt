@@ -2,6 +2,7 @@ package dev.spcdts.volumemapper
 
 import android.Manifest
 import android.app.UiAutomation
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.compose.ui.test.assertIsDisplayed
@@ -22,7 +23,6 @@ import dev.spcdts.volumemapper.ui.VolumeMapperTestTags
 import java.util.Locale
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
@@ -32,11 +32,11 @@ import org.junit.runner.RunWith
  * 模拟器专用的真实系统链路 E2E。
  *
  * 与 [VolumeKeyAudioIntegrationTest] 不同，本测试会真正绑定 AccessibilityService、启动
- * specialUse FGS，并核验常驻通知及其停止 action 的系统注册信息。测试会修改 secure
+ * specialUse FGS，并核验应用不声明通知权限时控制器仍能运行。测试会修改 secure
  * accessibility settings，因此通过 emulator guard 禁止在真机执行。
  *
  * Instrumentation 自身也通过 UiAutomation 占用无障碍通道，不能可靠证明系统按键被目标
- * AccessibilityService 过滤。完整按键和 SystemUI 通知点击阶段由 scripts/emulator-e2e-test.ps1
+ * AccessibilityService 过滤。完整按键和应用主开关停止阶段由 scripts/emulator-e2e-test.ps1
  * 在 runner 退出后执行，避免 Android 17 上 UiAutomation 与真实服务并存时的点击死锁。
  */
 @LargeTest
@@ -46,7 +46,7 @@ class RealSystemVolumeE2eTest {
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun disclosureAccessibilityControllerAndNotificationStop() {
+    fun disclosureAccessibilityControllerAndSilentForegroundStop() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val prepareExternalJourney =
             InstrumentationRegistry.getArguments().getString(ARG_PREPARE_EXTERNAL) == "true"
@@ -79,7 +79,10 @@ class RealSystemVolumeE2eTest {
         try {
             shell(automation, "input keyevent KEYCODE_WAKEUP")
             shell(automation, "wm dismiss-keyguard")
-            grantNotificationPermissionIfNeeded(automation, packageName)
+            assertFalse(
+                "静默前台服务不应声明通知权限",
+                requestedPermissions(packageName).contains(Manifest.permission.POST_NOTIFICATIONS),
+            )
 
             // 外部 E2E runner 会先 pm clear；若单独重跑且已接受过披露，则仍验证已持久化状态。
             if (!repository.settings.value.disclosureAccepted) {
@@ -145,6 +148,10 @@ class RealSystemVolumeE2eTest {
             // 注入硬件层事件，避免 adb shell input/UiAutomation 绕过 Accessibility input filter。
             if (prepareExternalJourney) return
 
+            assertFalse(
+                "用户点击前不应自动启动前台控制器",
+                coordinator.runtime.value.isForegroundServiceRunning,
+            )
             composeRule.onNodeWithTag(VolumeMapperTestTags.MASTER_SWITCH)
                 .assertIsEnabled()
                 .performClick()
@@ -155,46 +162,13 @@ class RealSystemVolumeE2eTest {
                     runtime.canInterceptKeys
             }
 
-            val notificationDump = shell(automation, "dumpsys notification --noredact")
-            val notificationLines = notificationDump.lines()
-            val recordStart = notificationLines.indexOfFirst { line ->
-                line.contains("NotificationRecord(") &&
-                    line.contains("pkg=$packageName ") &&
-                    line.contains(" id=$CONTROLLER_NOTIFICATION_ID ")
-            }
-            assertTrue(
-                "前台控制器通知不可见",
-                recordStart >= 0,
-            )
-            val recordEnd = if (recordStart >= 0) {
-                (recordStart + 1 until notificationLines.size).firstOrNull { lineIndex ->
-                    notificationLines[lineIndex].contains("NotificationRecord(")
-                } ?: notificationLines.size
-            } else {
-                0
-            }
-            val activeNotificationRecord = if (recordStart >= 0) {
-                notificationLines.subList(recordStart, recordEnd).joinToString("\n")
-            } else {
-                ""
-            }
-            assertTrue(
-                "前台控制器通知标题不正确",
-                activeNotificationRecord.contains(
-                    "android.title=String (音量键映射正在运行)",
-                ),
-            )
-            assertTrue(
-                "常驻通知缺少停止映射 action",
-                activeNotificationRecord.contains("\"停止映射\" -> PendingIntent"),
-            )
             MappingControllerService.stop(composeRule.activity)
 
             composeRule.waitUntil(CONTROLLER_TIMEOUT_MILLIS) {
                 !coordinator.runtime.value.isForegroundServiceRunning &&
                     !coordinator.runtime.value.canInterceptKeys
             }
-            assertFalse("通知停止后不应继续消费按键", coordinator.runtime.value.canInterceptKeys)
+            assertFalse("控制器停止后不应继续消费按键", coordinator.runtime.value.canInterceptKeys)
         } finally {
             runCleanupSteps(
                 { MappingControllerService.stop(composeRule.activity) },
@@ -212,8 +186,6 @@ class RealSystemVolumeE2eTest {
                     )
                 },
                 {
-                    // pm revoke 会终止目标进程，也会连带杀死当前 instrumentation runner。
-                    // 测试入口在每轮前 pm clear，通知权限不需要在 runner 内撤销。
                     shell(automation, "input keyevent KEYCODE_BACK")
                 },
             )
@@ -296,17 +268,13 @@ class RealSystemVolumeE2eTest {
         }
     }
 
-    private fun grantNotificationPermissionIfNeeded(
-        automation: UiAutomation,
-        packageName: String,
-    ) {
-        if (Build.VERSION.SDK_INT >= 33) {
-            automation.grantRuntimePermission(
-                packageName,
-                Manifest.permission.POST_NOTIFICATIONS,
-            )
-        }
-    }
+    @Suppress("DEPRECATION")
+    private fun requestedPermissions(packageName: String): List<String> =
+        composeRule.activity.packageManager
+            .getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
+            .requestedPermissions
+            ?.toList()
+            .orEmpty()
 
     private fun shell(automation: UiAutomation, command: String): String =
         ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))
@@ -340,6 +308,5 @@ class RealSystemVolumeE2eTest {
         const val CONTROLLER_TIMEOUT_MILLIS = 10_000L
         const val SETTINGS_TIMEOUT_MILLIS = 5_000L
         const val ARG_PREPARE_EXTERNAL = "e2ePrepareOnly"
-        const val CONTROLLER_NOTIFICATION_ID = 4107
     }
 }

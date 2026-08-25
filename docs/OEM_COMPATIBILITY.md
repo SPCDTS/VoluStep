@@ -16,7 +16,7 @@
 |---|---|---|
 | 小米 MIUI / HyperOS | 媒体可为 0–150；存在“调节媒体音量”权限和后台限制 | 运行时读取范围；双阶段回读；诊断页提供公开应用详情入口与保守排障提示 |
 | Samsung One UI | repeat 节奏、音量面板、SoundAssistant 或其他 key-filter 服务共存行为不同 | active-only ticker；不依赖面板；系统可向多个服务并行分发，任一服务处理都可能阻止默认行为，共存顺序不能保证 |
-| OPPO / OnePlus / vivo / Honor | 自启动、省电、锁屏 FGS 管理不同 | 不后台自启；用户显式启动；持续通知；真机矩阵验证 |
+| OPPO / OnePlus / vivo / Honor | 自启动、省电、锁屏 FGS 管理不同 | 不后台自启；用户显式启动；API 33+ 静默 FGS；真机矩阵验证 |
 | Pixel / AOSP | 作为公开 API 基准 | 仓库提供 API 28/36/37 AVD 与测试脚本；是否通过必须按具体提交记录，不能由脚本存在推断 |
 | A2DP | AVRCP 绝对音量常见范围 0–127，可有重复物理档 | 展示系统阶梯；不宣称额外物理精度 |
 | LE Audio | VCS 常见范围 0–255，耳机也可自主改音量 | 重新同步系统 readback；不拦截无 KeyEvent 的远端通知 |

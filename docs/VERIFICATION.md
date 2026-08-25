@@ -1,5 +1,19 @@
 # 本机验证记录
 
+## 2026-08-25 API 33+ 静默前台服务
+
+本轮保留 Android 17 后台音量修改所需的 `specialUse` FGS，但移除了 `POST_NOTIFICATIONS` Manifest 声明、运行时权限请求、拒绝弹窗和启动门槛。服务仍向 `startForeground()` 提交平台要求的 `Notification` 对象；Android 13 及以上不在普通通知抽屉显示该控制器，系统“运行中的应用”入口仍可见。应用主开关继续提供明确的启动与停止入口，设备区后台状态由“允许”改为“运行中”。
+
+验证结果：
+
+- JVM 测试 21/21、API 37 模拟器 instrumentation 9/9 全部通过，合计仍为 30 个测试入口；没有新增巨型聚合测试；
+- `RealSystemVolumeE2eTest` 从空白数据完成显著披露、真实 AccessibilityService 和 FGS 启动，确认合并 Manifest 不声明 `POST_NOTIFICATIONS`，且控制器仍处于前台服务状态；
+- 宿主 `emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild`：PASS。脚本实际展开 SystemUI 并确认目标标题不在通知抽屉；随后划掉本应用最近任务卡片，确认 FGS 与无障碍仍在，evdev 音量键按确定性映射完成 `5 → 11 → 5`；重新打开应用通过主开关停止后，系统 `AudioService` 恢复接管；
+- `scripts/build.ps1 -Release`：`BUILD SUCCESSFUL`。Debug lint、Debug APK、R8 Release APK、Release AAB 与 Release lint vital 均通过；
+- `aapt2 dump badging` 对 Debug 与 Release APK 的黑盒检查均只看到 `MODIFY_AUDIO_SETTINGS`、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_SPECIAL_USE` 及构建系统生成的非导出 receiver 权限，没有 `POST_NOTIFICATIONS`。
+
+本轮验证设备为 API 37 模拟器。Xiaomi 真机在收尾时未出现在 `adb devices`，因此没有把 AOSP 模拟器的通知抽屉与划卡结论冒充为 HyperOS 真机结论；真机重新连接后仍应补一次“启动映射—划掉任务卡片—通知抽屉为空—FGS/映射继续”的回归。
+
 ## 2026-08-25 正式单屏 UI、选择式增删与图标对齐
 
 本轮按正式发布界面收口为单一主屏：顶部只保留“精细控制”总开关与状态，曲线卡片承载全部高频编辑，设备与授权信息收纳在可折叠的“设备”区域；不再提供 Tab、常驻诊断页、Undo/Redo 或按键说明菜单。

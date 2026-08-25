@@ -4,7 +4,7 @@
     <string name="accessibility_service_name">音量键映射服务</string>
     <string name="accessibility_service_description">仅接收实体音量键事件，用用户配置的曲线控制媒体音量；不读取屏幕内容。</string>
     <string name="controller_channel_name">音量映射运行状态</string>
-    <string name="controller_channel_description">在全局音量键映射运行时显示常驻通知</string>
+    <string name="controller_channel_description">供系统标识后台音量键映射的运行状态</string>
     <string name="controller_notification_title">音量键映射正在运行</string>
     <string name="controller_notification_text">实体音量键将按当前曲线控制媒体音量</string>
     <string name="controller_stop">停止映射</string>
