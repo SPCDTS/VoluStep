@@ -14,7 +14,7 @@ VoluStep 是一个面向 Android 28–37 的全局媒体音量键映射应用。
 - A2DP、LE Audio、USB、HDMI、有线与扬声器的运行时能力探测，并区分 `CONFIRMED` 与 `HEURISTIC` 路由；
 - 显著披露、应用内停止开关，以及收纳在“设备”折叠区中的跨 OEM 状态与公开应用详情入口；API 33+ 不声明通知权限，FGS 只在系统“运行中的应用”入口留有状态；
 - 英文默认资源与简体中文 `zh-CN` 资源；品牌名 VoluStep 在两种语言中保持一致，界面、无障碍语义、运行状态和系统通知随应用语言切换；
-- JVM 单元测试、Android instrumentation 测试、API 28/36/37 模拟器 E2E、真机诊断采集和 Release/AAB 流程。
+- 20 条 JVM 单元测试、10 条 Android instrumentation / E2E 测试、API 36/37 模拟器完整 E2E、API 28 最低版本安装/启动烟测、真机诊断采集和 Release/AAB 流程。
 
 ## 本机环境
 
@@ -50,7 +50,7 @@ VoluStep 是一个面向 Android 28–37 的全局媒体音量键映射应用。
 .\scripts\build.ps1
 ```
 
-默认脚本运行 JVM 单测、Debug lint 与 Debug APK；只有传入 `-Release` 才会额外构建 Release APK/AAB。
+默认脚本运行 20 条 JVM 单测、编译 10 条 instrumentation / E2E 测试、执行 Debug lint 并构建 Debug APK；只有传入 `-Release` 才会额外构建未签名门禁用 Release APK/AAB。
 
 产物位置：
 
@@ -75,7 +75,7 @@ VoluStep 是一个面向 Android 28–37 的全局媒体音量键映射应用。
 .\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild -AppLocale zh-CN
 ```
 
-完整 E2E 脚本只允许 `emulator-*`：它会清空测试应用数据、按 `-AppLocale` 选择英文或简体中文、临时修改 secure accessibility settings、把可调试模拟器的 adbd 切到 root，并从 evdev 注入真正经过 Accessibility input filter 的音量键事件；结束时会恢复原无障碍配置、媒体/铃声音量和 adbd 身份。仓库保持 30 个唯一测试入口；语言矩阵复用同一测试与 E2E 旅程，不靠复制 `@Test` 增加条数。仓库中存在 AVD、脚本或测试源码，不代表任何 API 或真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)，本次实际执行结果见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
+完整 E2E 脚本只允许 `emulator-*`：它会清空测试应用数据、按 `-AppLocale` 选择英文或简体中文、临时修改 secure accessibility settings、把可调试模拟器的 adbd 切到 root，并从 evdev 注入真正经过 Accessibility input filter 的音量键事件；结束时会恢复原无障碍配置、媒体/铃声音量和 adbd 身份。仓库保持 20 条 JVM + 10 条 instrumentation / E2E，共 30 个唯一测试入口；语言矩阵复用同一测试与 E2E 旅程，不靠复制 `@Test` 增加条数。仓库中存在 AVD、脚本或测试源码，不代表任何 API 或真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)，本次实际执行结果见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
 ## 小米真机使用
 
@@ -108,4 +108,6 @@ VoluStep 是一个面向 Android 28–37 的全局媒体音量键映射应用。
 
 ## 发布
 
-签名材料绝不能提交。完整签名、R8、APK/AAB 和 Play 声明流程见 [docs/RELEASE.md](docs/RELEASE.md)，隐私说明草案见 [docs/PRIVACY.md](docs/PRIVACY.md)。发布前必须补充发布主体/联系邮箱，并完成 Accessibility API 与 `specialUse` FGS 两套 Play Console 声明和演示视频。
+签名材料绝不能提交。普通 `build.ps1 -Release` 只用于本地门禁，不会产出可直接发布的正式包。正式构建前先运行 `scripts/install-bundletool.ps1`；随后使用 `scripts/build-release.ps1 -SigningProfile AppSigning` 构建直接分发 APK，或使用 `-SigningProfile PlayUpload` 构建 Google Play AAB。两种模式都强制传入离线记录的证书 SHA-256 和最终公开的 HTTPS 隐私政策地址，完整命令见发布文档。
+
+完整签名、R8、APK/AAB 和 Play 声明流程见 [docs/RELEASE.md](docs/RELEASE.md)，可复核的 Console 填写草稿见 [docs/PLAY_CONSOLE_DECLARATIONS.md](docs/PLAY_CONSOLE_DECLARATIONS.md)，逐项阻断条件见 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)，商店图文素材位于 [distribution/store-assets](distribution/store-assets)，隐私说明草案见 [docs/PRIVACY.md](docs/PRIVACY.md)。发布前必须补充真实发布主体、联系邮箱和最终 HTTPS 隐私政策地址，并完成 Accessibility API 与 `specialUse` FGS 两套 Play Console 声明和演示视频。

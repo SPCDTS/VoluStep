@@ -180,6 +180,30 @@ class MainActivityTest {
     }
 
     @Test
+    fun overflowProvidesInAppPrivacyAndVersionInformation() {
+        useApplicationLocale("zh-CN")
+
+        composeRule.onNodeWithTag(VolumeMapperTestTags.APP_MENU)
+            .assertIsDisplayed()
+            .performClick()
+        composeRule.onNodeWithTag(VolumeMapperTestTags.PRIVACY_MENU_ITEM)
+            .assertIsDisplayed()
+            .performClick()
+        composeRule.onNodeWithTag(VolumeMapperTestTags.PRIVACY_DIALOG).assertIsDisplayed()
+        composeRule.onNodeWithText(appString(R.string.privacy_on_device_title)).assertIsDisplayed()
+        composeRule.onNodeWithText(appString(R.string.action_ok)).performClick()
+
+        composeRule.onNodeWithTag(VolumeMapperTestTags.APP_MENU).performClick()
+        composeRule.onNodeWithTag(VolumeMapperTestTags.ABOUT_MENU_ITEM)
+            .assertIsDisplayed()
+            .performClick()
+        composeRule.onNodeWithTag(VolumeMapperTestTags.ABOUT_DIALOG).assertIsDisplayed()
+        composeRule.onNodeWithText(
+            appString(R.string.about_version, BuildConfig.VERSION_NAME),
+        ).assertIsDisplayed()
+    }
+
+    @Test
     fun selectedSegmentInsertionAndSelectedPointDeletionFormAnExactRoundTrip() {
         val initialMap = testMap()
         replaceSettings(testSettings(outputMap = initialMap))

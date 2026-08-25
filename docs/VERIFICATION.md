@@ -1,5 +1,27 @@
 # 本机验证记录
 
+## 2026-08-25 发布加固工作区门禁
+
+本节记录执行时尚未提交的发布加固工作区。当前源码恰好包含 30 个唯一 `@Test` 入口：20 个 JVM 测试和 10 个 Android instrumentation / E2E 测试；后者由 `MainActivityTest` 8 项、真实 `AudioManager` 集成 1 项和模拟器真实系统链路 1 项组成。宿主 PowerShell E2E 的 7 项断言独立于这 30 个入口，不重复计数。
+
+已确认结果：
+
+- 使用 `--no-daemon --rerun-tasks` 强制执行 129 个 Gradle task：`:app:testDebugUnitTest` 为 20/20 通过；`:app:compileDebugAndroidTestKotlin`、`:app:lintDebug`、`:app:lintRelease`、`:app:assembleDebug`、`:app:assembleRelease` 和 `:app:bundleRelease` 均通过，Debug/Release lint 各 0 个 blocking issue；
+- 在 API 37 AVD `VolumeMapper_API_37`（Android 17）上显式指定 `ANDROID_SERIAL=emulator-5554` 后，`:app:connectedDebugAndroidTest` 为 10/10 通过，0 skip、0 failure；
+- 在 API 36 AVD `VolumeMapper_API_36`（Android 16）上，`:app:connectedDebugAndroidTest` 为 10/10 通过，0 skip、0 failure；
+- 在 API 28 AVD `VolumeMapper_API_28`（Android 9）冷启动后，使用 Android CLI 安装并启动 `app-debug.apk` 成功；layout 可见 VoluStep、主开关、更多选项、控制点、音量图、按键次数、长按间隔、设备区域及当前音量语义，截图保存在被 Git 忽略的 `artifacts/api28-launch.png`。本轮没有在旧版本执行完整宿主 E2E，仅完成最低支持版本的安装、启动与首屏基础检查，符合当前不过度兼容旧 Android 的范围；
+- 第一次在多设备环境直接运行时，Xiaomi Wi-Fi ADB 序列号中的冒号触发 Windows UTP 路径问题，同时真机拒绝测试 APK，因此该次 Gradle 任务失败属于设备选择与测试基础设施失败，不是测试断言失败；显式限定 `emulator-5554` 并冷启动 AVD 后通过；
+- `RealSystemVolumeE2eTest` 的首次流程已补充并实际验证：未勾选时不能同意，取消后不保存同意、不进入授权、不启动控制器，再次触发后才可主动同意；同意后直接进入系统无障碍设置。披露同时准确说明系统可能投递其他实体按键、应用检查键码后立即放行非音量键，以及音量事件只在内存中临时使用的字段；
+- `scripts/emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild -AppLocale zh-CN` 的 7/7 宿主断言通过：真实披露 instrumentation 完成，应用退到后台后 evdev 实体按键链路按映射完成 `5 → 11 → 5`，从主开关停止后由系统 `AudioService` 恢复接管；fail-open 阶段媒体音量保持 `5 → 5`、铃声音量保持 `2 → 2`，判据是系统调节调用重新出现而不是强制要求当前非活动流的 index 改变；脚本退出码为 0，清理无报错；
+- `scripts/emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild -AppLocale en-US` 的 7/7 宿主断言通过：instrumentation 返回的英文资源契约正确，应用退到后台后 evdev 映射完成 `5 → 11 → 5`，停止后由系统 `AudioService` 恢复接管；脚本退出码为 0，清理无报错；
+- API 36 的 `scripts/emulator-e2e-test.ps1 -Serial emulator-5556 -SkipBuild -AppLocale zh-CN` 同样 7/7 通过，后台 evdev 映射为 `5 → 11 → 5`，停止后由系统接管且清理成功；完成后已停止该后台 AVD；
+- Release APK 黑盒检查确认包名 `dev.spcdts.volumemapper`、版本 `1.0.0 (1)`、min/target API `28/37`；权限只包含 `MODIFY_AUDIO_SETTINGS`、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_SPECIAL_USE` 和构建系统生成的非导出动态 receiver 权限，没有 `INTERNET`、`POST_NOTIFICATIONS`、存储、账号或蓝牙权限；
+- Intent 导出边界只读复核通过：Launcher Activity 不处理外部 payload；无障碍服务由系统级 `BIND_ACCESSIBILITY_SERVICE` 权限保护；映射 FGS 与 AndroidX Startup Provider 均不导出；Profile Installer receiver 虽导出但受系统级 `android.permission.DUMP` 保护；两个 PendingIntent 都是显式目标且使用 `FLAG_IMMUTABLE`，无需修改源码；
+- 未签名 Release APK/AAB 被 `verify-release-artifacts.ps1` 正确拒绝；一次性测试证书下的签名 APK/AAB 已通过 zipalign、包名/版本、APK/AAB 唯一证书与离线指纹核验。候选包还必须在 APK 与 AAB Manifest 中携带同一个预期 HTTPS 隐私政策 URL；不同 URL、APK 空 URL、AAB 空 URL 三种负向组合均被拒绝。只提供部分 Gradle 签名变量也会失败，不会静默回退到未签名构建。重复归档不会覆盖既有候选包；测试密钥与签名输出随后删除，仓库工作区外的 SDK CA 文件除外，不存在项目生产密钥；
+- 当前未签名门禁产物为 `1.0.0 (1)`：Debug APK SHA-256 `0833928D2DED29D560750F030B19963BA77F80BCA4B757B8DB137A9BA0351875`，未签名 Release APK `EF0AC28CAB34705C5AAB93A5634E146060298FE34DD3048F08D10BE16433B76D`，未签名 AAB `0C49EE9A3A1AED4665243CB4A49C32D465C15AFDBE991816008429B67F70F94A`；后二者不可发布；
+- 商店图标、功能图与四张中英文截图的尺寸分别为 `512×512`、`1024×500` 与 `1080×2400`，Fastlane 机械副本与源文件 SHA-256 完全一致；截图已在最终 Debug 构建上重拍并人工检查。Debug 不注入最终隐私 URL，因此隐私截图没有正式包的“完整政策 / Full policy”按钮；最终地址就绪后必须使用签名候选包再次重拍；
+- `git diff --check` 通过。
+
 ## 2026-08-25 点选择插入与 Music Streaming 色卡
 
 控制点数量的 `+` 现在同时支持点选择和线段选择：选中线段时在该段插入；选中普通控制点时在其右侧线段插入；选中最后一个控制点时改用左侧线段。目标段没有空余整数 X/Y 时保持禁用且不自动换边，插入后选中新点。首次进入编辑器按控制点顺序选中中间点，偶数数量固定取右中点。
@@ -8,7 +30,7 @@
 
 验证结果：
 
-- 测试入口仍为 30 条；JVM 21/21、API 37 模拟器 instrumentation 9/9 全部通过，点右插、末点左插、选段插入、删除闭环和首次中点选择分别由现有职责清晰的 UI 测试覆盖；
+- 该阶段测试入口为 30 条；点右插、末点左插、选段插入、删除闭环和首次中点选择分别由职责清晰的 UI 测试覆盖；当前拆分及最新结果见本日最上方记录；
 - `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest` 为 `BUILD SUCCESSFUL`，lint 0 error，`git diff --check` 通过；
 - Android CLI 在 API 37、1080×2400 模拟器分别切换浅色与深色模式检查：图表、轴标签、禁用控件、选中光晕与绿色当前音量线均清楚，无裁切或重叠；首次画面选中第 3/5 个控制点，坐标为 x=6、index=3，`+` 可用；
 - 最新 Debug APK 已通过标准 ADB 覆盖安装到小米真机 `192.168.3.6:34195`，版本 `0.1.0-debug`；原无障碍授权及服务绑定保留，前台映射控制器因覆盖安装停止，需在主界面重新打开总开关。
@@ -19,7 +41,7 @@
 
 测试总量继续限制为 30 个唯一 `@Test` 入口：首屏资源与布局测试固定覆盖英文，无障碍点/线段 action 测试固定覆盖简体中文，其余行为测试从当前 locale 的资源构造语义期望；没有把语言矩阵扩成新的参数化测试或巨型聚合方法。宿主 E2E 新增 `-AppLocale en-US|zh-CN`，由现有 instrumentation fixture 把当前语言下的主开关描述和通知标题传给 PowerShell，脚本不再硬编码中文选择器。
 
-当前已执行 `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest :app:bundleRelease`：`BUILD SUCCESSFUL`，JVM 21/21 与 API 37 模拟器 instrumentation 9/9 全部通过，lint 为 0 error。英文 `en-US` 与简体中文 `zh-CN` 分别复用同一条宿主 E2E 旅程，两次均验证划掉任务卡片后后台映射 `5 -> 11 -> 5`，关闭主开关后由系统恢复默认按键处理；两种语言的主界面截图也已人工检查，VoluStep 品牌名保持一致且未发现截断或重叠。最终 Debug APK 已通过标准 ADB 覆盖安装到小米真机，版本为 `0.1.0-debug`，原无障碍授权仍在；覆盖安装会停止前台控制器，需由用户在可见界面重新打开主开关。PowerShell E2E 脚本语法检查和 `git diff --check` 通过。
+当前已执行 `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest :app:bundleRelease`：`BUILD SUCCESSFUL`，当时 30 个测试入口全部通过，lint 为 0 error；当前拆分及最新结果见本日最上方记录。英文 `en-US` 与简体中文 `zh-CN` 分别复用同一条宿主 E2E 旅程，两次均验证划掉任务卡片后后台映射 `5 -> 11 -> 5`，关闭主开关后由系统恢复默认按键处理；两种语言的主界面截图也已人工检查，VoluStep 品牌名保持一致且未发现截断或重叠。最终 Debug APK 已通过标准 ADB 覆盖安装到小米真机，版本为 `0.1.0-debug`，原无障碍授权仍在；覆盖安装会停止前台控制器，需由用户在可见界面重新打开主开关。PowerShell E2E 脚本语法检查和 `git diff --check` 通过。
 
 ## 2026-08-25 API 33+ 静默前台服务
 
@@ -27,7 +49,7 @@
 
 验证结果：
 
-- JVM 测试 21/21、API 37 模拟器 instrumentation 9/9 全部通过，合计仍为 30 个测试入口；没有新增巨型聚合测试；
+- 当时 30 个测试入口全部通过；没有新增巨型聚合测试，当前拆分及最新结果见本日最上方记录；
 - `RealSystemVolumeE2eTest` 从空白数据完成显著披露、真实 AccessibilityService 和 FGS 启动，确认合并 Manifest 不声明 `POST_NOTIFICATIONS`，且控制器仍处于前台服务状态；
 - 宿主 `emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild`：PASS。脚本实际展开 SystemUI 并确认目标标题不在通知抽屉；随后划掉本应用最近任务卡片，确认 FGS 与无障碍仍在，evdev 音量键按确定性映射完成 `5 → 11 → 5`；重新打开应用通过主开关停止后，系统 `AudioService` 恢复接管；
 - `scripts/build.ps1 -Release`：`BUILD SUCCESSFUL`。Debug lint、Debug APK、R8 Release APK、Release AAB 与 Release lint vital 均通过；
@@ -52,7 +74,7 @@
 
 验证结果：
 
-- JVM 测试 21/21 通过；API 37 模拟器 `connectedDebugAndroidTest` 9/9 通过，0 skip、0 failure；两者合计 30 个入口。显式插入、删除、容量与无障碍行为已拆成独立测试，不依靠巨型聚合方法凑数；
+- 当时 30 个测试入口全部通过，API 37 模拟器设备测试为 0 skip、0 failure；显式插入、删除、容量与无障碍行为已拆成独立测试，不依靠巨型聚合方法凑数。当前拆分及最新结果见本日最上方记录；
 - `:app:testDebugUnitTest :app:connectedDebugAndroidTest :app:lintDebug :app:assembleDebug :app:bundleRelease`：`BUILD SUCCESSFUL`；Debug lint 无阻断项，Debug APK 与 Release AAB 均生成成功；
 - 宿主 `emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild`：PASS。脚本从空白数据完成显著披露、真实 AccessibilityService、`specialUse` FGS、后台 evdev 音量键与 SystemUI 通知停止，得到映射 `5 → 11 → 5`，停止后由系统 `AudioService` 接管；清理阶段恢复无障碍、音量、adbd 和通知面板；
 - Android CLI 在 API 37、1080×2400 模拟器上确认正式版只有一个主界面，画布占用主要屏幕空间，P 只读、K 可输入，点与线段均可命中；浅色和深色模式下，选中对象保持原曲线颜色，只用同色多层光晕高亮，点坐标虚线和当前音量水平线层级清楚；
@@ -155,7 +177,7 @@
 
 该场景判定为失败，不计入精细映射通过。AMS 当时仍把本应用记录为带前台服务的进程，`procState=4`、`cached=false`、`isFrozen=false`；现有证据只能说明 HyperOS 延迟并超时了无障碍按键回调，不能宣称进程已被冻结。
 
-针对迟到事件，当前工作树新增 500 ms 新鲜度边界：过期初始 `DOWN` 不接管也不入队；匹配现有 owner 的过期尾事件会原子清 owner、关闭可写资格、提升 epoch、取消 ticker/verification 并排空 actor 手势，不再进入 reducer 执行短按收尾写。500 ms 来自 [AOSP Accessibility `KeyEventDispatcher`](https://android.googlesource.com/platform/frameworks/base/+/master/services/accessibility/java/com/android/server/accessibility/KeyEventDispatcher.java) 的固定等待时间。纯 JVM 测试已覆盖 499 ms / 500 ms 边界、负 age、溢出以及各类事件处置；修复版真机对照结果见下一节。
+针对迟到事件，当前实现使用 500 ms 新鲜度边界：过期初始 `DOWN` 不接管也不入队；匹配现有 owner 的过期尾事件会清理既有手势，不再进入 reducer 执行短按收尾写。500 ms 来自 [AOSP Accessibility `KeyEventDispatcher`](https://android.googlesource.com/platform/frameworks/base/+/master/services/accessibility/java/com/android/server/accessibility/KeyEventDispatcher.java) 的固定等待时间。当前 JVM 套件只验证 499 ms / 500 ms 边界、负 age、溢出和过期事件处置分类；它没有模拟 coordinator 清理副作用，也没有制造过期物理按键事件。修复版真机对照结果见下一节。
 
 ### 修复版与省电策略对照复测
 
@@ -168,7 +190,7 @@
 - `AudioService` 只记录应用的 `8 → 9` 和对应 `setAvrcpVolume`，没有系统默认 `+10/+20`；
 - 随后把映射器 Activity 切回前台，音量仍为 `9`，没有迟到副本或第二次应用写入；再用 0.7% 短按步长恢复为原始 `8`。
 
-同一时刻 HyperOS 日志仍打印多条 `application accessibility dispatch key timeout`，但紧接着明确记录目标服务 `handled this event`；按实际 event time 到应用写入的时差，本次事件属于 500 ms 窗口内的新事件。该对照同时改变了应用代码和省电策略，且只有一次样本，因此只能把“当前组合在这一次真实播放中通过”作为结论，不能断言“无限制”单独构成充分修复。过期事件防护的边界与处置由 8 个 JVM 测试验证，本次没有人为制造过期物理事件。
+同一时刻 HyperOS 日志仍打印多条 `application accessibility dispatch key timeout`，但紧接着明确记录目标服务 `handled this event`；按实际 event time 到应用写入的时差，本次事件属于 500 ms 窗口内的新事件。该对照同时改变了应用代码和省电策略，且只有一次样本，因此只能把“当前组合在这一次真实播放中通过”作为结论，不能断言“无限制”单独构成充分修复。当前 JVM 套件仅保留上述新鲜度边界与处置分类的 2 项测试，本次也没有人为制造过期物理事件。
 
 ### 真机测试工具限制
 

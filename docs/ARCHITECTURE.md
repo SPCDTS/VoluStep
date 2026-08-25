@@ -120,6 +120,6 @@ API 33+ 为媒体属性恰好返回一个设备时标记 `CONFIRMED`；返回多
 
 ## 安全与隐私
 
-无障碍 XML 在所有版本明确设置 `canRetrieveWindowContent=false`，API 31+ 资源另设 `isAccessibilityTool=false`，且不申请截图、手势或窗口内容能力。应用只处理音量键的键码与时间，所有曲线和诊断数据保存在本地。
+无障碍 XML 在所有版本明确设置 `canRetrieveWindowContent=false`，API 31+ 资源另设 `isAccessibilityTool=false`，且不申请截图、手势或窗口内容能力。系统可能向服务投递其他实体按键事件；应用检查键码后立即放行非音量键，只对音量键在内存中临时使用键码、按下/释放状态、重复次数、事件/按下时间和输入设备 ID。所有曲线与配置数据保存在本地，事件数据不持久化或上传。
 
 Google Play 发布时需要在正常流程中显示独立显著披露、取得主动同意，并提交 Accessibility API declaration。相关政策：[Accessibility API 政策](https://support.google.com/googleplay/android-developer/answer/10964491)。

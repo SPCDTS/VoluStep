@@ -1,0 +1,6 @@
+Initial testing release:
+• Visual discrete volume-mapping curve
+• Independent press-count and control-point settings
+• Short-press and hold behavior for the phone's physical volume buttons
+• English and Simplified Chinese interface
+• All configuration stays on-device

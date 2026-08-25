@@ -1,14 +1,14 @@
 package dev.spcdts.volumemapper.ui
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -29,12 +29,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,13 +69,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.spcdts.volumemapper.AppGraph
+import dev.spcdts.volumemapper.BuildConfig
 import dev.spcdts.volumemapper.R
 import dev.spcdts.volumemapper.core.AudioRouteType
 import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.ControllerRuntimeState
 import dev.spcdts.volumemapper.runtime.MappingControllerService
-import dev.spcdts.volumemapper.runtime.resolveLocalizedText
 
 @Composable
 fun VolumeMapperApp(graph: AppGraph) {
@@ -81,6 +84,8 @@ fun VolumeMapperApp(graph: AppGraph) {
     val settings = settingsState.settings
     val settingsLoaded = settingsState.initialSettingsLoaded
     var showDisclosure by remember { mutableStateOf(false) }
+    var showPrivacyPolicy by rememberSaveable { mutableStateOf(false) }
+    var showAbout by rememberSaveable { mutableStateOf(false) }
     var showAppSettingsUnavailable by remember { mutableStateOf(false) }
     var controllerStartError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
@@ -115,6 +120,8 @@ fun VolumeMapperApp(graph: AppGraph) {
                 }
             },
             onStop = { MappingControllerService.stop(context) },
+            onShowPrivacyPolicy = { showPrivacyPolicy = true },
+            onShowAbout = { showAbout = true },
             onOpenAppSettings = {
                 if (!AppDetailsSettingsLauncher.open(context)) {
                     showAppSettingsUnavailable = true
@@ -133,9 +140,18 @@ fun VolumeMapperApp(graph: AppGraph) {
                     graph.settingsRepository.flushPendingWrite()
                 }
                 showDisclosure = false
+                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             },
             enabled = settingsLoaded,
         )
+    }
+
+    if (showPrivacyPolicy) {
+        PrivacyPolicyDialog(onDismiss = { showPrivacyPolicy = false })
+    }
+
+    if (showAbout) {
+        AboutDialog(onDismiss = { showAbout = false })
     }
 
     if (showAppSettingsUnavailable) {
@@ -179,6 +195,8 @@ private fun MainScreen(
     onOpenAccessibility: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onShowPrivacyPolicy: () -> Unit,
+    onShowAbout: () -> Unit,
     onOpenAppSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -198,6 +216,8 @@ private fun MainScreen(
                 settingsLoaded = settingsLoaded,
                 onStart = onStart,
                 onStop = onStop,
+                onShowPrivacyPolicy = onShowPrivacyPolicy,
+                onShowAbout = onShowAbout,
             )
         }
 
@@ -270,6 +290,8 @@ private fun BrandControlBar(
     settingsLoaded: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onShowPrivacyPolicy: () -> Unit,
+    onShowAbout: () -> Unit,
 ) {
     val appName = stringResource(R.string.app_name)
     val snapshot = runtime.snapshot
@@ -300,6 +322,7 @@ private fun BrandControlBar(
         R.string.master_switch_content_description,
         appName,
     )
+    var menuExpanded by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -327,6 +350,38 @@ private fun BrandControlBar(
                     stateDescription = status
                 },
         )
+        Box {
+            IconButton(
+                onClick = { menuExpanded = true },
+                modifier = Modifier.testTag(VolumeMapperTestTags.APP_MENU),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = stringResource(R.string.app_menu),
+                )
+            }
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.privacy_policy)) },
+                    onClick = {
+                        menuExpanded = false
+                        onShowPrivacyPolicy()
+                    },
+                    modifier = Modifier.testTag(VolumeMapperTestTags.PRIVACY_MENU_ITEM),
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.about)) },
+                    onClick = {
+                        menuExpanded = false
+                        onShowAbout()
+                    },
+                    modifier = Modifier.testTag(VolumeMapperTestTags.ABOUT_MENU_ITEM),
+                )
+            }
+        }
     }
 }
 
@@ -425,8 +480,6 @@ private fun DeviceCard(
     onOpenAppSettings: () -> Unit,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
-    var copied by rememberSaveable { mutableStateOf(false) }
-    val context = LocalContext.current
     val manufacturer = manufacturerLabel()
     val summary = when {
         runtime.isFailOpen -> stringResource(R.string.status_needs_attention)
@@ -435,7 +488,6 @@ private fun DeviceCard(
         else -> stringResource(R.string.status_not_started)
     }
     val snapshot = runtime.snapshot
-    val appName = stringResource(R.string.app_name)
     val deviceLabel = stringResource(R.string.device)
     val deviceInformation = stringResource(R.string.device_information)
     val deviceExpansionState = stringResource(
@@ -447,7 +499,6 @@ private fun DeviceCard(
     val volumeRangeLabel = stringResource(R.string.device_volume_range)
     val accessibilityLabel = stringResource(R.string.device_accessibility)
     val backgroundLabel = stringResource(R.string.device_background)
-    val statusLabel = stringResource(R.string.device_status)
     val outputName = snapshot?.route?.productName ?: stringResource(R.string.device_not_detected)
     val volumeRange = snapshot?.let {
         "${it.range.minIndex}–${it.range.maxIndex}"
@@ -460,19 +511,6 @@ private fun DeviceCard(
     )
     val openAccessibilitySettings = stringResource(R.string.open_accessibility_settings)
     val openAppSettings = stringResource(R.string.open_app_settings)
-    val clipboardLabel = stringResource(R.string.clipboard_status_label, appName)
-    val statusText = listOf(
-        stringResource(R.string.device_status_line, phoneLabel, manufacturer),
-        stringResource(R.string.device_status_line, outputLabel, outputName),
-        stringResource(R.string.device_status_line, volumeRangeLabel, volumeRange),
-        stringResource(R.string.device_status_line, accessibilityLabel, accessibilityState),
-        stringResource(R.string.device_status_line, backgroundLabel, backgroundState),
-        stringResource(
-            R.string.device_status_line,
-            statusLabel,
-            context.resolveLocalizedText(runtime.statusMessage),
-        ),
-    ).joinToString(separator = "\n")
     val borderedSurfaceColor = MaterialTheme.colorScheme.outlineVariant
 
     Card(
@@ -547,20 +585,6 @@ private fun DeviceCard(
                     onClickLabel = openAppSettings,
                     testTag = VolumeMapperTestTags.DEVICE_BACKGROUND_ROW,
                 )
-                TextButton(
-                    onClick = {
-                        context.getSystemService(ClipboardManager::class.java)
-                            ?.setPrimaryClip(ClipData.newPlainText(clipboardLabel, statusText))
-                        copied = true
-                    },
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                ) {
-                    Text(
-                        stringResource(
-                            if (copied) R.string.action_copied else R.string.action_copy_status,
-                        ),
-                    )
-                }
             }
         }
     }
@@ -651,6 +675,77 @@ private fun DisclosureDialog(
 }
 
 @Composable
+private fun PrivacyPolicyDialog(onDismiss: () -> Unit) {
+    val appName = stringResource(R.string.app_name)
+    val context = LocalContext.current
+    val fullPolicyUrl = BuildConfig.PRIVACY_POLICY_URL
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag(VolumeMapperTestTags.PRIVACY_DIALOG),
+        title = { Text(stringResource(R.string.privacy_policy)) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(stringResource(R.string.privacy_on_device_title), fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.privacy_on_device_body, appName))
+                Text(stringResource(R.string.privacy_not_collected_title), fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.privacy_not_collected_body, appName))
+                Text(stringResource(R.string.privacy_retention_title), fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.privacy_retention_body, appName))
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_ok)) }
+        },
+        dismissButton = if (fullPolicyUrl.isNotBlank()) {
+            {
+                TextButton(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(fullPolicyUrl)).apply {
+                                    addCategory(Intent.CATEGORY_BROWSABLE)
+                                },
+                            )
+                        }
+                    },
+                    modifier = Modifier.testTag(VolumeMapperTestTags.PRIVACY_FULL_POLICY),
+                ) {
+                    Text(stringResource(R.string.privacy_full_policy))
+                }
+            }
+        } else {
+            null
+        },
+    )
+}
+
+@Composable
+private fun AboutDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag(VolumeMapperTestTags.ABOUT_DIALOG),
+        title = { Text(stringResource(R.string.app_name)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(stringResource(R.string.about_version, BuildConfig.VERSION_NAME))
+                Text(stringResource(R.string.about_summary))
+                Text(
+                    text = stringResource(R.string.about_compatibility),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_ok)) }
+        },
+    )
+}
+
+@Composable
 private fun manufacturerLabel(): String {
     val manufacturer = Build.MANUFACTURER.trim()
     return when {
@@ -684,6 +779,12 @@ object VolumeMapperTestTags {
     const val SCREEN_MAIN = "screen_main"
     const val BRAND_CONTROL_BAR = "brand_control_bar"
     const val MASTER_SWITCH = "master_switch"
+    const val APP_MENU = "app_menu"
+    const val PRIVACY_MENU_ITEM = "privacy_menu_item"
+    const val ABOUT_MENU_ITEM = "about_menu_item"
+    const val PRIVACY_DIALOG = "privacy_dialog"
+    const val PRIVACY_FULL_POLICY = "privacy_full_policy"
+    const val ABOUT_DIALOG = "about_dialog"
     const val LONG_PRESS_INTERVAL_VALUE = "long_press_interval_value"
     const val LONG_PRESS_INTERVAL_DECREMENT = "long_press_interval_decrement"
     const val LONG_PRESS_INTERVAL_INCREMENT = "long_press_interval_increment"

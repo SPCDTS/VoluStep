@@ -11,8 +11,6 @@
     <string name="action_ok">知道了</string>
     <string name="action_agree">同意</string>
     <string name="action_cancel">取消</string>
-    <string name="action_copy_status">复制状态</string>
-    <string name="action_copied">已复制</string>
     <string name="error_open_settings_title">无法打开系统设置</string>
     <string name="error_open_settings_message">请手动进入系统设置并找到 %1$s。</string>
     <string name="error_controller_start_title">控制器启动失败</string>
@@ -32,6 +30,19 @@
     <string name="status_waiting">等待</string>
     <string name="brand_control_status">%1$s · %2$d–%3$d</string>
     <string name="master_switch_content_description">%1$s 主开关</string>
+    <string name="app_menu">更多选项</string>
+    <string name="privacy_policy">隐私</string>
+    <string name="privacy_full_policy">完整政策</string>
+    <string name="about">关于</string>
+    <string name="privacy_on_device_title">仅在本机处理</string>
+    <string name="privacy_on_device_body">Android 可能通过无障碍服务向 %1$s 投递实体按键事件。%1$s 检查键码后会立即忽略非音量键；对于音量加减键，只在内存中临时处理键码、按下/释放状态、重复次数、事件时间、按下时间和输入设备 ID。应用通过 Android 音频 API 读取当前媒体输出、音量范围与音量，再按自定义曲线修改媒体音量。曲线、长按间隔和披露确认仅保存在应用私有存储中。</string>
+    <string name="privacy_not_collected_title">不收集、不共享</string>
+    <string name="privacy_not_collected_body">%1$s 不读取屏幕内容、触摸、密码、账号或个人文件；应用没有联网权限，也不包含广告或分析 SDK。按键和音量数据不会上传或共享。</string>
+    <string name="privacy_retention_title">控制与删除</string>
+    <string name="privacy_retention_body">关闭主开关会停止映射和消费音量键事件；关闭无障碍服务后，系统将不再向 %1$s 投递这些事件。本地设置会保留到你清除应用存储或卸载应用；应用没有服务器账号或云端数据。</string>
+    <string name="about_version">版本 %1$s</string>
+    <string name="about_summary">按自定义曲线映射 Android 实体音量键，控制媒体音量。</string>
+    <string name="about_compatibility">可用音量档位和后台行为取决于手机系统、输出路由与所连接的音频设备。</string>
 
     <string name="hold_interval">长按间隔</string>
     <string name="hold_interval_decrease">减少长按间隔</string>
@@ -52,20 +63,17 @@
     <string name="device_volume_range">音量范围</string>
     <string name="device_accessibility">无障碍</string>
     <string name="device_background">后台</string>
-    <string name="device_status">状态</string>
     <string name="device_not_detected">未检测到</string>
     <string name="device_unknown">未知</string>
     <string name="device_enabled">开启</string>
     <string name="device_disabled">关闭</string>
-    <string name="device_status_line">%1$s：%2$s</string>
-    <string name="clipboard_status_label">%1$s 状态</string>
     <string name="open_accessibility_settings">打开无障碍设置</string>
     <string name="open_app_settings">打开应用后台设置</string>
     <string name="manufacturer_unknown">未知厂商</string>
 
     <string name="accessibility_disclosure_title">无障碍 API 显著披露</string>
-    <string name="accessibility_disclosure_purpose">为了在其他应用、桌面和锁屏场景接收手机实体音量键，%1$s 需要启用无障碍服务。</string>
-    <string name="accessibility_disclosure_processed">会处理：音量上/下键的键码与时间；%1$s 使用 AudioManager 修改全局媒体音量。</string>
+    <string name="accessibility_disclosure_purpose">为了在其他应用、桌面和锁屏场景识别手机实体音量键，%1$s 需要启用无障碍服务；Android 也可能向该服务投递其他实体按键事件。</string>
+    <string name="accessibility_disclosure_processed">%1$s 会检查每个已投递事件的键码并立即放行非音量键；对于音量加减键，只在内存中临时使用键码、按下/释放状态、重复次数、事件时间、按下时间和输入设备 ID，再修改 Android 媒体音量。</string>
     <string name="accessibility_disclosure_not_processed">不会处理：屏幕文字、窗口内容、触摸、密码或账号信息；%1$s 不会上传任何按键或音量数据。</string>
     <string name="accessibility_disclosure_conflicts">接管音量键可能干扰截图、无障碍快捷方式和部分厂商快捷键；关闭 %1$s 即可恢复系统默认行为。</string>
     <string name="accessibility_disclosure_consent">我理解上述用途与按键冲突，并同意继续。</string>

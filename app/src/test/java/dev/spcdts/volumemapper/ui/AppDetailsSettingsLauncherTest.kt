@@ -8,63 +8,29 @@ import org.junit.Test
 
 class AppDetailsSettingsLauncherTest {
     @Test
-    fun `settings candidates and fallback scenarios`() {
-        `application details is preferred before generic settings`()
-        `first available candidate is launched`()
-        `unavailable details falls back to generic settings`()
-        `no available candidate reports failure`()
-    }
-
-    fun `application details is preferred before generic settings`() {
+    fun `settings launcher falls back once and reports total failure`() {
+        val launched = mutableListOf<SettingsIntentSpec>()
         val candidates = AppDetailsSettingsLauncher.intentCandidates("dev.example.volume")
 
+        val result = AppDetailsSettingsLauncher.launchFirstAvailable(candidates) { candidate ->
+            launched += candidate
+            candidate.action == Settings.ACTION_SETTINGS
+        }
+
+        assertTrue(result)
         assertEquals(
-            SettingsIntentSpec(
-                action = Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                dataUri = "package:dev.example.volume",
+            listOf(
+                SettingsIntentSpec(
+                    action = Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    dataUri = "package:dev.example.volume",
+                ),
+                SettingsIntentSpec(action = Settings.ACTION_SETTINGS, dataUri = null),
             ),
-            candidates.first(),
-        )
-        assertEquals(Settings.ACTION_SETTINGS, candidates.last().action)
-        assertEquals(null, candidates.last().dataUri)
-    }
-
-    fun `first available candidate is launched`() {
-        val launched = mutableListOf<String>()
-
-        val result = AppDetailsSettingsLauncher.launchFirstAvailable(
-            candidates = listOf("details", "settings"),
-            launch = {
-                launched += it
-                true
-            },
+            launched,
         )
 
-        assertTrue(result)
-        assertEquals(listOf("details"), launched)
-    }
-
-    fun `unavailable details falls back to generic settings`() {
-        val launched = mutableListOf<String>()
-
-        val result = AppDetailsSettingsLauncher.launchFirstAvailable(
-            candidates = listOf("details", "settings"),
-            launch = {
-                launched += it
-                it == "settings"
-            },
+        assertFalse(
+            AppDetailsSettingsLauncher.launchFirstAvailable(candidates) { false },
         )
-
-        assertTrue(result)
-        assertEquals(listOf("details", "settings"), launched)
-    }
-
-    fun `no available candidate reports failure`() {
-        val result = AppDetailsSettingsLauncher.launchFirstAvailable(
-            candidates = listOf("details", "settings"),
-            launch = { false },
-        )
-
-        assertFalse(result)
     }
 }

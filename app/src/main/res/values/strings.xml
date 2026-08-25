@@ -13,8 +13,6 @@
     <string name="action_ok">OK</string>
     <string name="action_agree">Agree</string>
     <string name="action_cancel">Cancel</string>
-    <string name="action_copy_status">Copy status</string>
-    <string name="action_copied">Copied</string>
     <string name="error_open_settings_title">Cannot open system settings</string>
     <string name="error_open_settings_message">Open system settings manually and find %1$s.</string>
     <string name="error_controller_start_title">Could not start controller</string>
@@ -34,6 +32,19 @@
     <string name="status_waiting">Waiting</string>
     <string name="brand_control_status">%1$s · %2$d–%3$d</string>
     <string name="master_switch_content_description">%1$s master switch</string>
+    <string name="app_menu">More options</string>
+    <string name="privacy_policy">Privacy</string>
+    <string name="privacy_full_policy">Full policy</string>
+    <string name="about">About</string>
+    <string name="privacy_on_device_title">Processed on this device</string>
+    <string name="privacy_on_device_body">Android may deliver physical key events to %1$s through its Accessibility service. %1$s checks the key code and immediately ignores non-volume keys. For volume-up and volume-down, it temporarily processes the key code, press/release state, repeat count, event and down time, and input-device ID. It reads the active media output, volume range, and current volume through Android audio APIs, then changes media volume according to your curve. Your curve, long-press interval, and disclosure choice are stored only in the app’s private storage.</string>
+    <string name="privacy_not_collected_title">Not collected or shared</string>
+    <string name="privacy_not_collected_body">%1$s does not read screen content, touches, passwords, accounts, or personal files. It has no Internet permission and includes no advertising or analytics SDK. Key and volume data are not uploaded or shared.</string>
+    <string name="privacy_retention_title">Control and deletion</string>
+    <string name="privacy_retention_body">Turn off the main switch to stop mapping and consuming volume-button events, or disable the Accessibility service to stop their delivery to %1$s. Local settings remain until you clear the app’s storage or uninstall it; there is no server account or server-side data.</string>
+    <string name="about_version">Version %1$s</string>
+    <string name="about_summary">Custom physical volume-button mapping for Android media audio.</string>
+    <string name="about_compatibility">Available volume levels and background behavior depend on the phone firmware, output route, and connected audio device.</string>
 
     <string name="hold_interval">Hold interval</string>
     <string name="hold_interval_decrease">Decrease hold interval</string>
@@ -55,21 +66,18 @@
     <string name="device_volume_range">Volume range</string>
     <string name="device_accessibility">Accessibility</string>
     <string name="device_background">Background</string>
-    <string name="device_status">Status</string>
     <string name="device_not_detected">Not detected</string>
     <string name="device_unknown">Unknown</string>
     <string name="device_enabled">Enabled</string>
     <string name="device_disabled">Disabled</string>
-    <string name="device_status_line">%1$s: %2$s</string>
-    <string name="clipboard_status_label">%1$s status</string>
     <string name="open_accessibility_settings">Open Accessibility settings</string>
     <string name="open_app_settings">Open app settings</string>
     <string name="manufacturer_xiaomi" translatable="false">Xiaomi</string>
     <string name="manufacturer_unknown">Unknown manufacturer</string>
 
     <string name="accessibility_disclosure_title">Accessibility API disclosure</string>
-    <string name="accessibility_disclosure_purpose">To detect physical volume buttons in other apps, on the Home screen, and on the lock screen, %1$s uses an Accessibility service.</string>
-    <string name="accessibility_disclosure_processed">Processed: volume-up and volume-down key codes and timing. %1$s uses AudioManager to change system media volume.</string>
+    <string name="accessibility_disclosure_purpose">To detect physical volume buttons in other apps, on the Home screen, and on the lock screen, %1$s uses an Accessibility service. Android may deliver other physical key events to this service.</string>
+    <string name="accessibility_disclosure_processed">%1$s checks each delivered key code and immediately passes through non-volume keys. For volume-up/down it temporarily uses the key code, press/release state, repeat count, event and down time, and input-device ID, then changes Android media volume.</string>
     <string name="accessibility_disclosure_not_processed">Not processed: screen text, window content, touches, passwords, or account data. %1$s does not upload key or volume data.</string>
     <string name="accessibility_disclosure_conflicts">Intercepting volume buttons may affect screenshots, accessibility shortcuts, and some manufacturer shortcuts. Turn off %1$s to restore default behavior.</string>
     <string name="accessibility_disclosure_consent">I understand the purpose and possible button conflicts, and agree to continue.</string>

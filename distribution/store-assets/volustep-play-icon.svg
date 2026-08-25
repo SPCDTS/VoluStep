@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="512"
+     height="512"
+     viewBox="0 0 512 512"
+     role="img"
+     aria-labelledby="title description">
+  <title id="title">VoluStep Google Play icon</title>
+  <desc id="description">A rising four-point volume mapping curve with one green active point on a dark background.</desc>
+  <metadata>
+    Brand: VoluStep
+    Source audit: app/src/main/res/drawable/ic_launcher_foreground.xml,
+    app/src/main/res/values/colors.xml, and app/src/main/java/dev/spcdts/volumemapper/ui/Theme.kt.
+    Geometry: launcher foreground scaled from a 108 by 108 viewport to 512 by 512.
+    Palette: background #121212, foreground #F6F6F6, brand green #1DB954.
+    Created: 2026-08-25.
+  </metadata>
+
+  <!-- Full-bleed square: Google Play applies its own presentation mask. -->
+  <rect width="512" height="512" fill="#121212"/>
+
+  <!-- Exact four-node launcher curve, scaled by 512 / 108. -->
+  <path d="M132.74 341.33 L208.59 303.41 L274.96 232.30 L369.78 170.67"
+        fill="none"
+        stroke="#F6F6F6"
+        stroke-width="26.07"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <g fill="#121212" stroke="#F6F6F6" stroke-width="11.85">
+    <circle cx="132.74" cy="341.33" r="23.70"/>
+    <circle cx="208.59" cy="303.41" r="23.70"/>
+    <circle cx="369.78" cy="170.67" r="23.70"/>
+  </g>
+
+  <!-- Selected control point: the only brand-green accent. -->
+  <circle cx="274.96" cy="232.30" r="47.41" fill="#1DB954" opacity="0.42"/>
+  <circle cx="274.96" cy="232.30" r="23.70" fill="#1DB954" stroke="#F6F6F6" stroke-width="11.85"/>
+</svg>

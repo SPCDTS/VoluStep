@@ -1,5 +1,6 @@
 # Android / Gradle
 .gradle/
+.kotlin/
 **/build/
 local.properties
 *.iml
@@ -13,6 +14,10 @@ local.properties
 keystore/
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.pem
+*.key
 signing.properties
 
 # 测试与诊断输出

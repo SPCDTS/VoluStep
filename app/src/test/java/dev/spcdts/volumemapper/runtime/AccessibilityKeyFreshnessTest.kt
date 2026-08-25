@@ -7,113 +7,38 @@ import org.junit.Test
 
 class AccessibilityKeyFreshnessTest {
     @Test
-    fun `event age boundaries classify freshness safely`() {
-        `event becomes expired at the AOSP dispatch deadline`()
-        `negative age is treated as fresh`()
-        `positive age subtraction overflow is treated as expired`()
+    fun `event age boundary handles deadline clock skew and overflow safely`() {
+        assertFalse(isAccessibilityKeyEventExpired(10_499L, 10_000L))
+        assertTrue(isAccessibilityKeyEventExpired(10_500L, 10_000L))
+        assertFalse(isAccessibilityKeyEventExpired(9_999L, 10_000L))
+        assertTrue(isAccessibilityKeyEventExpired(Long.MAX_VALUE, Long.MIN_VALUE))
     }
 
     @Test
-    fun `expired event ownership selects pass through drain or processing`() {
-        `expired initial down always passes through without ownership`()
-        `expired initial down never reuses an existing owner`()
-        `expired up drains its matching owner instead of reaching reducer`()
-        `expired unowned up passes through`()
-        `fresh down and up keep the existing handling path`()
-    }
-
-    fun `event becomes expired at the AOSP dispatch deadline`() {
-        assertFalse(
-            isAccessibilityKeyEventExpired(
-                nowUptimeMillis = 10_499L,
-                eventTimeMillis = 10_000L,
-            ),
+    fun `expired key disposition drains only an already owned gesture`() {
+        val cases = listOf(
+            Triple(true to false, ExpiredKeyEventDisposition.PASS_THROUGH, "expired initial down"),
+            Triple(false to false, ExpiredKeyEventDisposition.PASS_THROUGH, "expired unowned up"),
+            Triple(false to true, ExpiredKeyEventDisposition.DRAIN_OWNED_GESTURE, "expired owned up"),
         )
-        assertTrue(
-            isAccessibilityKeyEventExpired(
-                nowUptimeMillis = 10_500L,
-                eventTimeMillis = 10_000L,
-            ),
-        )
-    }
 
-    fun `negative age is treated as fresh`() {
-        assertFalse(
-            isAccessibilityKeyEventExpired(
-                nowUptimeMillis = 9_999L,
-                eventTimeMillis = 10_000L,
-            ),
-        )
-    }
-
-    fun `positive age subtraction overflow is treated as expired`() {
-        assertTrue(
-            isAccessibilityKeyEventExpired(
-                nowUptimeMillis = Long.MAX_VALUE,
-                eventTimeMillis = Long.MIN_VALUE,
-            ),
-        )
-    }
-
-    fun `expired initial down always passes through without ownership`() {
-        assertEquals(
-            ExpiredKeyEventDisposition.PASS_THROUGH,
-            expiredKeyEventDisposition(
-                isExpired = true,
-                isInitialDown = true,
-                ownsGesture = false,
-            ),
-        )
-    }
-
-    fun `expired initial down never reuses an existing owner`() {
-        assertEquals(
-            ExpiredKeyEventDisposition.PASS_THROUGH,
-            expiredKeyEventDisposition(
-                isExpired = true,
-                isInitialDown = true,
-                ownsGesture = true,
-            ),
-        )
-    }
-
-    fun `expired up drains its matching owner instead of reaching reducer`() {
-        assertEquals(
-            ExpiredKeyEventDisposition.DRAIN_OWNED_GESTURE,
-            expiredKeyEventDisposition(
-                isExpired = true,
-                isInitialDown = false,
-                ownsGesture = true,
-            ),
-        )
-    }
-
-    fun `expired unowned up passes through`() {
-        assertEquals(
-            ExpiredKeyEventDisposition.PASS_THROUGH,
-            expiredKeyEventDisposition(
-                isExpired = true,
-                isInitialDown = false,
-                ownsGesture = false,
-            ),
-        )
-    }
-
-    fun `fresh down and up keep the existing handling path`() {
+        cases.forEach { (input, expected, label) ->
+            assertEquals(
+                label,
+                expected,
+                expiredKeyEventDisposition(
+                    isExpired = true,
+                    isInitialDown = input.first,
+                    ownsGesture = input.second,
+                ),
+            )
+        }
         assertEquals(
             ExpiredKeyEventDisposition.PROCESS,
             expiredKeyEventDisposition(
                 isExpired = false,
                 isInitialDown = true,
                 ownsGesture = false,
-            ),
-        )
-        assertEquals(
-            ExpiredKeyEventDisposition.PROCESS,
-            expiredKeyEventDisposition(
-                isExpired = false,
-                isInitialDown = false,
-                ownsGesture = true,
             ),
         )
     }

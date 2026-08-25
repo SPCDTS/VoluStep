@@ -114,6 +114,19 @@ class RealSystemVolumeE2eTest {
                     .assertIsDisplayed()
                 composeRule.onNodeWithText(appString(R.string.action_agree))
                     .assertIsNotEnabled()
+                composeRule.onNodeWithText(appString(R.string.action_cancel)).performClick()
+                composeRule.waitForIdle()
+                assertFalse(
+                    "取消披露不能保存同意或启动控制器",
+                    repository.settings.value.disclosureAccepted ||
+                        coordinator.runtime.value.isForegroundServiceRunning,
+                )
+
+                composeRule.onNodeWithTag(VolumeMapperTestTags.MASTER_SWITCH).performClick()
+                composeRule.onNodeWithText(appString(R.string.accessibility_disclosure_title))
+                    .assertIsDisplayed()
+                composeRule.onNodeWithText(appString(R.string.action_agree))
+                    .assertIsNotEnabled()
                 composeRule
                     .onNodeWithText(appString(R.string.accessibility_disclosure_consent))
                     .performClick()
@@ -122,6 +135,13 @@ class RealSystemVolumeE2eTest {
                     .performClick()
                 composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
                     repository.settings.value.disclosureAccepted
+                }
+                composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
+                    !composeRule.activity.hasWindowFocus()
+                }
+                shell(automation, "input keyevent KEYCODE_BACK")
+                composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
+                    composeRule.activity.hasWindowFocus()
                 }
             }
 
