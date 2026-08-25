@@ -16,17 +16,17 @@
 
 当前覆盖：
 
-- 按键次数 `K` / 控制点数 `P`、严格递增的整数按键位、整数端点与折线采样；
+- 按键次数 `K` / 控制点数 `P`、严格递增的整数按键位、整数端点与折线采样，以及指定线段的整数中点插入和指定内部点删除；
 - `K+1` 个均匀按键位置、修改 K 时的整数重投影、`2≤P≤K+1`、跨路由范围重投影、全局最小平方结果及确定性 tie-break；
 - x/y 联合编辑、相邻约束、端点固定与拖动越界时的最小推挤；
 - 精确状态短按、外部 index 的严格上下界选择、固定长按间隔、repeat no-op、匹配/不匹配 UP、readback 同步与取消；
 - 不同 50 ms ticker 节奏下固定间隔积分的一致性，以及 `60…500 ms`、20 ms 网格配置边界；
 - 非零 min、固定音量、0–15 与 0–150 路由绑定边界；
 - mapping state 为空、外部 index 变化、精确状态连续性和 active hold 步数余量边界；
-- DataStore `v4` 整数坐标 round-trip、`v1` / `v2` / `v3` 保形迁移、legacy shadow 恢复、旧间隔对齐与坏字段独立降级；
+- DataStore `v4` 整数坐标 round-trip、`v1` / `v2` / `v3` 保形迁移、降级 shadow 的 `1…150` 按键次数恢复与坏字段独立降级；
 - 设置写入 actor 的 FIFO immediate barrier、普通快照防抖、回执顺序和单次持久化失败后继续工作。
 
-上述细粒度断言合并在 22 个 JVM 场景组内；加上 8 个 Android instrumentation，仓库共保留 30 个测试入口。UI 在 DataStore 初始快照原子发布前禁用配置写入口，避免默认占位值覆盖已保存设置。JVM 测试不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也没有用 fake backend 覆盖 coordinator 的完整并发时序。
+仓库保留 21 个 JVM 测试和 9 个 Android instrumentation / E2E 测试，共 30 个测试入口。显式插入、显式删除、线段容量、K 容量、无障碍选择与无障碍移动分别由职责单一的测试覆盖；没有为了维持入口上限把这些独立行为塞进同一个巨型方法。UI 在 DataStore 初始快照原子发布前禁用配置写入口，避免默认占位值覆盖已保存设置。JVM 测试不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也没有用 fake backend 覆盖 coordinator 的完整并发时序。
 
 ### Lint 与构建
 
@@ -40,7 +40,7 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 
 仓库包含三个设备侧测试类：
 
-- `MainActivityTest`：共 6 项，验证正式单页只保留核心控件、当前音量水平线语义、`K` / `P` 分别编辑及动态容量约束、控制点 x/y 拖动与吸附、图表无障碍选择/移动操作、`60…500 ms` 长按间隔边界，以及默认折叠的设备区；测试结束会恢复进入测试前的完整设置；
+- `MainActivityTest`：共 7 项，分别验证正式单页与扩大后的图表、选段插入和选新增点删除闭环、端点及局部 X/Y 满段禁用、K 变化时的选择与容量、控制点 x/y 拖动吸附、点/线段动态无障碍操作、无障碍整数移动；测试结束会恢复进入测试前的完整设置；
 - `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造完整 DOWN/UP，并验证真实 `STREAM_MUSIC` index 改变和最终清理。
 - `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 完成显著披露；若同意状态已持久化，则验证已同意路径。随后真实绑定 AccessibilityService、启动 `specialUse` FGS、检查常驻通知，并只在本应用通知行内展开和点击停止 action；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性整数控制点映射。
 
@@ -77,6 +77,8 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 5. 路由/服务停止后新手势 fail-open；
 6. API 37 上前台服务通知可见，停止 action 立即释放按键；
 7. 旋转、进程重建后设置仍在 DataStore 中。
+
+曲线界面还应目视验证：短且可插入的线段仍能在两端控制点触摸热区之间被选中；点选择显示坐标虚线，线段选择只强调对应折线；新增后选中新点，删除后选中合并线段；浅色、深色和窄屏下绘图区没有裁切或文字重叠。启动器页需分别检查普通 adaptive icon、圆形 mask 和 Android 13+ themed icon，确认上升曲线及不同尺寸的选中节点在小图标下仍可辨认。
 
 ### API 28–37 差异点
 
@@ -129,7 +131,8 @@ Android 17 还应使用系统支持的音频 hardening 调试命令（若该镜�
 - 一个 verification cycle 跟踪 latest expected；fresh mismatch 不重锚，成熟 mismatch 清 pending 并同步 observed，final mismatch 才计失败；
 - UP 必须刷新最终 reducer target；同一 route ID 的 min/max 变化必须取消手势，只有 dB 诊断元数据变化不能重建 reducer；
 - 三次连续读写/最终回读失败后新按键自动交还系统；
-- 设置中按键次数 `K` 与控制点数 `P` 分别编辑；改 `K` 保持 P 与 y 并按旧比例严格重投影整数 x，改 `P` 不改变 `K`；
+- 设置中按键次数 `K` 可输入，控制点数 `P` 只读显示并通过上下文相关的 `−` / `+` 修改；改 `K` 保持 P 与 y 并按旧比例严格重投影整数 x，改 `P` 不改变 `K`；
+- 点与线段选择互斥；`+` 只在选中且具有空余整数 X/Y 的线段中点插入，`−` 只删除选中的内部点，端点不可删除；
 - `P` 个控制点与 `K+1` 个实际按键状态都固定端点，运行时 index 严格递增；
 - 当前路由跨度小于 `K` 时只临时降低有效按键次数；编辑 K 或 P 都不能顺带固化临时路由结果或破坏另一个参数；
 - 不读取窗口内容，不使用隐藏 API，不绕过系统安全音量。

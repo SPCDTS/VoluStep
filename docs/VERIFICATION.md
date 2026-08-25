@@ -1,25 +1,28 @@
 # 本机验证记录
 
-## 2026-08-25 正式单屏 UI 与曲线交互对齐
+## 2026-08-25 正式单屏 UI、选择式增删与图标对齐
 
 本轮按正式发布界面收口为单一主屏：顶部只保留“精细控制”总开关与状态，曲线卡片承载全部高频编辑，设备与授权信息收纳在可折叠的“设备”区域；不再提供 Tab、常驻诊断页、Undo/Redo 或按键说明菜单。
 
-曲线编辑交互已按最终设计实现并复核：
+本轮曲线编辑与图标目标如下：
 
-- “控制点数量”位于图表上方、“按键次数”位于 x 轴下方；两者都支持直接输入整数和 `−` / `+` 单步调整，满足 `2≤P≤min(16,K+1)` 与 `K≥P−1`；
+- “控制点数量”位于图表上方并只读显示 P；`−` 只删除选中的内部点，`+` 只在选中且具有空余整数 X/Y 的线段中点插入。新增后选中新点，删除后选中合并线段，端点不可删除；
+- “按键次数”位于 x 轴下方，继续支持直接输入整数和 `−` / `+` 单步调整，满足 `2≤P≤min(16,K+1)` 与 `K≥P−1`；
+- 控制点与线段使用互斥选择和不同视觉反馈；画布扩大并压缩卡片、坐标轴周围的无效留白，使曲线尽可能占用手机屏幕；
 - 中间控制点可同时调整 x/y：x 无条件吸附到整数按键位置，y 吸附到整数 audio index；选中点始终以两条虚线延伸到坐标轴，坐标值直接标在相应刻度行；
 - 图中不再绘制每个按键对应的采样小点；y 轴的常规刻度配有静音、低、中、高音量图标；当前系统音量用绿色水平线、交点和“当前 n”标示，不显示当前值的 x 坐标；
 - 设置格式升级为保存整数 `(pressPosition, offset)` 的 v4，旧 v1–v3 曲线在载入时确定性投影到整数网格；
+- adaptive launcher icon 改为深蓝背景上的上升映射折线、普通节点和单个同色荧光高亮节点；themed icon 使用相同单色轮廓，不包含品牌耳机或复杂波形；
 - 图表下方保留长按间隔设置；设备名称、音量范围、无障碍与后台状态统一放入设备折叠区。
 
 验证结果：
 
-- JVM 测试入口 22 个，全部通过；
-- API 37 模拟器 `connectedDebugAndroidTest` 8 个，全部通过；instrumentation 通过 `dumpsys` 核验前台通知及停止 action 的契约，没有把程序化触发 action 表述为真实点击 SystemUI；
-- API 37、360 dp 宽模拟器目视通过默认浅色、奇数 `K=19` 与深色三种状态：中刻度保持整数、选中坐标不重叠、当前音量与坐标辅助线层级正确；
-- 宿主 `emulator-e2e-test.ps1`：PASS；宿主脚本实际展开 SystemUI 并点击常驻通知的“停止映射”，同时完成显著披露、真实 AccessibilityService、`specialUse` FGS、后台实体按键映射和 fail-open 链路；
-- `build.ps1 -Release` 与补充的 `:app:lintRelease`：PASS，Debug / Release lint 均为 0 error，仅保留 4 条工具或依赖版本更新 warning；Debug APK、未签名 Release APK 与未签名 Release AAB 均已生成；
-- JVM 与 instrumentation 合计保持 30 个测试入口，没有为纯视觉细节继续膨胀测试数量。
+- JVM 测试 21/21 通过；API 37 模拟器 `connectedDebugAndroidTest` 9/9 通过，0 skip、0 failure；两者合计 30 个入口。显式插入、删除、容量与无障碍行为已拆成独立测试，不依靠巨型聚合方法凑数；
+- `:app:testDebugUnitTest :app:connectedDebugAndroidTest :app:lintDebug :app:assembleDebug :app:bundleRelease`：`BUILD SUCCESSFUL`；Debug lint 无阻断项，Debug APK 与 Release AAB 均生成成功；
+- 宿主 `emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild`：PASS。脚本从空白数据完成显著披露、真实 AccessibilityService、`specialUse` FGS、后台 evdev 音量键与 SystemUI 通知停止，得到映射 `5 → 11 → 5`，停止后由系统 `AudioService` 接管；清理阶段恢复无障碍、音量、adbd 和通知面板；
+- Android CLI 在 API 37、1080×2400 模拟器上确认正式版只有一个主界面，画布占用主要屏幕空间，P 只读、K 可输入，点与线段均可命中；浅色和深色模式下，选中对象保持原曲线颜色，只用同色多层光晕高亮，点坐标虚线和当前音量水平线层级清楚；
+- 模拟器启动器页渲染确认 adaptive icon 在小尺寸仍能辨认上升折线与四个节点，选中节点使用同色尺寸和光晕差异，不依赖颜色变化；
+- 最终主界面与线段选择截图保存在 Git 忽略的 `app/build/final-ui.png`、`app/build/final-segment-selection.png`，明暗模式与图标截图保存在 `app/build/visual-*.png`；模拟器在检查后已恢复浅色模式。
 
 本节验证针对模拟器上的本轮正式 UI 与公开 Android 音量链路，不替代 Xiaomi / HyperOS 和真实蓝牙耳机的厂商矩阵复测。
 

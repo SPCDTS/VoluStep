@@ -236,15 +236,15 @@ private fun MainScreen(
             .fillMaxSize()
             .imePadding()
             .testTag(VolumeMapperTestTags.SCREEN_MAIN),
-        contentPadding = PaddingValues(start = 14.dp, top = 4.dp, end = 14.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(start = 8.dp, top = 4.dp, end = 8.dp, bottom = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
             Text(
                 text = "音量映射",
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(start = 6.dp, top = 13.dp, bottom = 12.dp),
+                modifier = Modifier.padding(start = 6.dp, top = 11.dp, bottom = 8.dp),
             )
         }
 
@@ -282,10 +282,10 @@ private fun MainScreen(
                             }
                         },
                         modifier = Modifier.padding(
-                            start = 10.dp,
-                            top = 22.dp,
-                            end = 10.dp,
-                            bottom = 12.dp,
+                            start = 4.dp,
+                            top = 10.dp,
+                            end = 4.dp,
+                            bottom = 8.dp,
                         ),
                     )
                 } else {

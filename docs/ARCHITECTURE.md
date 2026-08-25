@@ -23,7 +23,7 @@ AudioPolicy → 蓝牙 AVRCP/VCS → 耳机固件
 
 ```text
 core/
-  StepVolumeMap            整数按键位控制点、整数 offset 与严格单调投影
+  StepVolumeMap            整数按键位控制点、选段中点插入、选点删除与严格单调投影
   BoundStepVolumeMap       把设置曲线绑定到当前路由的实际整数 index 表
   MappingCurve             预设形状与旧设置迁移
   VolumeMappingReducer     离散短按/固定间隔长按/UP 状态机；orphan repeat 严格 no-op
@@ -41,7 +41,7 @@ data/
   SettingsRepository       原子加载快照、FIFO 单写入 actor、拖动防抖与立即写 barrier
 
 ui/
-  CurveEditor              非均匀整数控制点、双轴硬吸附和当前音量水平标记
+  CurveEditor              点/线段互斥选择、上下文增删、双轴硬吸附和当前音量水平标记
   VolumeMapperApp          单页控制、长按间隔、披露和折叠设备状态
 ```
 

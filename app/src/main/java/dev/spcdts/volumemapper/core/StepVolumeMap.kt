@@ -325,6 +325,65 @@ class StepVolumeMap(
     }
 
     /**
+     * Inserts one control point into the selected authored line segment.
+     *
+     * The new x coordinate is the segment's integer midpoint (the lower midpoint for an odd
+     * span). Its y coordinate is the closest strict integer to the existing line. Insertion is
+     * rejected unless both axes have a free integer coordinate, so existing points never move.
+     */
+    fun insertControlPointAtSegment(segmentIndex: Int): StepVolumeMap {
+        require(segmentIndex in 0 until controlSegmentCount) {
+            "segmentIndex is outside this map"
+        }
+        val leftPressPosition = pressPositions[segmentIndex]
+        val rightPressPosition = pressPositions[segmentIndex + 1]
+        require(rightPressPosition - leftPressPosition >= 2) {
+            "The selected segment has no free integer press position"
+        }
+        val leftOffset = offsets[segmentIndex]
+        val rightOffset = offsets[segmentIndex + 1]
+        require(rightOffset - leftOffset >= 2) {
+            "The selected segment has no free integer offset"
+        }
+
+        val insertedPressPosition =
+            leftPressPosition + (rightPressPosition - leftPressPosition) / 2
+        val fraction = (insertedPressPosition - leftPressPosition).toDouble() /
+            (rightPressPosition - leftPressPosition).toDouble()
+        val insertedOffset = (leftOffset + (rightOffset - leftOffset) * fraction)
+            .roundToInt()
+            .coerceIn(leftOffset + 1, rightOffset - 1)
+        val insertedPressPositions = pressPositions.toMutableList().apply {
+            add(segmentIndex + 1, insertedPressPosition)
+        }
+        val insertedOffsets = offsets.toMutableList().apply {
+            add(segmentIndex + 1, insertedOffset)
+        }
+        return StepVolumeMap(
+            basisSpan = basisSpan,
+            pressCount = pressCount,
+            pressPositions = insertedPressPositions,
+            offsets = insertedOffsets,
+        )
+    }
+
+    /** Removes the selected interior control point. Fixed endpoints are intentionally a no-op. */
+    fun removeControlPointAt(controlPointIndex: Int): StepVolumeMap {
+        require(controlPointIndex in 0..controlSegmentCount) {
+            "controlPointIndex is outside this map"
+        }
+        if (controlPointIndex == 0 || controlPointIndex == controlSegmentCount) return this
+        return StepVolumeMap(
+            basisSpan = basisSpan,
+            pressCount = pressCount,
+            pressPositions = pressPositions.toMutableList().apply {
+                removeAt(controlPointIndex)
+            },
+            offsets = offsets.toMutableList().apply { removeAt(controlPointIndex) },
+        )
+    }
+
+    /**
      * Binds the authored offsets to [range].
      *
      * If the route has fewer integer intervals than configured presses, the curve is first
@@ -431,9 +490,8 @@ class StepVolumeMap(
         }
         val leftPressPosition = pressPositions[bestSegment]
         val rightPressPosition = pressPositions[bestSegment + 1]
-        val insertedPressPosition = (
+        val insertedPressPosition =
             leftPressPosition + (rightPressPosition - leftPressPosition) / 2
-            ).coerceIn(leftPressPosition + 1, rightPressPosition - 1)
         val fraction = (insertedPressPosition - leftPressPosition).toDouble() /
             (rightPressPosition - leftPressPosition).toDouble()
         val insertedOffsetTarget = offsets[bestSegment] +
@@ -471,12 +529,7 @@ class StepVolumeMap(
                 smallestError = integratedError
             }
         }
-        return StepVolumeMap(
-            basisSpan = basisSpan,
-            pressCount = pressCount,
-            pressPositions = pressPositions.toMutableList().apply { removeAt(removalIndex) },
-            offsets = offsets.toMutableList().apply { removeAt(removalIndex) },
-        )
+        return removeControlPointAt(removalIndex)
     }
 
     override fun equals(other: Any?): Boolean =

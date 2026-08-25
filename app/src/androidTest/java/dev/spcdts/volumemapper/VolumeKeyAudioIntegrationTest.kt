@@ -9,6 +9,7 @@ import androidx.test.filters.LargeTest
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.MappingCoordinator
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -56,7 +57,7 @@ class VolumeKeyAudioIntegrationTest {
             coordinator.onForegroundServiceStarted()
             coordinator.arm()
             composeRule.waitUntil(READY_TIMEOUT_MILLIS) {
-                coordinator.runtime.value.canInterceptKeys
+                coordinator.runtime.value.canInterceptKeys && keyInputIsEligible(coordinator)
             }
 
             val readySnapshot = checkNotNull(coordinator.runtime.value.snapshot)
@@ -96,10 +97,13 @@ class VolumeKeyAudioIntegrationTest {
                 audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) == initialIndex
             }
 
+            val snapshotBeforeRefresh = coordinator.runtime.value.snapshot
             coordinator.refreshSnapshot()
             composeRule.waitUntil(READY_TIMEOUT_MILLIS) {
                 val runtime = coordinator.runtime.value
                 runtime.canInterceptKeys &&
+                    keyInputIsEligible(coordinator) &&
+                    runtime.snapshot !== snapshotBeforeRefresh &&
                     runtime.snapshot?.currentIndex == initialIndex &&
                     runtime.expectedIndex == initialIndex
             }
@@ -209,6 +213,17 @@ class VolumeKeyAudioIntegrationTest {
         composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
             settingsField.get(coordinator) == expected
         }
+    }
+
+    /**
+     * runtime 状态先于回调入口的原子门限发布；刷新期间旧 runtime 可能短暂仍显示 ready。
+     * 这里读取同一个门限作为测试同步屏障，避免把过渡态误判为可接收 DOWN。
+     */
+    private fun keyInputIsEligible(coordinator: MappingCoordinator): Boolean {
+        val field = MappingCoordinator::class.java
+            .getDeclaredField("eligible")
+            .apply { isAccessible = true }
+        return (field.get(coordinator) as AtomicBoolean).get()
     }
 
     private companion object {

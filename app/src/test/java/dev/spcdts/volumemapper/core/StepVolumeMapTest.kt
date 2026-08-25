@@ -56,6 +56,83 @@ class StepVolumeMapTest {
         `least squares projection is globally optimal and breaks ties toward lower indices`()
     }
 
+    @Test
+    fun `selected segment insertion uses an integer midpoint without moving existing points`() {
+        val original = StepVolumeMap(
+            basisSpan = 20,
+            pressCount = 10,
+            pressPositions = listOf(0, 4, 9, 10),
+            offsets = listOf(0, 4, 18, 20),
+        )
+
+        val inserted = original.insertControlPointAtSegment(0)
+
+        assertEquals(listOf(0, 2, 4, 9, 10), inserted.pressPositions)
+        assertEquals(listOf(0, 2, 4, 18, 20), inserted.offsets)
+        assertEquals(original.pressPositions, inserted.pressPositions.filterIndexed { index, _ ->
+            index != 1
+        })
+        assertEquals(original.offsets, inserted.offsets.filterIndexed { index, _ -> index != 1 })
+        assertStrictlyIncreasing(inserted.pressPositions)
+        assertStrictlyIncreasing(inserted.offsets)
+
+        val lowerOddMidpoint = StepVolumeMap(
+            basisSpan = 20,
+            pressCount = 10,
+            pressPositions = listOf(0, 1, 6, 10),
+            offsets = listOf(0, 1, 11, 20),
+        ).insertControlPointAtSegment(1)
+        assertEquals(listOf(0, 1, 3, 6, 10), lowerOddMidpoint.pressPositions)
+        assertEquals(listOf(0, 1, 5, 11, 20), lowerOddMidpoint.offsets)
+
+        val roundedInterpolatedOffset = StepVolumeMap(
+            basisSpan = 6,
+            pressCount = 6,
+            pressPositions = listOf(0, 2, 6),
+            offsets = listOf(0, 3, 6),
+        ).insertControlPointAtSegment(0)
+        assertEquals(listOf(0, 1, 2, 6), roundedInterpolatedOffset.pressPositions)
+        assertEquals(listOf(0, 2, 3, 6), roundedInterpolatedOffset.offsets)
+
+        val horizontallyDense = StepVolumeMap(
+            basisSpan = 4,
+            pressCount = 4,
+            pressPositions = listOf(0, 1, 4),
+            offsets = listOf(0, 1, 4),
+        )
+        val verticallyDense = StepVolumeMap(
+            basisSpan = 6,
+            pressCount = 6,
+            pressPositions = listOf(0, 3, 6),
+            offsets = listOf(0, 1, 6),
+        )
+        expectIllegalArgument { original.insertControlPointAtSegment(-1) }
+        expectIllegalArgument {
+            original.insertControlPointAtSegment(original.controlSegmentCount)
+        }
+        expectIllegalArgument { horizontallyDense.insertControlPointAtSegment(0) }
+        expectIllegalArgument { verticallyDense.insertControlPointAtSegment(0) }
+    }
+
+    @Test
+    fun `selected interior point removal deletes only that point and fixes endpoints`() {
+        val original = StepVolumeMap(
+            basisSpan = 20,
+            pressCount = 10,
+            pressPositions = listOf(0, 2, 4, 9, 10),
+            offsets = listOf(0, 2, 4, 18, 20),
+        )
+
+        val removed = original.removeControlPointAt(1)
+
+        assertEquals(listOf(0, 4, 9, 10), removed.pressPositions)
+        assertEquals(listOf(0, 4, 18, 20), removed.offsets)
+        assertSame(original, original.removeControlPointAt(0))
+        assertSame(original, original.removeControlPointAt(original.controlSegmentCount))
+        expectIllegalArgument { original.removeControlPointAt(-1) }
+        expectIllegalArgument { original.removeControlPointAt(original.controlPointCount) }
+    }
+
     @Suppress("DEPRECATION")
     fun `map validates basis endpoints count and strict offsets`() {
         expectIllegalArgument { StepVolumeMap(0, listOf(0, 0)) }

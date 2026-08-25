@@ -8,6 +8,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +54,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -95,6 +97,7 @@ fun MappingCurveEditor(
             (outputMap.controlPointCount / 2).coerceIn(outputMap.normalizedXs.indices),
         )
     }
+    var selectedSegment by remember { mutableStateOf<Int?>(null) }
     var gestureInProgress by remember { mutableStateOf(false) }
     var expectedCommittedMap by remember { mutableStateOf<StepVolumeMap?>(null) }
     var expectedCommitSourceMap by remember { mutableStateOf<StepVolumeMap?>(null) }
@@ -121,11 +124,44 @@ fun MappingCurveEditor(
         expectedCommittedMap = null
         expectedCommitSourceMap = null
         if (outputMap != editorMap) {
-            val previousX = editorMap.normalizedXAt(
-                selectedControlPoint.coerceIn(editorMap.normalizedXs.indices),
+            val previousMap = editorMap
+            val previousSegmentIndex = selectedSegment?.coerceIn(
+                0,
+                previousMap.controlSegmentCount - 1,
             )
+            val previousPointIndex = selectedControlPoint.coerceIn(
+                previousMap.normalizedXs.indices,
+            )
+            val previousSegmentMidpoint = previousSegmentIndex?.let { safeSegment ->
+                (editorMap.normalizedXAt(safeSegment) +
+                    editorMap.normalizedXAt(safeSegment + 1)) / 2.0
+            }
+            val previousX = if (previousSegmentMidpoint == null) {
+                editorMap.normalizedXAt(
+                    selectedControlPoint.coerceIn(editorMap.normalizedXs.indices),
+                )
+            } else {
+                previousSegmentMidpoint
+            }
             editorMap = outputMap
-            selectedControlPoint = outputMap.closestControlPointIndex(previousX)
+            if (previousSegmentIndex != null) {
+                selectedSegment = if (
+                    outputMap.controlSegmentCount == previousMap.controlSegmentCount
+                ) {
+                    previousSegmentIndex
+                } else {
+                    outputMap.closestSegmentIndex(previousX)
+                }
+            } else {
+                selectedControlPoint = if (
+                    outputMap.controlPointCount == previousMap.controlPointCount
+                ) {
+                    previousPointIndex
+                } else {
+                    outputMap.closestControlPointIndex(previousX)
+                }
+                selectedSegment = null
+            }
         }
     }
 
@@ -177,24 +213,41 @@ fun MappingCurveEditor(
         renderedMap.normalizedXForDisplayedIndex(displayedControlIndices, index)
     }
     val selectedIndex = selectedControlPoint.coerceIn(renderedMap.normalizedXs.indices)
+    val selectedSegmentIndex = selectedSegment?.takeIf {
+        it in 0 until renderedMap.controlSegmentCount
+    }
     val maximumControlPointCount = minOf(
         MAXIMUM_CONTROL_POINT_COUNT,
         renderedMap.pressCount + 1,
         renderedMap.basisSpan + 1,
     )
+    val canDeleteSelectedPoint = selectedSegmentIndex == null &&
+        selectedIndex in 1 until renderedMap.controlSegmentCount &&
+        renderedMap.controlPointCount > 2
+    val canInsertSelectedSegment = selectedSegmentIndex?.let { segmentIndex ->
+        renderedMap.pressPositionAt(segmentIndex + 1) -
+            renderedMap.pressPositionAt(segmentIndex) >= 2 &&
+            renderedMap.offsets[segmentIndex + 1] -
+            renderedMap.offsets[segmentIndex] >= 2 &&
+            renderedMap.controlPointCount < maximumControlPointCount
+    } ?: false
     val density = LocalDensity.current
-    val leftPaddingPx = with(density) { 62.dp.toPx() }
-    val rightPaddingPx = with(density) { 12.dp.toPx() }
-    val topPaddingPx = with(density) { 28.dp.toPx() }
-    val bottomPaddingPx = with(density) { 40.dp.toPx() }
+    val chartHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.42f)
+        .coerceIn(280.dp, 360.dp)
+    val leftPaddingPx = with(density) { 56.dp.toPx() }
+    val rightPaddingPx = with(density) { 8.dp.toPx() }
+    val topPaddingPx = with(density) { 14.dp.toPx() }
+    val bottomPaddingPx = with(density) { 30.dp.toPx() }
+    val pointCoreRadiusPx = with(density) { 8.dp.toPx() }
     val hitRadiusPx = with(density) { 22.dp.toPx() }
+    val segmentHitRadiusPx = with(density) { 14.dp.toPx() }
 
     val primary = MaterialTheme.colorScheme.primary
     val surface = MaterialTheme.colorScheme.surface
     val grid = MaterialTheme.colorScheme.outlineVariant
     val tick = MaterialTheme.colorScheme.onSurfaceVariant
     val darkTheme = isSystemInDarkTheme()
-    val snap = if (darkTheme) Color(0xFFE5A8C4) else Color(0xFF96516F)
+    val selection = primary
     val current = if (darkTheme) Color(0xFF8ED4A5) else Color(0xFF2D7A4B)
     val currentContent = if (darkTheme) Color(0xFF14351F) else Color.White
 
@@ -202,13 +255,51 @@ fun MappingCurveEditor(
         next: StepVolumeMap,
         preferredX: Double,
         preferredControlPointIndex: Int? = null,
+        preferredSegmentIndex: Int? = null,
     ) {
         if (next == editorMap) return
         editorMap = next
-        selectedControlPoint = preferredControlPointIndex
-            ?.coerceIn(next.normalizedXs.indices)
-            ?: next.closestControlPointIndex(preferredX)
+        if (preferredSegmentIndex != null) {
+            selectedSegment = preferredSegmentIndex.coerceIn(0, next.controlSegmentCount - 1)
+        } else {
+            selectedControlPoint = preferredControlPointIndex
+                ?.coerceIn(next.normalizedXs.indices)
+                ?: next.closestControlPointIndex(preferredX)
+            selectedSegment = null
+        }
         latestOnMapCommitted(next)
+    }
+
+    fun insertSelectedSegment(): Boolean {
+        val before = editorMap
+        val segmentIndex = selectedSegment?.takeIf {
+            it in 0 until before.controlSegmentCount
+        } ?: return false
+        val hasIntegerRoom = before.pressPositionAt(segmentIndex + 1) -
+            before.pressPositionAt(segmentIndex) >= 2 &&
+            before.offsets[segmentIndex + 1] - before.offsets[segmentIndex] >= 2
+        if (!editorReady || !hasIntegerRoom || before.controlPointCount >= maximumControlPointCount) {
+            return false
+        }
+        val after = before.insertControlPointAtSegment(segmentIndex)
+        editorMap = after
+        selectedControlPoint = segmentIndex + 1
+        selectedSegment = null
+        latestOnMapCommitted(after)
+        return true
+    }
+
+    fun deleteSelectedControlPoint(): Boolean {
+        val before = editorMap
+        if (!editorReady || selectedSegment != null || before.controlPointCount <= 2) return false
+        val pointIndex = selectedControlPoint.coerceIn(before.normalizedXs.indices)
+        if (pointIndex == 0 || pointIndex == before.controlSegmentCount) return false
+        val after = before.removeControlPointAt(pointIndex)
+        editorMap = after
+        selectedSegment = (pointIndex - 1).coerceIn(0, after.controlSegmentCount - 1)
+        selectedControlPoint = pointIndex.coerceIn(after.normalizedXs.indices)
+        latestOnMapCommitted(after)
+        return true
     }
 
     fun moveSelectedControlPoint(
@@ -216,6 +307,7 @@ fun MappingCurveEditor(
         displayIndexDelta: Int = 0,
     ): Boolean {
         val before = editorMap
+        if (selectedSegment != null) return false
         val pointIndex = selectedControlPoint.coerceIn(before.normalizedXs.indices)
         if (!editorReady || pointIndex == 0 || pointIndex == before.controlSegmentCount) {
             return false
@@ -267,6 +359,7 @@ fun MappingCurveEditor(
         }
         editorMap = after
         selectedControlPoint = pointIndex
+        selectedSegment = null
         latestOnMapCommitted(after)
         return true
     }
@@ -275,36 +368,80 @@ fun MappingCurveEditor(
         renderedMap,
         renderedMap.offsets[selectedIndex],
     )
-    val chartCustomActions = listOf(
-        CustomAccessibilityAction("选择上一个控制点") {
-            if (selectedControlPoint <= 0) {
-                false
-            } else {
-                selectedControlPoint -= 1
-                true
-            }
-        },
-        CustomAccessibilityAction("选择下一个控制点") {
-            if (selectedControlPoint >= editorMap.controlSegmentCount) {
-                false
-            } else {
-                selectedControlPoint += 1
-                true
-            }
-        },
-        CustomAccessibilityAction("控制点左移一个按键位置") {
-            moveSelectedControlPoint(pressDelta = -1)
-        },
-        CustomAccessibilityAction("控制点右移一个按键位置") {
-            moveSelectedControlPoint(pressDelta = 1)
-        },
-        CustomAccessibilityAction("控制点上移一个可表示档位") {
-            moveSelectedControlPoint(displayIndexDelta = 1)
-        },
-        CustomAccessibilityAction("控制点下移一个可表示档位") {
-            moveSelectedControlPoint(displayIndexDelta = -1)
-        },
-    )
+    val chartCustomActions = buildList {
+        add(
+            CustomAccessibilityAction("选择上一个控制点") {
+                val base = selectedSegment?.plus(1) ?: selectedControlPoint
+                if (base <= 0) {
+                    false
+                } else {
+                    selectedControlPoint = base - 1
+                    selectedSegment = null
+                    true
+                }
+            },
+        )
+        add(
+            CustomAccessibilityAction("选择下一个控制点") {
+                val base = selectedSegment ?: selectedControlPoint
+                if (base >= editorMap.controlSegmentCount) {
+                    false
+                } else {
+                    selectedControlPoint = base + 1
+                    selectedSegment = null
+                    true
+                }
+            },
+        )
+        add(
+            CustomAccessibilityAction("选择上一条线段") {
+                val target = selectedSegment?.minus(1) ?: (selectedControlPoint - 1)
+                if (target !in 0 until editorMap.controlSegmentCount) {
+                    false
+                } else {
+                    selectedSegment = target
+                    true
+                }
+            },
+        )
+        add(
+            CustomAccessibilityAction("选择下一条线段") {
+                val target = selectedSegment?.plus(1) ?: selectedControlPoint
+                if (target !in 0 until editorMap.controlSegmentCount) {
+                    false
+                } else {
+                    selectedSegment = target
+                    true
+                }
+            },
+        )
+        if (selectedSegmentIndex == null && canDeleteSelectedPoint && editorReady) {
+            add(
+                CustomAccessibilityAction("控制点左移一个按键位置") {
+                    moveSelectedControlPoint(pressDelta = -1)
+                },
+            )
+            add(
+                CustomAccessibilityAction("控制点右移一个按键位置") {
+                    moveSelectedControlPoint(pressDelta = 1)
+                },
+            )
+            add(
+                CustomAccessibilityAction("控制点上移一个可表示档位") {
+                    moveSelectedControlPoint(displayIndexDelta = 1)
+                },
+            )
+            add(
+                CustomAccessibilityAction("控制点下移一个可表示档位") {
+                    moveSelectedControlPoint(displayIndexDelta = -1)
+                },
+            )
+            add(CustomAccessibilityAction("删除选中控制点") { deleteSelectedControlPoint() })
+        }
+        if (selectedSegmentIndex != null && canInsertSelectedSegment && editorReady) {
+            add(CustomAccessibilityAction("在线段中插入控制点") { insertSelectedSegment() })
+        }
+    }
 
     Column(
         modifier = modifier,
@@ -316,9 +453,14 @@ fun MappingCurveEditor(
             minimum = 2,
             maximum = maximumControlPointCount,
             enabled = editorReady,
+            valueEditable = false,
+            canDecrement = canDeleteSelectedPoint,
+            canIncrement = canInsertSelectedSegment,
             onValueChange = { requested ->
-                val oldX = renderedMap.normalizedXAt(selectedIndex)
-                publish(renderedMap.resampleControlPoints(requested), oldX)
+                when {
+                    requested < renderedMap.controlPointCount -> deleteSelectedControlPoint()
+                    requested > renderedMap.controlPointCount -> insertSelectedSegment()
+                }
             },
             valueTag = CurveEditorTestTags.CONTROL_POINT_COUNT_INPUT,
             decrementTag = CurveEditorTestTags.CONTROL_POINT_COUNT_DECREMENT,
@@ -328,13 +470,13 @@ fun MappingCurveEditor(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(236.dp)
+                .height(chartHeight)
                 .testTag(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
                 .semantics {
                     contentDescription = buildString {
                         append(
                             "音量映射图。横轴是整数按键次数，纵轴是整数音量 index；" +
-                                "可通过更多操作选择和移动控制点。",
+                                "点击控制点或线段进行选择。",
                         )
                         snapshot?.let { append("当前音量水平线 ${it.currentIndex}。") }
                     }
@@ -343,10 +485,22 @@ fun MappingCurveEditor(
                             "按键次数 ${renderedMap.pressCount}，" +
                                 "控制点数量 ${renderedMap.controlPointCount}",
                         )
-                        append("，已选第 ${selectedIndex + 1} 个控制点")
-                        append("，x ${renderedMap.pressPositionAt(selectedIndex)}")
-                        append("，index $selectedDisplayIndex")
-                        append("，上下操作按当前路由可表示档位移动")
+                        if (selectedSegmentIndex == null) {
+                            append("，已选第 ${selectedIndex + 1} 个控制点")
+                            append("，x ${renderedMap.pressPositionAt(selectedIndex)}")
+                            append("，index $selectedDisplayIndex")
+                            append("，上下操作按当前路由可表示档位移动")
+                        } else {
+                            append("，已选第 ${selectedSegmentIndex + 1} 条线段")
+                            append(
+                                "，x ${renderedMap.pressPositionAt(selectedSegmentIndex)}" +
+                                    " 到 ${renderedMap.pressPositionAt(selectedSegmentIndex + 1)}",
+                            )
+                            append(
+                                "，index ${displayedControlIndices[selectedSegmentIndex]}" +
+                                    " 到 ${displayedControlIndices[selectedSegmentIndex + 1]}",
+                            )
+                        }
                         snapshot?.let { append("，当前音量 ${it.currentIndex}") }
                     }
                     customActions = chartCustomActions
@@ -392,16 +546,71 @@ fun MappingCurveEditor(
                                 return dx * dx + dy * dy
                             }
 
+                            fun segmentDistanceSquared(
+                                start: Offset,
+                                end: Offset,
+                                target: Offset,
+                            ): Float? {
+                                val dx = end.x - start.x
+                                val dy = end.y - start.y
+                                val lengthSquared = dx * dx + dy * dy
+                                if (lengthSquared <= 0f) return null
+                                val projection = (
+                                    (target.x - start.x) * dx + (target.y - start.y) * dy
+                                    ) / lengthSquared
+                                if (projection !in 0.08f..0.92f) return null
+                                val projected = Offset(
+                                    x = start.x + projection * dx,
+                                    y = start.y + projection * dy,
+                                )
+                                return squaredDistance(projected, target)
+                            }
+
+                            val pointPositions = startMap.normalizedXs.indices.map { index ->
+                                pointFor(startMap, index)
+                            }
+                            val coreRadiusSquared = pointCoreRadiusPx * pointCoreRadiusPx
                             val hitRadiusSquared = hitRadiusPx * hitRadiusPx
-                            val hitIndex = startMap.normalizedXs.indices
-                                .minBy { squaredDistance(pointFor(startMap, it), down.position) }
+                            val corePointIndex = pointPositions.indices
+                                .minBy { squaredDistance(pointPositions[it], down.position) }
                                 .takeIf {
-                                    squaredDistance(pointFor(startMap, it), down.position) <=
+                                    squaredDistance(pointPositions[it], down.position) <=
+                                        coreRadiusSquared
+                                }
+                            val segmentRadiusSquared = segmentHitRadiusPx * segmentHitRadiusPx
+                            val hitSegmentIndex = if (corePointIndex == null) {
+                                (0 until startMap.controlSegmentCount)
+                                    .mapNotNull { segmentIndex ->
+                                        segmentDistanceSquared(
+                                            pointPositions[segmentIndex],
+                                            pointPositions[segmentIndex + 1],
+                                            down.position,
+                                        )?.let { distance -> segmentIndex to distance }
+                                    }
+                                    .minByOrNull { it.second }
+                                    ?.takeIf { it.second <= segmentRadiusSquared }
+                                    ?.first
+                            } else {
+                                null
+                            }
+                            if (hitSegmentIndex != null) {
+                                val up = waitForUpOrCancellation()
+                                if (up != null) {
+                                    selectedSegment = hitSegmentIndex
+                                    up.consume()
+                                }
+                                return@awaitEachGesture
+                            }
+                            val hitIndex = corePointIndex ?: pointPositions.indices
+                                .minBy { squaredDistance(pointPositions[it], down.position) }
+                                .takeIf {
+                                    squaredDistance(pointPositions[it], down.position) <=
                                         hitRadiusSquared
                                 }
                                 ?: return@awaitEachGesture
 
                             selectedControlPoint = hitIndex
+                            selectedSegment = null
                             if (hitIndex == 0 || hitIndex == startMap.controlSegmentCount) {
                                 return@awaitEachGesture
                             }
@@ -486,6 +695,7 @@ fun MappingCurveEditor(
                                         gestureMap = moved
                                         editorMap = moved
                                         selectedControlPoint = hitIndex
+                                        selectedSegment = null
                                     change.consume()
                                 }
                             } finally {
@@ -507,6 +717,7 @@ fun MappingCurveEditor(
                                     editorMap = replacement
                                     selectedControlPoint =
                                         replacement.closestControlPointIndex(previousX)
+                                    selectedSegment = null
                                 }
                                 gestureInProgress = false
                             }
@@ -538,6 +749,7 @@ fun MappingCurveEditor(
                     pointFor(renderedMap.normalizedXAt(index), displayIndex.toDouble())
                 }
                 val selectedPoint = controlPoints[selectedIndex]
+                val selectedPointVisible = selectedSegmentIndex == null
                 val selectedPressPosition = renderedMap.pressPositionAt(selectedIndex)
                 val axisValues = listOf(
                     displayMinimum,
@@ -615,7 +827,7 @@ fun MappingCurveEditor(
                         strokeWidth = 1.dp.toPx(),
                     )
                     drawVolumeGlyph(y, value)
-                    if (abs(y - selectedPoint.y) >= 14.dp.toPx()) {
+                    if (!selectedPointVisible || abs(y - selectedPoint.y) >= 14.dp.toPx()) {
                         drawContext.canvas.nativeCanvas.drawText(
                             value.toString(),
                             plotLeft - 8.dp.toPx(),
@@ -648,7 +860,7 @@ fun MappingCurveEditor(
                         end = Offset(x, plotBottom + 4.dp.toPx()),
                         strokeWidth = 1.dp.toPx(),
                     )
-                    if (abs(x - selectedPoint.x) >= 18.dp.toPx()) {
+                    if (!selectedPointVisible || abs(x - selectedPoint.x) >= 18.dp.toPx()) {
                         xTickPaint.textAlign = when (pressPosition) {
                             0 -> AndroidPaint.Align.LEFT
                             renderedMap.pressCount -> AndroidPaint.Align.RIGHT
@@ -685,20 +897,22 @@ fun MappingCurveEditor(
                 val selectedGuideEffect = PathEffect.dashPathEffect(
                     floatArrayOf(4.dp.toPx(), 4.dp.toPx()),
                 )
-                drawLine(
-                    color = snap.copy(alpha = 0.86f),
-                    start = Offset(plotLeft, selectedPoint.y),
-                    end = selectedPoint,
-                    strokeWidth = 1.35.dp.toPx(),
-                    pathEffect = selectedGuideEffect,
-                )
-                drawLine(
-                    color = snap.copy(alpha = 0.86f),
-                    start = selectedPoint,
-                    end = Offset(selectedPoint.x, plotBottom),
-                    strokeWidth = 1.35.dp.toPx(),
-                    pathEffect = selectedGuideEffect,
-                )
+                if (selectedPointVisible) {
+                    drawLine(
+                        color = selection.copy(alpha = 0.72f),
+                        start = Offset(plotLeft, selectedPoint.y),
+                        end = selectedPoint,
+                        strokeWidth = 1.35.dp.toPx(),
+                        pathEffect = selectedGuideEffect,
+                    )
+                    drawLine(
+                        color = selection.copy(alpha = 0.72f),
+                        start = selectedPoint,
+                        end = Offset(selectedPoint.x, plotBottom),
+                        strokeWidth = 1.35.dp.toPx(),
+                        pathEffect = selectedGuideEffect,
+                    )
+                }
 
                 val controlPath = Path().apply {
                     controlPoints.forEachIndexed { index, point ->
@@ -710,6 +924,31 @@ fun MappingCurveEditor(
                     color = primary,
                     style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round),
                 )
+                selectedSegmentIndex?.let { segmentIndex ->
+                    val start = controlPoints[segmentIndex]
+                    val end = controlPoints[segmentIndex + 1]
+                    drawLine(
+                        color = selection.copy(alpha = 0.10f),
+                        start = start,
+                        end = end,
+                        strokeWidth = 11.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                    drawLine(
+                        color = selection.copy(alpha = 0.22f),
+                        start = start,
+                        end = end,
+                        strokeWidth = 7.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                    drawLine(
+                        color = selection,
+                        start = start,
+                        end = end,
+                        strokeWidth = 3.5.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                }
 
                 val currentIntersection = if (
                     currentY != null && currentX != null && currentIndexLabel != null
@@ -741,11 +980,16 @@ fun MappingCurveEditor(
                 }
 
                 controlPoints.forEachIndexed { index, point ->
-                    val isSelected = index == selectedIndex
+                    val isSelected = selectedPointVisible && index == selectedIndex
                     if (isSelected) {
                         drawCircle(
                             color = primary.copy(alpha = 0.13f),
-                            radius = 10.dp.toPx(),
+                            radius = 12.dp.toPx(),
+                            center = point,
+                        )
+                        drawCircle(
+                            color = primary.copy(alpha = 0.18f),
+                            radius = 8.dp.toPx(),
                             center = point,
                         )
                     }
@@ -764,45 +1008,47 @@ fun MappingCurveEditor(
                     }
                 }
 
-                drawLine(
-                    color = snap,
-                    start = Offset(plotLeft - 5.dp.toPx(), selectedPoint.y),
-                    end = Offset(plotLeft, selectedPoint.y),
-                    strokeWidth = 1.5.dp.toPx(),
-                )
-                drawLine(
-                    color = snap,
-                    start = Offset(selectedPoint.x, plotBottom),
-                    end = Offset(selectedPoint.x, plotBottom + 5.dp.toPx()),
-                    strokeWidth = 1.5.dp.toPx(),
-                )
-                val selectedTickPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
-                    color = snap.toArgb()
-                    textSize = 11.sp.toPx()
-                    typeface = android.graphics.Typeface.create(
-                        "sans-serif-medium",
-                        android.graphics.Typeface.NORMAL,
+                if (selectedPointVisible) {
+                    drawLine(
+                        color = selection,
+                        start = Offset(plotLeft - 5.dp.toPx(), selectedPoint.y),
+                        end = Offset(plotLeft, selectedPoint.y),
+                        strokeWidth = 1.5.dp.toPx(),
+                    )
+                    drawLine(
+                        color = selection,
+                        start = Offset(selectedPoint.x, plotBottom),
+                        end = Offset(selectedPoint.x, plotBottom + 5.dp.toPx()),
+                        strokeWidth = 1.5.dp.toPx(),
+                    )
+                    val selectedTickPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                        color = selection.toArgb()
+                        textSize = 11.sp.toPx()
+                        typeface = android.graphics.Typeface.create(
+                            "sans-serif-medium",
+                            android.graphics.Typeface.NORMAL,
+                        )
+                    }
+                    selectedTickPaint.textAlign = AndroidPaint.Align.RIGHT
+                    drawContext.canvas.nativeCanvas.drawText(
+                        selectedDisplayIndex.toString(),
+                        plotLeft - 8.dp.toPx(),
+                        selectedPoint.y -
+                            (selectedTickPaint.ascent() + selectedTickPaint.descent()) / 2f,
+                        selectedTickPaint,
+                    )
+                    selectedTickPaint.textAlign = when {
+                        selectedPressPosition == 0 -> AndroidPaint.Align.LEFT
+                        selectedPressPosition == renderedMap.pressCount -> AndroidPaint.Align.RIGHT
+                        else -> AndroidPaint.Align.CENTER
+                    }
+                    drawContext.canvas.nativeCanvas.drawText(
+                        selectedPressPosition.toString(),
+                        selectedPoint.x,
+                        xAxisLabelBaseline,
+                        selectedTickPaint,
                     )
                 }
-                selectedTickPaint.textAlign = AndroidPaint.Align.RIGHT
-                drawContext.canvas.nativeCanvas.drawText(
-                    selectedDisplayIndex.toString(),
-                    plotLeft - 8.dp.toPx(),
-                    selectedPoint.y -
-                        (selectedTickPaint.ascent() + selectedTickPaint.descent()) / 2f,
-                    selectedTickPaint,
-                )
-                selectedTickPaint.textAlign = when {
-                    selectedPressPosition == 0 -> AndroidPaint.Align.LEFT
-                    selectedPressPosition == renderedMap.pressCount -> AndroidPaint.Align.RIGHT
-                    else -> AndroidPaint.Align.CENTER
-                }
-                drawContext.canvas.nativeCanvas.drawText(
-                    selectedPressPosition.toString(),
-                    selectedPoint.x,
-                    xAxisLabelBaseline,
-                    selectedTickPaint,
-                )
 
                 if (currentY != null && currentX != null && currentIndexLabel != null) {
                     val tagText = "当前 $currentIndexLabel"
@@ -868,7 +1114,10 @@ fun MappingCurveEditor(
                 publish(
                     renderedMap.withPressCount(requested),
                     renderedMap.normalizedXAt(selectedIndex),
-                    preferredControlPointIndex = selectedIndex,
+                    preferredControlPointIndex = selectedIndex.takeIf {
+                        selectedSegmentIndex == null
+                    },
+                    preferredSegmentIndex = selectedSegmentIndex,
                 )
             },
             valueTag = CurveEditorTestTags.PRESS_COUNT_INPUT,
@@ -893,6 +1142,9 @@ private fun CompactCurveStepper(
     minimum: Int,
     maximum: Int,
     enabled: Boolean,
+    valueEditable: Boolean = true,
+    canDecrement: Boolean = true,
+    canIncrement: Boolean = true,
     onValueChange: (Int) -> Unit,
     valueTag: String,
     decrementTag: String,
@@ -915,6 +1167,11 @@ private fun CompactCurveStepper(
     }
 
     fun commitDraft() {
+        if (!valueEditable) {
+            draftValue = value.toString()
+            draftEdited = false
+            return
+        }
         if (!draftEdited) {
             draftValue = value.toString()
             return
@@ -932,7 +1189,11 @@ private fun CompactCurveStepper(
     }
 
     fun updateFromButton(delta: Int) {
-        val base = draftValue.toIntOrNull()?.coerceIn(minimum, maximum) ?: value
+        val base = if (valueEditable) {
+            draftValue.toIntOrNull()?.coerceIn(minimum, maximum) ?: value
+        } else {
+            value
+        }
         val accepted = (base + delta).coerceIn(minimum, maximum)
         draftValue = accepted.toString()
         draftEdited = false
@@ -942,7 +1203,11 @@ private fun CompactCurveStepper(
         keyboardController?.hide()
     }
 
-    val buttonBase = draftValue.toIntOrNull()?.coerceIn(minimum, maximum) ?: value
+    val buttonBase = if (valueEditable) {
+        draftValue.toIntOrNull()?.coerceIn(minimum, maximum) ?: value
+    } else {
+        value
+    }
 
     Row(
         modifier = Modifier
@@ -962,76 +1227,105 @@ private fun CompactCurveStepper(
         )
         IconButton(
             onClick = { updateFromButton(-1) },
-            enabled = enabled && buttonBase > minimum,
+            enabled = enabled && canDecrement && buttonBase > minimum,
             modifier = Modifier
                 .size(40.dp)
                 .testTag(decrementTag),
         ) {
             Icon(
                 Icons.Default.Remove,
-                contentDescription = "$label 减少",
+                contentDescription = if (valueEditable) {
+                    "$label 减少"
+                } else {
+                    "删除选中的控制点"
+                },
                 modifier = Modifier.size(18.dp),
             )
         }
-        BasicTextField(
-            value = draftValue,
-            onValueChange = { requested ->
-                if (requested.all(Char::isDigit) && requested.length <= 9) {
-                    draftValue = requested
-                    draftEdited = true
-                }
-            },
-            enabled = enabled,
-            singleLine = true,
-            modifier = Modifier
-                .width(52.dp)
-                .height(48.dp)
-                .testTag(valueTag)
-                .onFocusChanged { focusState ->
-                    if (inputHasFocus && !focusState.isFocused) commitDraft()
-                    inputHasFocus = focusState.isFocused
-                }
-                .semantics {
-                    contentDescription = label
-                    stateDescription = draftValue.ifBlank { "空" }
+        if (valueEditable) {
+            BasicTextField(
+                value = draftValue,
+                onValueChange = { requested ->
+                    if (requested.all(Char::isDigit) && requested.length <= 9) {
+                        draftValue = requested
+                        draftEdited = true
+                    }
                 },
-            textStyle = MaterialTheme.typography.bodyLarge.copy(
-                color = contentColor.copy(alpha = if (enabled) 1f else 0.38f),
-                fontWeight = FontWeight.Medium,
-                textAlign = TextAlign.Center,
-            ),
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Number,
-                imeAction = ImeAction.Done,
-            ),
-            keyboardActions = KeyboardActions(
-                onDone = {
-                    commitDraft()
-                    inputHasFocus = false
-                    focusManager.clearFocus(force = true)
-                    keyboardController?.hide()
+                enabled = enabled,
+                singleLine = true,
+                modifier = Modifier
+                    .width(52.dp)
+                    .height(48.dp)
+                    .testTag(valueTag)
+                    .onFocusChanged { focusState ->
+                        if (inputHasFocus && !focusState.isFocused) commitDraft()
+                        inputHasFocus = focusState.isFocused
+                    }
+                    .semantics {
+                        contentDescription = label
+                        stateDescription = draftValue.ifBlank { "空" }
+                    },
+                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                    color = contentColor.copy(alpha = if (enabled) 1f else 0.38f),
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center,
+                ),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Done,
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        commitDraft()
+                        inputHasFocus = false
+                        focusManager.clearFocus(force = true)
+                        keyboardController?.hide()
+                    },
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                decorationBox = { innerTextField ->
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        innerTextField()
+                    }
                 },
-            ),
-            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-            decorationBox = { innerTextField ->
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    innerTextField()
-                }
-            },
-        )
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .width(52.dp)
+                    .height(48.dp)
+                    .testTag(valueTag)
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = label
+                        stateDescription = value.toString()
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = value.toString(),
+                    color = contentColor.copy(alpha = if (enabled) 1f else 0.38f),
+                    fontWeight = FontWeight.Medium,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+        }
         IconButton(
             onClick = { updateFromButton(1) },
-            enabled = enabled && buttonBase < maximum,
+            enabled = enabled && canIncrement && buttonBase < maximum,
             modifier = Modifier
                 .size(40.dp)
                 .testTag(incrementTag),
         ) {
             Icon(
                 Icons.Default.Add,
-                contentDescription = "$label 增加",
+                contentDescription = if (valueEditable) {
+                    "$label 增加"
+                } else {
+                    "在选中的线段中插入控制点"
+                },
                 modifier = Modifier.size(18.dp),
             )
         }
@@ -1039,6 +1333,15 @@ private fun CompactCurveStepper(
 }
 
 private const val MAXIMUM_CONTROL_POINT_COUNT = 16
+
+private fun StepVolumeMap.closestSegmentIndex(normalizedX: Double): Int {
+    require(normalizedX.isFinite())
+    val requestedX = normalizedX.coerceIn(0.0, 1.0)
+    return (0 until controlSegmentCount).minBy { segmentIndex ->
+        val midpoint = (normalizedXAt(segmentIndex) + normalizedXAt(segmentIndex + 1)) / 2.0
+        abs(midpoint - requestedX)
+    }
+}
 
 private fun StepVolumeMap.normalizedXForDisplayedIndex(
     displayedIndices: List<Int>,
