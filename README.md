@@ -8,7 +8,7 @@ VoluStep 是一个面向 Android 28–37 的全局媒体音量键映射应用。
 - 正式版只有一个简约主界面：直接拖动折线、输入 `K`、通过当前点/线段调整 `P`、查看当前音量水平标记，并设置固定长按步进间隔；
 - 控制点横坐标与整数 index 一并持久化，修改 `K` 不改变折线，修改 `P` 也不会把已有控制点重新均匀排布；
 - 曲线按当前路由实际 min/max 投影；较小范围只临时减少有效按键次数，不覆盖完整 K/P 作者配置；
-- AccessibilityService 全局过滤音量键，以 `(deviceId, keyCode, downTime)` 标识一次手势；repeat 只刷新心跳，长按才启动 50 ms ticker；
+- AccessibilityService 全局过滤音量键，以 `(deviceId, keyCode, downTime)` 标识一次手势；repeat 只刷新心跳，固定 300 ms 阈值触发首个连续步进，active press 使用 20 ms、latest-only ticker；
 - Android 17 所需、由可见 Activity 显式启动的 `specialUse` 前台服务；
 - 音量写入后的单周期两阶段回读、control/route epoch 失效、路由切换重置和连续失败自动放行；
 - A2DP、LE Audio、USB、HDMI、有线与扬声器的运行时能力探测，并区分 `CONFIRMED` 与 `HEURISTIC` 路由；

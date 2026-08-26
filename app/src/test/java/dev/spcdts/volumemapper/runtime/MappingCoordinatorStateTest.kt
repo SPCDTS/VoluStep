@@ -4,13 +4,14 @@ import dev.spcdts.volumemapper.R
 import dev.spcdts.volumemapper.core.ActiveVolumePress
 import dev.spcdts.volumemapper.core.AudioRouteDescriptor
 import dev.spcdts.volumemapper.core.AudioRouteType
-import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.core.RouteConfidence
 import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
 import dev.spcdts.volumemapper.core.VolumeDirection
 import dev.spcdts.volumemapper.core.VolumeMappingState
 import dev.spcdts.volumemapper.core.VolumePosition
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -87,23 +88,26 @@ class MappingCoordinatorStateTest {
     }
 
     @Test
-    fun `write queue gates from attempt time without collapsing FIFO targets`() {
-        assertTrue(COORDINATOR_MIN_WRITE_INTERVAL_MILLIS <= COORDINATOR_TICK_INTERVAL_MILLIS)
-        assertTrue(
-            COORDINATOR_TICK_INTERVAL_MILLIS <=
-                KeyMappingConfig.MIN_HOLD_STEP_INTERVAL_MILLIS,
-        )
+    fun `command mailbox prioritizes controls and retains only the latest tick`() = runBlocking {
+        val controls = Channel<Int>(capacity = 4)
+        val ticks = Channel<Int>(Channel.CONFLATED)
+        (1..100).forEach { ticks.trySend(it) }
+        controls.trySend(7)
 
-        val writes = CoordinatorWriteQueue<Int>(minimumIntervalMillis = 50L)
+        val control = receiveNextCoordinatorMessage(controls, ticks)
+        val latestTick = receiveNextCoordinatorMessage(controls, ticks)
 
-        writes.recordAttemptStarted(nowMillis = 100L)
-        writes.enqueue(2)
-        writes.enqueue(3)
+        assertEquals(CoordinatorMailboxMessage.Control(7), control)
+        assertEquals(CoordinatorMailboxMessage.LatestTick(100), latestTick)
+    }
 
-        assertNull(writes.takeNextIfReady(nowMillis = 149L))
-        assertEquals(2, writes.takeNextIfReady(nowMillis = 150L))
-        writes.recordAttemptStarted(nowMillis = 150L)
-        assertNull(writes.takeNextIfReady(nowMillis = 199L))
-        assertEquals(3, writes.takeNextIfReady(nowMillis = 200L))
+    @Test
+    fun `a selected tick ignores a released or replaced gesture owner`() {
+        val gesture = KeyToken(deviceId = 1, keyCode = 24, downTimeMillis = 100L)
+        val replacement = gesture.copy(downTimeMillis = 200L)
+
+        assertTrue(shouldProcessCoordinatorTick(gesture, gesture))
+        assertFalse(shouldProcessCoordinatorTick(owner = null, gestureToken = gesture))
+        assertFalse(shouldProcessCoordinatorTick(replacement, gesture))
     }
 }

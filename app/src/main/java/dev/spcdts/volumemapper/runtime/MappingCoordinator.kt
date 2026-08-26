@@ -28,12 +28,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 
-internal const val COORDINATOR_TICK_INTERVAL_MILLIS = 50L
+internal const val COORDINATOR_TICK_INTERVAL_MILLIS = 20L
 
-// A 60 ms configured hold can advance on adjacent 50 ms ticks because fractional time is retained.
-// The write gate therefore cannot exceed one tick, or a newer target could overwrite an unwritten
-// adjacent slot before the gate opens.
+// The fastest configured hold advances every 60 ms. A 20 ms clock aligns with that grid and limits
+// scheduler jitter without increasing AudioManager writes: the reducer requests only changed slots.
 internal const val COORDINATOR_MIN_WRITE_INTERVAL_MILLIS = COORDINATOR_TICK_INTERVAL_MILLIS
 
 /**
@@ -78,6 +78,25 @@ internal class CoordinatorWriteQueue<T>(
     fun reset() {
         pending.clear()
         lastAttemptStartedAtMillis = Long.MIN_VALUE
+    }
+}
+
+internal sealed interface CoordinatorMailboxMessage<out C, out T> {
+    data class Control<C>(val value: C) : CoordinatorMailboxMessage<C, Nothing>
+    data class LatestTick<T>(val value: T) : CoordinatorMailboxMessage<Nothing, T>
+}
+
+/** Gives control/release commands priority while retaining only the latest absolute-time tick. */
+internal suspend fun <C : Any, T : Any> receiveNextCoordinatorMessage(
+    controls: Channel<C>,
+    ticks: Channel<T>,
+): CoordinatorMailboxMessage<C, T> {
+    controls.tryReceive().getOrNull()?.let { ready ->
+        return CoordinatorMailboxMessage.Control(ready)
+    }
+    return select {
+        controls.onReceive { CoordinatorMailboxMessage.Control(it) }
+        ticks.onReceive { CoordinatorMailboxMessage.LatestTick(it) }
     }
 }
 
@@ -135,6 +154,9 @@ internal data class KeyToken(
     val downTimeMillis: Long,
 )
 
+internal fun shouldProcessCoordinatorTick(owner: KeyToken?, gestureToken: KeyToken): Boolean =
+    owner == gestureToken
+
 /** Pure continuity decision kept outside the actor so route/readback edge cases are unit-testable. */
 internal fun canKeepMappingPosition(
     mappingState: VolumeMappingState?,
@@ -173,6 +195,7 @@ class MappingCoordinator(
         parentScope.coroutineContext + SupervisorJob() + Dispatchers.Default,
     )
     private val commands = Channel<Command>(COMMAND_BUFFER_CAPACITY)
+    private val ticks = Channel<Command.Tick>(Channel.CONFLATED)
 
     /** Callback-side state. None of these reads performs Binder I/O. */
     private val eligible = AtomicBoolean(false)
@@ -383,24 +406,31 @@ class MappingCoordinator(
     }
 
     private suspend fun actorLoop() {
-        for (command in commands) {
-            when (command) {
-                is Command.Arm -> handleArm(command)
-                is Command.Disarm -> handleDisarm(command)
-                is Command.Retry -> handleRetry(command)
-                is Command.ForegroundChanged -> handleForegroundChanged(command)
-                is Command.AccessibilityChanged -> handleAccessibilityChanged(command)
-                is Command.SettingsChanged -> handleSettingsChanged(command)
-                is Command.KeyDown -> handleKeyDown(command)
-                is Command.KeyUp -> handleKeyUp(command)
-                is Command.Tick -> handleTick(command)
-                is Command.WatchdogExpired -> handleWatchdogExpired(command)
-                is Command.OwnerDrainExpired -> handleOwnerDrainExpired(command)
-                is Command.ExpiredKeyGestureDrained -> handleExpiredKeyGestureDrained(command)
-                is Command.EnvironmentChanged -> handleEnvironmentChanged(command)
-                is Command.RefreshSnapshot -> handleRefreshSnapshot(command)
-                is Command.VerifyWrite -> verifyWrite(command)
+        while (scope.isActive) {
+            when (val message = receiveNextCoordinatorMessage(commands, ticks)) {
+                is CoordinatorMailboxMessage.Control -> dispatchCommand(message.value)
+                is CoordinatorMailboxMessage.LatestTick -> handleTick(message.value)
             }
+        }
+    }
+
+    private fun dispatchCommand(command: Command) {
+        when (command) {
+            is Command.Arm -> handleArm(command)
+            is Command.Disarm -> handleDisarm(command)
+            is Command.Retry -> handleRetry(command)
+            is Command.ForegroundChanged -> handleForegroundChanged(command)
+            is Command.AccessibilityChanged -> handleAccessibilityChanged(command)
+            is Command.SettingsChanged -> handleSettingsChanged(command)
+            is Command.KeyDown -> handleKeyDown(command)
+            is Command.KeyUp -> handleKeyUp(command)
+            is Command.Tick -> handleTick(command)
+            is Command.WatchdogExpired -> handleWatchdogExpired(command)
+            is Command.OwnerDrainExpired -> handleOwnerDrainExpired(command)
+            is Command.ExpiredKeyGestureDrained -> handleExpiredKeyGestureDrained(command)
+            is Command.EnvironmentChanged -> handleEnvironmentChanged(command)
+            is Command.RefreshSnapshot -> handleRefreshSnapshot(command)
+            is Command.VerifyWrite -> verifyWrite(command)
         }
     }
 
@@ -624,11 +654,15 @@ class MappingCoordinator(
     private fun handleTick(command: Command.Tick) {
         val gesture = activeGesture ?: return
         if (gesture.token != command.token || gesture.stamp != command.stamp) return
-        if (!isActiveGestureCurrent(gesture)) {
-            cancelActiveGesture(resetMapping = false)
-            return
-        }
+        // UP clears callback ownership before its reliable actor command is handled. A tick must
+        // never cancel that gesture: KeyUp owns final time integration, while watchdog/transition
+        // commands own other cleanup paths.
+        if (!shouldProcessCoordinatorTick(gestureOwner.get(), gesture.token)) return
+        if (!isWriteContextCurrent(gesture.writeContext)) return
         if (!guardActiveEnvironment(gesture, command.nowMillis)) return
+        // The environment guard can perform Binder I/O while UP arrives on the callback thread.
+        if (!shouldProcessCoordinatorTick(gestureOwner.get(), gesture.token)) return
+        if (!isWriteContextCurrent(gesture.writeContext)) return
 
         val state = mappingState ?: return
         val reduction = reducer.reduce(state, VolumeMappingAction.AdvanceTime(command.nowMillis))
@@ -1144,7 +1178,6 @@ class MappingCoordinator(
         cancelTicker()
         val job = scope.launch {
             while (isActive) {
-                delay(COORDINATOR_TICK_INTERVAL_MILLIS)
                 if (gestureOwner.get() != gesture.token) break
 
                 val now = SystemClock.uptimeMillis()
@@ -1152,8 +1185,10 @@ class MappingCoordinator(
                     commands.send(Command.WatchdogExpired(gesture.token, gesture.stamp, now))
                     break
                 }
-                // Ticks are coalescible: reducer integration uses absolute event time.
-                commands.trySend(Command.Tick(gesture.token, gesture.stamp, now))
+                // Absolute-time integration makes intermediate ticks disposable. An immediate
+                // first offer also catches up without another polling delay after slow Binder I/O.
+                ticks.trySend(Command.Tick(gesture.token, gesture.stamp, now))
+                delay(COORDINATOR_TICK_INTERVAL_MILLIS)
             }
         }
         tickerJob.getAndSet(job)?.cancel()

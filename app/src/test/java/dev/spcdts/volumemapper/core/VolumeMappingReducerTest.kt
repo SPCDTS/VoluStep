@@ -8,7 +8,6 @@ import org.junit.Test
 
 class VolumeMappingReducerTest {
     private val fixedIntervalConfig = KeyMappingConfig(
-        holdDelayMillis = 300L,
         holdStepIntervalMillis = 500L,
     )
     private val sparseMap = StepVolumeMap(
@@ -50,8 +49,24 @@ class VolumeMappingReducerTest {
             down,
             VolumeMappingAction.AdvanceTime(nowMillis = 1_800L),
         ).state
+        val beforeActivation = reducer.reduce(
+            down,
+            VolumeMappingAction.AdvanceTime(nowMillis = 299L),
+        ).state
+        val atActivation = reducer.reduce(
+            down,
+            VolumeMappingAction.AdvanceTime(nowMillis = 300L),
+        ).state
+        val beforeNextInterval = reducer.reduce(
+            down,
+            VolumeMappingAction.AdvanceTime(nowMillis = 799L),
+        ).state
+        val atNextInterval = reducer.reduce(
+            down,
+            VolumeMappingAction.AdvanceTime(nowMillis = 800L),
+        ).state
         var manyTicks = down
-        for (time in 350L..1_800L step 50) {
+        for (time in 250L..1_800L step 50) {
             manyTicks = reducer.reduce(
                 manyTicks,
                 VolumeMappingAction.AdvanceTime(nowMillis = time),
@@ -60,7 +75,11 @@ class VolumeMappingReducerTest {
 
         assertEquals(oneTick.position, manyTicks.position)
         assertEquals(oneTick.heldStepRemainder, manyTicks.heldStepRemainder, TOLERANCE)
-        assertEquals(4, reducer.targetIndex(oneTick))
+        assertEquals(1, reducer.targetIndex(beforeActivation))
+        assertEquals(2, reducer.targetIndex(atActivation))
+        assertEquals(2, reducer.targetIndex(beforeNextInterval))
+        assertEquals(3, reducer.targetIndex(atNextInterval))
+        assertEquals(5, reducer.targetIndex(oneTick))
         assertTrue(reducer.targetIndex(oneTick) in reducer.stepMap.indices)
     }
 
@@ -84,7 +103,7 @@ class VolumeMappingReducerTest {
             VolumeMappingAction.KeyUp(VolumeDirection.DOWN, eventTimeMillis = 800L),
         )
 
-        assertEquals(3, up.targetIndex)
+        assertEquals(2, up.targetIndex)
         assertNull(up.state.activePress)
         assertEquals(0.0, up.state.heldStepRemainder, TOLERANCE)
         assertTrue(up.writeRequested)
@@ -104,7 +123,7 @@ class VolumeMappingReducerTest {
 
         val matching = reducer.reduce(
             withRemainder,
-            VolumeMappingAction.SynchronizeObserved(observedIndex = 1, forceWhilePressed = true),
+            VolumeMappingAction.SynchronizeObserved(observedIndex = 2, forceWhilePressed = true),
         )
         val ignoredMismatch = reducer.reduce(
             withRemainder,
@@ -131,7 +150,7 @@ class VolumeMappingReducerTest {
 
         assertNull(cancelled.state.activePress)
         assertEquals(0.0, cancelled.state.heldStepRemainder, TOLERANCE)
-        assertEquals(1, cancelled.targetIndex)
+        assertEquals(2, cancelled.targetIndex)
         assertFalse(cancelled.writeRequested)
     }
 

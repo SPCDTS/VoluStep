@@ -10,11 +10,9 @@ enum class VolumeDirection(val sign: Double) {
 
 /** User-tunable key behaviour. A hold advances by one configured slot per fixed interval. */
 data class KeyMappingConfig(
-    val holdDelayMillis: Long = 350L,
     val holdStepIntervalMillis: Long = DEFAULT_HOLD_STEP_INTERVAL_MILLIS,
 ) {
     init {
-        require(holdDelayMillis >= 0L) { "holdDelayMillis cannot be negative" }
         require(holdStepIntervalMillis in MIN_HOLD_STEP_INTERVAL_MILLIS..MAX_HOLD_STEP_INTERVAL_MILLIS) {
             "holdStepIntervalMillis must be in " +
                 "$MIN_HOLD_STEP_INTERVAL_MILLIS..$MAX_HOLD_STEP_INTERVAL_MILLIS"
@@ -25,6 +23,8 @@ data class KeyMappingConfig(
     }
 
     companion object {
+        /** Fixed tap/hold boundary; the first continuous step occurs at this instant. */
+        const val HOLD_ACTIVATION_DELAY_MILLIS = 300L
         const val DEFAULT_HOLD_STEP_INTERVAL_MILLIS = 120L
         const val MIN_HOLD_STEP_INTERVAL_MILLIS = 60L
         const val MAX_HOLD_STEP_INTERVAL_MILLIS = 500L
@@ -36,6 +36,7 @@ data class ActiveVolumePress(
     val direction: VolumeDirection,
     val startedAtMillis: Long,
     val lastIntegratedAtMillis: Long,
+    val holdActivated: Boolean = false,
 ) {
     init {
         require(lastIntegratedAtMillis >= startedAtMillis) {
@@ -264,16 +265,31 @@ class VolumeMappingReducer(
     private fun advance(state: VolumeMappingState, requestedNowMillis: Long): VolumeMappingState {
         val press = state.activePress ?: return state
         val nowMillis = max(requestedNowMillis, press.lastIntegratedAtMillis)
-        val holdStartMillis = saturatedAdd(press.startedAtMillis, config.holdDelayMillis)
-        val integrationStartMillis = max(press.lastIntegratedAtMillis, holdStartMillis)
-        val stepDisplacement = if (nowMillis > integrationStartMillis) {
-            (nowMillis - integrationStartMillis).toDouble() /
-                config.holdStepIntervalMillis.toDouble()
+        val holdStartMillis = saturatedAdd(
+            press.startedAtMillis,
+            KeyMappingConfig.HOLD_ACTIVATION_DELAY_MILLIS,
+        )
+        val activatesNow = !press.holdActivated && nowMillis >= holdStartMillis
+        val integrationStartMillis = if (press.holdActivated) {
+            press.lastIntegratedAtMillis
         } else {
-            0.0
+            holdStartMillis
         }
+        val elapsedDisplacement =
+            if ((press.holdActivated || activatesNow) && nowMillis > integrationStartMillis) {
+                (nowMillis - integrationStartMillis).toDouble() /
+                    config.holdStepIntervalMillis.toDouble()
+            } else {
+                0.0
+            }
+        // Crossing the tap/hold boundary is itself the first continuous step. Previously the
+        // reducer waited one additional interval, making the default response almost 500 ms.
+        val stepDisplacement = elapsedDisplacement + if (activatesNow) 1.0 else 0.0
 
-        val newPress = press.copy(lastIntegratedAtMillis = nowMillis)
+        val newPress = press.copy(
+            lastIntegratedAtMillis = nowMillis,
+            holdActivated = press.holdActivated || activatesNow,
+        )
         if (stepDisplacement == 0.0 || stepMap.effectivePressCount == 0) {
             return state.copy(activePress = newPress)
         }

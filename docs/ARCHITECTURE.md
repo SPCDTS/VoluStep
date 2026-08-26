@@ -9,8 +9,8 @@
 repeat → 只刷新 heartbeat；UP → 结束同一 token
         ↓
 x(t) ∈ {-1, 0, +1}
-        ↓  仅 active press 启动 50 ms ticker，不依赖 OEM key-repeat 频率
-离散状态 q ∈ {0, …, K}；短按移动一个状态，长按按固定间隔累积完整状态数
+        ↓  仅 active press 启动 20 ms latest-only ticker，不依赖 OEM key-repeat 频率
+离散状态 q ∈ {0, …, K}；短按移动一个状态，300 ms 时触发首个连续状态，之后按固定间隔累积
         ↓  在 P 个整数按键位控制点折线 C(x) 上按均匀 q/K 采样，投影为严格递增表 I[q]
 STREAM_MUSIC 目标整数 index = I[q]
         ↓  setStreamVolume + 单 verification cycle 的约 80/380 ms 回读
@@ -63,7 +63,7 @@ ui/
 
 DOWN 一旦消费，同一 token 的 repeat 只更新 atomic heartbeat，不进入 actor；UP 会排空已消费手势，`trySend` 失败时改用可挂起的异步 `send`。disarm、FGS stop、settings、手动刷新、路由变化或 fail-open 会立刻禁止新手势并取消 active/pending/verification，但保留 owner 到 UP；Accessibility 断连会立即清 owner，因为服务已不可能继续接收完整事件流。
 
-Android 各厂商的 repeat 首延迟和间隔不同。状态机只把首次 DOWN 当成一次 tap；actor 真正确认 active press 后才创建 50 ms ticker，结束或失效立即取消，不存在常驻全局 ticker。2 秒未收到 heartbeat/UP 时 watchdog 停止连续调整；已经取消但仍等待 UP 的 owner 另有低频 drain watchdog，避免永久粘住。长按按绝对时间累积状态数，只有跨过完整状态时才写入，未满一步的余量留给后续 tick，因此结果不依赖 tick 或 repeat 次数，但 OEM 是否投递稳定 KeyEvent 仍须真机验证。
+Android 各厂商的 repeat 首延迟和间隔不同。状态机只把首次 DOWN 当成一次 tap；固定 300 ms 阈值本身产生首个连续状态，后续才使用用户配置的间隔。actor 真正确认 active press 后创建 20 ms ticker，结束或失效立即取消，不存在常驻全局 ticker。Tick 使用独立的 conflated channel，只保留最新绝对时间；控制、UP、watchdog 与验证继续使用可靠 FIFO channel，并在两者同时就绪时优先执行。2 秒未收到 heartbeat/UP 时 watchdog 停止连续调整；已经取消但仍等待 UP 的 owner 另有低频 drain watchdog，避免永久粘住。长按按绝对时间累积状态数，只有跨过完整状态时才写入，未满一步的余量留给后续 tick，因此丢弃中间 tick 不会丢失最终位移，但 OEM 是否投递稳定 KeyEvent 仍须真机验证。
 
 ## 并发与 epoch
 
@@ -104,7 +104,7 @@ API 33+ 为媒体属性恰好返回一个设备时标记 `CONFIRMED`；返回多
 
 ## 写入、节流和故障放行
 
-- 连续长按用 50 ms ticker 与不超过一个 tick 的写入门限；最短 60 ms 配置平均最多约 16.7 个相邻状态/秒，门限不会把尚未写出的相邻状态合并；首次 DOWN 和最终 UP 的强制写入不受这条稳态门限限制；
+- 连续长按用 20 ms latest-only ticker 与 20 ms 写入门限；最短 60 ms 配置平均最多约 16.7 个相邻状态/秒，空闲时把轮询量化降至约 20 ms，遇到线程调度或 Binder 停顿时则由最新 tick 按绝对时间追赶，不积压旧 tick；首次 DOWN 和最终 UP 的强制写入不受这条稳态门限限制；
 - UP 总是强制收敛到 reducer 的最终整数目标，避免最后一个已跨过但仍被节流的状态丢失；
 - 每次新手势先读取真实音量，并强制 `expectedIndex = observed`；如果 observed 正好是配置状态，短按移动到相邻状态；如果位于两个状态之间，则按方向选择严格大于或小于它的第一个目标；
 - active hold 的匹配回读会保留未满一个状态的时间余量；松手后余量清零。下一次新手势仅在平台 index、路由和范围都未变化时保留“当前是哪个精确配置状态”的身份；

@@ -76,6 +76,7 @@ class VolumeKeyAudioIntegrationTest {
             val boundMap = integerPressMap.bind(readySnapshot.range)
             val testSettings = originalSettings.copy(
                 outputMap = integerPressMap,
+                keyConfig = originalSettings.keyConfig.copy(holdStepIntervalMillis = 500L),
                 showSystemVolumeUi = false,
             )
             repository.updateOutputMap(testSettings.outputMap)
@@ -84,7 +85,7 @@ class VolumeKeyAudioIntegrationTest {
             awaitCoordinatorSettings(coordinator, testSettings)
 
             val initialIndex = boundMap.indices[2]
-            val expectedIndex = boundMap.indices[3]
+            val expectedIndex = boundMap.indices[4]
             val initialWrite = graph.volumeBackend.setMediaVolume(
                 index = initialIndex,
                 showSystemUi = false,
@@ -120,8 +121,24 @@ class VolumeKeyAudioIntegrationTest {
             val downConsumed = coordinator.handleAccessibilityKey(downEvent)
             assertTrue("初始 DOWN 应被映射控制器消费", downConsumed)
 
-            // Accessibility 回调必须快速返回。DOWN/UP 命令由同一 Channel 保序；若在两者之间
-            // 等待异步写入，持续重组可能让 2 秒 lost-UP watchdog 合法清掉 owner。
+            val repeatEvent = KeyEvent.changeTimeRepeat(
+                downEvent,
+                max(SystemClock.uptimeMillis(), downEvent.downTime + 1L),
+                1,
+            )
+            assertTrue(
+                "同一手势的 repeat 应被消费并仅刷新存活时间",
+                coordinator.handleAccessibilityKey(repeatEvent),
+            )
+
+            // 首个 DOWN 前进一步；到固定 300 ms 阈值时再前进一步。测试间隔设为 500 ms，
+            // 给断言与 UP 留出窗口，避免第二个连续步进参与结果。
+            composeRule.waitUntil(VOLUME_TIMEOUT_MILLIS) {
+                val runtime = coordinator.runtime.value
+                val actualIndex = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                actualIndex == expectedIndex && runtime.expectedIndex == expectedIndex
+            }
+
             val upEvent = keyUpFor(downEvent)
             assertSameGesture(downEvent, upEvent)
             val upConsumed = coordinator.handleAccessibilityKey(upEvent)

@@ -364,16 +364,26 @@ function Get-UiTapPointByTextWithScroll {
 }
 
 function Send-EmulatorVolumeKey {
-    param([ValidateSet('UP', 'DOWN')][string]$Direction)
+    param(
+        [ValidateSet('UP', 'DOWN')][string]$Direction,
+        [ValidateRange(1, 1500)][int]$HoldMillis = 60
+    )
 
     $keyCode = if ($Direction -eq 'UP') { 115 } else { 114 }
     # 直接写入模拟器 evdev，在内核层生成 Linux input event；adb shell input 与
     # UiAutomation 的注入路径会跳过 Accessibility input filter，不能用于本断言。
-    Invoke-Adb shell sendevent $script:volumeInputDevice 1 $keyCode 1 | Out-Null
-    Invoke-Adb shell sendevent $script:volumeInputDevice 0 0 0 | Out-Null
-    Start-Sleep -Milliseconds 60
-    Invoke-Adb shell sendevent $script:volumeInputDevice 1 $keyCode 0 | Out-Null
-    Invoke-Adb shell sendevent $script:volumeInputDevice 0 0 0 | Out-Null
+    # 整个手势放在一次设备端 shell 中，避免四次独立 adb 往返把标称按住时间拉长。
+    $holdSeconds = ($HoldMillis / 1000.0).ToString(
+        '0.000',
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    $gestureCommand =
+        "sendevent $script:volumeInputDevice 1 $keyCode 1; " +
+        "sendevent $script:volumeInputDevice 0 0 0; " +
+        "sleep $holdSeconds; " +
+        "sendevent $script:volumeInputDevice 1 $keyCode 0; " +
+        "sendevent $script:volumeInputDevice 0 0 0"
+    Invoke-Adb shell $gestureCommand | Out-Null
 }
 
 function Get-VolumeInputDevice {
@@ -554,6 +564,9 @@ try {
     $notificationTitle = Get-InstrumentationStatusValue `
         -Output $instrumentOutput `
         -Key 'e2eNotificationTitle'
+    $expectedHeldUp = [int](Get-InstrumentationStatusValue `
+        -Output $instrumentOutput `
+        -Key 'e2eHoldUpIndex')
 
     Invoke-Adb shell am start '-W' '-n' $activityComponent | Out-Null
 
@@ -623,6 +636,16 @@ try {
         (Get-MediaVolume).Current -eq $expectedMappedDown
     }
     $mappedDownIndex = (Get-MediaVolume).Current
+    Send-EmulatorVolumeKey -Direction UP -HoldMillis 360
+    try {
+        Wait-ForCondition -FailureMessage '长按目标等待超时。' -Condition {
+            (Get-MediaVolume).Current -eq $expectedHeldUp
+        }
+    } catch {
+        $observedHeldUp = (Get-MediaVolume).Current
+        throw "持续按住 360 ms 没有在 300 ms 阈值进入连续映射：期望 $expectedHeldUp，实际 $observedHeldUp。"
+    }
+    $heldUpIndex = (Get-MediaVolume).Current
 
     Write-Host "[6/7] 回到应用并通过主开关停止映射"
     Invoke-Adb shell am start '-W' '-n' $activityComponent | Out-Null
@@ -669,7 +692,7 @@ try {
     $nativeMediaIndex = (Get-MediaVolume).Current
     $nativeRingIndex = (Get-StreamVolume -Stream 2).Current
 
-    Write-Host "E2E PASS：后台映射 $initialIndex -> $mappedUpIndex -> $mappedDownIndex；停止后由系统 AudioService 接管，media $initialIndex -> $nativeMediaIndex，ring $ringInitial -> $nativeRingIndex。"
+    Write-Host "E2E PASS：后台短按映射 $initialIndex -> $mappedUpIndex -> $mappedDownIndex，持续按住 360 ms -> $heldUpIndex；停止后由系统 AudioService 接管，media $initialIndex -> $nativeMediaIndex，ring $ringInitial -> $nativeRingIndex。"
 } catch {
     $primaryFailure = $_
 } finally {

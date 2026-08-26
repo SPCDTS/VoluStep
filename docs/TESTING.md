@@ -17,9 +17,9 @@
 当前覆盖：
 
 - `StepVolumeMap` 的非法整数控制几何、均匀按键网格插值与严格整数最优投影、修改按键次数后的 x 重投影、拖动越界时对相邻点的整数推挤、非零/缩容/固定路由绑定与重基准，以及选段中点插入；指定点删除闭环由设备侧 UI 测试覆盖；
-- `VolumeMappingReducer` 的外部 index 严格相邻步进、长按积分对 ticker 节奏不敏感、匹配与错误方向 UP、`SynchronizeObserved` 读回重锚、`CancelPress`，以及固定音量路由不发起平台写入；
-- 设置 `v4` 整数坐标 round-trip、`v1` / `v2` / `v3` 与 legacy fallback、全部 `1..150` 按键次数的 downgrade shadow、坏字段独立降级、非即时写尾沿合并、immediate 回执和一次 `IOException` 后继续处理；
-- 空闲映射位置只在快照一致时保留、固定范围判定与快照接受后的 ready 状态、写队列按尝试时间限流且不合并 FIFO 目标、无障碍按键过期边界与 owned gesture 处置，以及应用详情页不可用时回退到通用设置并在全部入口失败时报告失败。
+- `VolumeMappingReducer` 的外部 index 严格相邻步进、299/300 ms 长按起效边界、长按积分对 ticker 节奏不敏感、匹配与错误方向 UP、`SynchronizeObserved` 读回重锚、`CancelPress`，以及固定音量路由不发起平台写入；
+- 设置 `v4` 整数坐标 round-trip、旧 `hold_delay` 忽略与清理、`v1` / `v2` / `v3` 与 legacy fallback、全部 `1..150` 按键次数的 downgrade shadow、坏字段独立降级、非即时写尾沿合并、immediate 回执和一次 `IOException` 后继续处理；
+- 空闲映射位置只在快照一致时保留、固定范围判定与快照接受后的 ready 状态、普通命令优先且 tick 只保留最新值的 mailbox、已释放或已被新手势替换的 tick owner 处置，以及无障碍按键过期边界与 owned gesture 处置。
 
 仓库恰好保留 20 个 JVM 测试和 10 个 Android instrumentation / E2E 测试，共 30 个唯一 `@Test` 入口。JVM 测试不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也不覆盖宿主 evdev 注入链路；未在上述清单列出的历史细节不能仅凭当前 JVM 套件宣称已自动验证。
 
@@ -36,7 +36,7 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 仓库包含三个设备侧测试类：
 
 - `MainActivityTest`：共 8 项，分别验证正式单页、扩大后的图表、首次中点选择与当前音量语义，应用菜单中的隐私政策和版本信息，选段插入和选新增点删除闭环，普通点右插与末点左插，K 变化时的选择与容量，控制点 x/y 拖动吸附，点/线段动态无障碍操作，以及无障碍整数移动；测试结束会恢复进入测试前的完整设置；
-- `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造完整 DOWN/UP，并验证真实 `STREAM_MUSIC` index 改变和最终清理。
+- `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造初始 DOWN、同 token repeat、跨过 300 ms 起效阈值的持续按住和最终 UP，并验证真实 `STREAM_MUSIC` index 到达连续目标且最终清理。
 - `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 验证未勾选时不能同意、取消后不保存/不启动、再次触发后主动同意，并确认同意后直接进入系统无障碍设置；若同意状态已持久化，则验证已同意路径。随后确认应用未声明通知权限、真实绑定 AccessibilityService，并验证 `specialUse` FGS 仍能正常启动；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性整数控制点映射。
 
 第二项测试不会启动真实 AccessibilityService，也不会验证系统是否把物理按键分派给服务。第三项的 instrumentation 阶段不能独自证明按键分派，因为 UiAutomation 注入会绕过 Accessibility input filter；实体按键链路由下述宿主 E2E 使用内核 evdev 事件验证。模拟器结果仍不能替代 OEM、蓝牙耳机和真实系统授权页测试。编译测试 APK 与实际执行应区分：
@@ -120,7 +120,7 @@ Android 17 还应使用系统支持的音频 hardening 调试命令（若该镜�
 - 新手势只在 FGS、无障碍、media-safe、路由和后端全部健康，且有界队列接受 DOWN 时消费；
 - 每次手势只允许一个 `(deviceId, keyCode, downTime)` owner；repeat 只刷新 heartbeat，绝不入队或重启取消后的手势；
 - 一旦消费 DOWN，普通失效仍消费到同 token 的 UP；Accessibility 断连清 owner，丢 UP 在约 2 秒 watchdog 后可恢复；
-- 只有 active press 存在 50 ms ticker，结束后无常驻 tick；写入门限不超过一个 tick，最短 60 ms 长按配置不能因限流合并相邻状态；
+- 只有 active press 存在 20 ms latest-only ticker，结束后无常驻 tick；普通命令优先于 tick，最短 60 ms 长按配置不会因调度积压形成尾随调整；
 - disarm、FGS stop、settings、手动刷新和 route/environment 变化先原子失效 control epoch；route 变化还失效 route epoch，旧 I/O 结果不能复活；
 - active hold 每约 500 ms 核对 mode、route ID、范围与 fixed-volume，且 guard 不覆盖 active logical/expected index；
 - 一个 verification cycle 跟踪 latest expected；fresh mismatch 不重锚，成熟 mismatch 清 pending 并同步 observed，final mismatch 才计失败；

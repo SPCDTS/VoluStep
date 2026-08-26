@@ -182,6 +182,10 @@ class RealSystemVolumeE2eTest {
                     pressPositions = listOf(0, 2, 3, 5),
                     offsets = listOf(0, initialOffset, mappedUpOffset, routeSpan),
                 ),
+                // 拉开起效后的下一步窗口；宿主 360 ms 持有只验证固定 300 ms 阈值。
+                keyConfig = repository.settings.value.keyConfig.copy(
+                    holdStepIntervalMillis = 500L,
+                ),
                 showSystemVolumeUi = false,
             )
             repository.updateOutputMap(testSettings.outputMap)
@@ -193,7 +197,18 @@ class RealSystemVolumeE2eTest {
             // 宿主机 E2E 只用本方法通过真实 UI 完成披露并写入确定性的 40% 离散档位。
             // 返回后 UiAutomation 已断开；宿主机随后通过 root sendevent 向模拟器 evdev
             // 注入硬件层事件，避免 adb shell input/UiAutomation 绕过 Accessibility input filter。
-            if (prepareExternalJourney) return
+            if (prepareExternalJourney) {
+                instrumentation.sendStatus(
+                    STATUS_MAPPING_CONTRACT,
+                    Bundle().apply {
+                        putInt(
+                            STATUS_HOLD_UP_INDEX,
+                            testSettings.outputMap.bind(routeRange).indices[4],
+                        )
+                    },
+                )
+                return
+            }
 
             assertFalse(
                 "用户点击前不应自动启动前台控制器",
@@ -378,7 +393,9 @@ class RealSystemVolumeE2eTest {
         const val ARG_PREPARE_EXTERNAL = "e2ePrepareOnly"
         const val ARG_LOCALE = "e2eLocale"
         const val STATUS_RESOURCE_CONTRACT = 2
+        const val STATUS_MAPPING_CONTRACT = 3
         const val STATUS_MASTER_SWITCH_DESCRIPTION = "e2eMasterSwitchDescription"
         const val STATUS_NOTIFICATION_TITLE = "e2eNotificationTitle"
+        const val STATUS_HOLD_UP_INDEX = "e2eHoldUpIndex"
     }
 }

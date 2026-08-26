@@ -32,13 +32,14 @@ class SettingsSerializationTest {
         val settings = VolumeMapperSettings(
             outputMap = outputMap,
             keyConfig = VolumeMapperSettings().keyConfig.copy(
-                holdDelayMillis = 420L,
                 holdStepIntervalMillis = 140L,
             ),
             showSystemVolumeUi = false,
             disclosureAccepted = true,
         )
-        val preferences = mutablePreferencesOf()
+        val preferences = mutablePreferencesOf(
+            longPreferencesKey("hold_delay") to 800L,
+        )
 
         SettingsSerialization.encode(preferences, settings)
 
@@ -47,12 +48,13 @@ class SettingsSerializationTest {
             "v4|150|9|0,0;1,1;3,4;6,17;8,58;9,150",
             preferences[stringPreferencesKey("output_step_map")],
         )
+        assertEquals(null, preferences[longPreferencesKey("hold_delay")])
     }
 
     @Test
     fun `settings writer coalesces debounced tail behind an immediate acknowledgement`() = runBlocking {
         val base = VolumeMapperSettings()
-        val stale = base.copy(keyConfig = base.keyConfig.copy(holdDelayMillis = 500L))
+        val stale = base.copy(keyConfig = base.keyConfig.copy(holdStepIntervalMillis = 140L))
         val flushed = base.copy(showSystemVolumeUi = false)
         val tail = base.copy(disclosureAccepted = true)
         val writes = Channel<SettingsWriteRequest>(Channel.UNLIMITED)
@@ -117,7 +119,7 @@ class SettingsSerializationTest {
                 stringPreferencesKey("output_step_map") to "v3|150|50|broken",
                 stringPreferencesKey("output_curve") to "v2|NaN|0.0,0.0;1.0,1.0",
                 stringPreferencesKey("tap_step") to "wrong preference type",
-                longPreferencesKey("hold_delay") to -5L,
+                longPreferencesKey("hold_delay") to 800L,
                 longPreferencesKey("hold_step_interval") to 59L,
                 doublePreferencesKey("hold_speed") to 0.27,
                 booleanPreferencesKey("show_system_ui") to false,

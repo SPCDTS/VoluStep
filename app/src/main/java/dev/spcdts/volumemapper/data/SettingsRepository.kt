@@ -40,7 +40,6 @@ data class VolumeMapperSettings(
         offsets = listOf(0, 1, 5, 16, DEFAULT_OUTPUT_BASIS_SPAN),
     ),
     val keyConfig: KeyMappingConfig = KeyMappingConfig(
-        holdDelayMillis = 350L,
         holdStepIntervalMillis = KeyMappingConfig.DEFAULT_HOLD_STEP_INTERVAL_MILLIS,
     ),
     val showSystemVolumeUi: Boolean = true,
@@ -283,9 +282,6 @@ internal object SettingsSerialization {
             outputMap = preferences.readStepVolumeMap()
                 ?: migrateLegacyOutputMap(preferences, defaults.outputMap),
             keyConfig = KeyMappingConfig(
-                holdDelayMillis = preferences.readLong(Keys.HOLD_DELAY)
-                    ?.takeIf { it >= 0L }
-                    ?: defaultKeyConfig.holdDelayMillis,
                 holdStepIntervalMillis = normalizePersistedHoldStepInterval(
                     persistedValue = preferences.readLong(Keys.HOLD_STEP_INTERVAL),
                     defaultValue = defaultKeyConfig.holdStepIntervalMillis,
@@ -306,10 +302,10 @@ internal object SettingsSerialization {
         // Keep a current v2 shadow payload so a downgraded build can still read the authored shape.
         preferences[Keys.OUTPUT_CURVE] = encodeCurve(settings.outputMap.toLegacyCurve())
         preferences[Keys.TAP_STEP] = settings.outputMap.toLegacyTapStep()
-        preferences[Keys.HOLD_DELAY] = settings.keyConfig.holdDelayMillis
         preferences[Keys.HOLD_STEP_INTERVAL] = settings.keyConfig.holdStepIntervalMillis
-        // These fields belonged to the superseded ramp-based hold model. Remove stale values so a
-        // later write cannot look as though the fixed interval is still affected by hidden tuning.
+        // Hold activation is now fixed product behaviour. Remove legacy hidden tuning together
+        // with fields from the superseded ramp-based hold model.
+        preferences.remove(Keys.LEGACY_HOLD_DELAY)
         preferences.remove(Keys.HOLD_SPEED)
         preferences.remove(Keys.RAMP_DURATION)
         preferences.remove(Keys.RAMP_MULTIPLIER)
@@ -582,7 +578,7 @@ internal object SettingsSerialization {
         val OUTPUT_STEP_MAP = stringPreferencesKey("output_step_map")
         val OUTPUT_CURVE = stringPreferencesKey("output_curve")
         val TAP_STEP = doublePreferencesKey("tap_step")
-        val HOLD_DELAY = longPreferencesKey("hold_delay")
+        val LEGACY_HOLD_DELAY = longPreferencesKey("hold_delay")
         val HOLD_STEP_INTERVAL = longPreferencesKey("hold_step_interval")
         // Kept only to remove obsolete values written by ramp-based releases.
         val HOLD_SPEED = doublePreferencesKey("hold_speed")
