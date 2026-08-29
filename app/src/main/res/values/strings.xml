@@ -13,6 +13,8 @@
     <string name="action_ok">OK</string>
     <string name="action_agree">Agree</string>
     <string name="action_cancel">Cancel</string>
+    <string name="action_add">Add</string>
+    <string name="action_done">Done</string>
     <string name="error_open_settings_title">Cannot open system settings</string>
     <string name="error_open_settings_message">Open system settings manually and find %1$s.</string>
     <string name="error_controller_start_title">Could not start controller</string>
@@ -37,7 +39,7 @@
     <string name="privacy_full_policy">Full policy</string>
     <string name="about">About</string>
     <string name="privacy_on_device_title">Processed on this device</string>
-    <string name="privacy_on_device_body">Android may deliver physical key events to %1$s through its Accessibility service. %1$s checks the key code and immediately ignores non-volume keys. For volume-up and volume-down, it temporarily processes the key code, press/release state, repeat count, event and down time, and input-device ID. It reads the active media output, volume range, and current volume through Android audio APIs, then changes media volume according to your curve. Your curve, long-press interval, and disclosure choice are stored only in the app’s private storage.</string>
+    <string name="privacy_on_device_body">Android may deliver physical key events to %1$s through its Accessibility service. %1$s checks the key code and immediately ignores non-volume keys. For volume-up and volume-down, it temporarily processes the key code, press/release state, repeat count, event and down time, and input-device ID. It reads the active media output, volume range, and current volume through Android audio APIs, then changes media volume according to your curve or an explicit fixed-volume button tap. Your curve, fixed-volume buttons, long-press interval, and disclosure choice are stored only in the app’s private storage.</string>
     <string name="privacy_not_collected_title">Not collected or shared</string>
     <string name="privacy_not_collected_body">%1$s does not read screen content, touches, passwords, accounts, or personal files. It has no Internet permission and includes no advertising or analytics SDK. Key and volume data are not uploaded or shared.</string>
     <string name="privacy_retention_title">Control and deletion</string>
@@ -55,6 +57,20 @@
         <item quantity="one">%1$d millisecond</item>
         <item quantity="other">%1$d milliseconds</item>
     </plurals>
+
+    <string name="fixed_volume">Fixed volume</string>
+    <string name="fixed_volume_add">Add fixed volume</string>
+    <string name="fixed_volume_set_to">Set media volume to %1$d</string>
+    <string name="fixed_volume_remove">Remove fixed volume %1$d</string>
+    <string name="fixed_volume_current">Current volume</string>
+    <string name="fixed_volume_index">Media volume index</string>
+    <string name="fixed_volume_value_of_max">%1$d / %2$d</string>
+    <string name="fixed_volume_decrease">Decrease fixed volume</string>
+    <string name="fixed_volume_increase">Increase fixed volume</string>
+    <string name="fixed_volume_already_added">Volume %1$d is already added</string>
+    <string name="fixed_volume_out_of_range">Volume %1$d is unavailable on the current output (%2$d–%3$d)</string>
+    <string name="fixed_volume_requires_visible_app">Keep VoluStep open to set a fixed volume</string>
+    <string name="fixed_volume_request_cancelled">The audio environment changed; try again</string>
 
     <string name="device">Device</string>
     <string name="device_information">Device information</string>

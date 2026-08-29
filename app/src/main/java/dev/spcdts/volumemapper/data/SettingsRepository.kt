@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import dev.spcdts.volumemapper.core.FixedVolumePresets
 import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.core.MappingCurve
 import dev.spcdts.volumemapper.core.MappingPoint
@@ -39,6 +40,7 @@ data class VolumeMapperSettings(
         pressPositions = listOf(0, 2, 6, 13, DEFAULT_OUTPUT_PRESS_COUNT),
         offsets = listOf(0, 1, 5, 16, DEFAULT_OUTPUT_BASIS_SPAN),
     ),
+    val fixedVolumePresets: FixedVolumePresets = FixedVolumePresets(),
     val keyConfig: KeyMappingConfig = KeyMappingConfig(
         holdStepIntervalMillis = KeyMappingConfig.DEFAULT_HOLD_STEP_INTERVAL_MILLIS,
     ),
@@ -123,6 +125,21 @@ class SettingsRepository(
     }
 
     fun updateOutputMap(outputMap: StepVolumeMap) = update { copy(outputMap = outputMap) }
+
+    fun updateFixedVolumePresets(presets: FixedVolumePresets) =
+        update { copy(fixedVolumePresets = presets) }
+
+    fun addFixedVolumePreset(index: Int) = update {
+        copy(
+            fixedVolumePresets = FixedVolumePresets(fixedVolumePresets.indices + index),
+        )
+    }
+
+    fun removeFixedVolumePreset(index: Int) = update {
+        copy(
+            fixedVolumePresets = FixedVolumePresets(fixedVolumePresets.indices - index),
+        )
+    }
 
     fun updateKeyConfig(config: KeyMappingConfig) = update { copy(keyConfig = config) }
 
@@ -281,6 +298,11 @@ internal object SettingsSerialization {
         return defaults.copy(
             outputMap = preferences.readStepVolumeMap()
                 ?: migrateLegacyOutputMap(preferences, defaults.outputMap),
+            fixedVolumePresets = preferences.readString(Keys.FIXED_VOLUME_PRESETS)
+                ?.let { encoded ->
+                    runCatching { decodeFixedVolumePresets(encoded) }.getOrNull()
+                }
+                ?: defaults.fixedVolumePresets,
             keyConfig = KeyMappingConfig(
                 holdStepIntervalMillis = normalizePersistedHoldStepInterval(
                     persistedValue = preferences.readLong(Keys.HOLD_STEP_INTERVAL),
@@ -299,6 +321,8 @@ internal object SettingsSerialization {
         settings: VolumeMapperSettings,
     ) {
         preferences[Keys.OUTPUT_STEP_MAP] = encodeStepVolumeMap(settings.outputMap)
+        preferences[Keys.FIXED_VOLUME_PRESETS] =
+            encodeFixedVolumePresets(settings.fixedVolumePresets)
         // Keep a current v2 shadow payload so a downgraded build can still read the authored shape.
         preferences[Keys.OUTPUT_CURVE] = encodeCurve(settings.outputMap.toLegacyCurve())
         preferences[Keys.TAP_STEP] = settings.outputMap.toLegacyTapStep()
@@ -414,6 +438,18 @@ internal object SettingsSerialization {
             else -> throw IllegalArgumentException("Unsupported step-map format")
         }
     }
+
+    fun encodeFixedVolumePresets(presets: FixedVolumePresets): String =
+        presets.indices.joinToString(separator = ",")
+
+    fun decodeFixedVolumePresets(encoded: String): FixedVolumePresets =
+        FixedVolumePresets(
+            indices = if (encoded.isEmpty()) {
+                emptyList()
+            } else {
+                encoded.split(',').map(String::toInt)
+            },
+        )
 
     private fun Preferences.readStepVolumeMap(): StepVolumeMap? =
         readString(Keys.OUTPUT_STEP_MAP)
@@ -576,6 +612,7 @@ internal object SettingsSerialization {
 
     private object Keys {
         val OUTPUT_STEP_MAP = stringPreferencesKey("output_step_map")
+        val FIXED_VOLUME_PRESETS = stringPreferencesKey("fixed_volume_presets")
         val OUTPUT_CURVE = stringPreferencesKey("output_curve")
         val TAP_STEP = doublePreferencesKey("tap_step")
         val LEGACY_HOLD_DELAY = longPreferencesKey("hold_delay")

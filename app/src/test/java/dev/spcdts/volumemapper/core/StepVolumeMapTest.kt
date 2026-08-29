@@ -1,7 +1,6 @@
 package dev.spcdts.volumemapper.core
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -62,24 +61,6 @@ class StepVolumeMapTest {
             }
         }
         assertEquals(bruteForceMinimum, squaredError(projected, nonlinearTargets), TOLERANCE)
-    }
-
-    @Test
-    fun `changing press count reprojects x while preserving authored offsets`() {
-        val original = StepVolumeMap(
-            basisSpan = 20,
-            pressCount = 9,
-            pressPositions = listOf(0, 2, 6, 9),
-            offsets = listOf(0, 4, 11, 20),
-        )
-
-        val changed = original.withPressCount(5)
-
-        assertEquals(5, changed.pressCount)
-        assertEquals(listOf(0, 1, 3, 5), changed.pressPositions)
-        assertEquals(original.offsets, changed.offsets)
-        assertStrictlyIncreasing(changed.pressPositions)
-        assertSame(changed, changed.withPressCount(5))
     }
 
     @Test

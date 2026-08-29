@@ -9,6 +9,9 @@ import dev.spcdts.volumemapper.ui.VolumeMapperApp
 import dev.spcdts.volumemapper.ui.VolumeMapperTheme
 
 class MainActivity : ComponentActivity() {
+    private val mappingCoordinator
+        get() = (application as VolumeMapperApplication).graph.mappingCoordinator
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -22,8 +25,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        mappingCoordinator.onUiStarted()
+    }
+
     override fun onResume() {
         super.onResume()
-        (application as VolumeMapperApplication).graph.mappingCoordinator.refreshSnapshot()
+        mappingCoordinator.refreshSnapshot()
+    }
+
+    override fun onStop() {
+        mappingCoordinator.onUiStopped()
+        super.onStop()
     }
 }

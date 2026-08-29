@@ -74,7 +74,7 @@
 <body>
   <header>
     <h1>VoluStep 隐私政策 / Privacy Policy</h1>
-    <p class="meta">更新日期 / Last updated: 2026-08-25</p>
+    <p class="meta">更新日期 / Last updated: 2026-08-29</p>
     <p class="language-nav"><a href="#zh">简体中文</a> · <a href="#en">English</a></p>
   </header>
 
@@ -96,7 +96,7 @@
     <ul>
       <li><strong>实体按键事件：</strong>Android 可能向无障碍服务投递其他实体按键事件。应用会先检查键码，并立即忽略、放行非音量键；对于音量加减键，会在内存中临时使用键码、按下/释放状态、重复次数、按下时间、事件时间和输入设备标识，用于区分一次按键手势、判断短按或长按，以及避免重复处理。事件数据不会写入持久化设置。</li>
       <li><strong>媒体音量与输出路由：</strong>应用使用 Android 公开的音频 API 读取和设置媒体音量整数 index，并在本机查询当前输出路由、音量范围和系统提供的名义 dB 信息。应用无法读取耳机内部真实增益或声压级。</li>
-      <li><strong>本地配置：</strong>映射曲线、按键参数和显著披露同意状态保存在应用私有存储中。该设置文件被排除在 Android 云备份和设备到设备迁移之外。</li>
+      <li><strong>本地配置：</strong>映射曲线、固定音量按钮、按键参数和显著披露同意状态保存在应用私有存储中。该设置文件被排除在 Android 云备份和设备到设备迁移之外。</li>
       <li><strong>本机设备信息：</strong>主界面仅在本机显示厂商、输出路由名称和音量范围。开发者主动运行的本地诊断脚本可能另行记录设备型号和 Android 版本；应用不会自动上传这些信息。</li>
     </ul>
 
@@ -111,7 +111,7 @@
     <p>用户可以关闭 VoluStep 总开关或在 Android 系统设置中停用无障碍服务，以恢复系统默认按键行为。</p>
 
     <h2>前台服务与系统权限</h2>
-    <p>VoluStep 使用 <code>MODIFY_AUDIO_SETTINGS</code> 读取和设置 Android 媒体音量，并使用用户主动启动的 <code>specialUse</code> 前台服务维持即时按键映射。前台服务只在本机运行，不会产生网络传输。Android 仍可能在系统“运行中的应用”等位置展示并允许停止该服务。</p>
+    <p>VoluStep 使用 <code>MODIFY_AUDIO_SETTINGS</code> 读取和设置 Android 媒体音量。用户在主界面主动点击固定音量按钮不需要无障碍服务；用户主动启动的 <code>specialUse</code> 前台服务仅用于维持即时实体按键映射。前台服务只在本机运行，不会产生网络传输。Android 仍可能在系统“运行中的应用”等位置展示并允许停止该服务。</p>
 
     <h2>数据保留与删除</h2>
     <p>本地配置会保留到用户修改设置、清除应用数据或卸载 VoluStep。清除应用数据或卸载会由 Android 删除应用私有配置。由于 VoluStep 没有账号、开发者服务器或服务器端用户数据，因此不存在服务器端账号删除或数据删除申请流程。</p>
@@ -142,7 +142,7 @@
     <ul>
       <li><strong>Physical key events:</strong> Android may deliver other physical-key events to the Accessibility service. The app first checks the key code and immediately ignores and passes through non-volume keys. For volume-up and volume-down, it temporarily uses the key code, press/release state, repeat count, down time, event time, and input-device identifier in memory to identify one button gesture, distinguish a short press from a hold, and prevent duplicate handling. Event data is not written to persistent settings.</li>
       <li><strong>Media volume and output route:</strong> The app uses public Android audio APIs to read and set the integer media-volume index and to query the current output route, volume range, and nominal dB information supplied by the system. It cannot read an earphone's internal gain or real sound-pressure level.</li>
-      <li><strong>Local configuration:</strong> The mapping curve, button parameters, and prominent-disclosure consent state are stored in app-private storage. This settings file is excluded from Android cloud backup and device-to-device transfer.</li>
+      <li><strong>Local configuration:</strong> The mapping curve, fixed-volume buttons, button parameters, and prominent-disclosure consent state are stored in app-private storage. This settings file is excluded from Android cloud backup and device-to-device transfer.</li>
       <li><strong>On-device information:</strong> The main screen displays the manufacturer, output-route name, and volume range only on the device. Local diagnostics started manually by a developer may additionally record the device model and Android version. The app does not upload this information automatically.</li>
     </ul>
 
@@ -157,7 +157,7 @@
     <p>The user can turn off VoluStep or disable its Accessibility service in Android settings to restore the system's default button behavior.</p>
 
     <h2>Foreground service and system permission</h2>
-    <p>VoluStep uses <code>MODIFY_AUDIO_SETTINGS</code> to read and set Android media volume. A user-started <code>specialUse</code> foreground service keeps button mapping immediate. The foreground service runs only on the device and does not cause network transmission. Android may still show the service in system surfaces such as “Active apps” and allow the user to stop it.</p>
+    <p>VoluStep uses <code>MODIFY_AUDIO_SETTINGS</code> to read and set Android media volume. Tapping a fixed-volume button on the main screen does not require the Accessibility service; a user-started <code>specialUse</code> foreground service is used only to keep physical-button mapping immediate. The foreground service runs only on the device and does not cause network transmission. Android may still show the service in system surfaces such as “Active apps” and allow the user to stop it.</p>
 
     <h2>Retention and deletion</h2>
     <p>Local configuration remains until the user changes it, clears the app's data, or uninstalls VoluStep. Android removes app-private configuration when app data is cleared or the app is uninstalled. VoluStep has no account, developer server, or server-side user data, so there is no server-side account or data-deletion request process.</p>

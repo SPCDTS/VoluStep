@@ -1,7 +1,9 @@
 package dev.spcdts.volumemapper.runtime
 
+import android.os.Looper
 import android.os.SystemClock
 import android.view.KeyEvent
+import androidx.annotation.MainThread
 import dev.spcdts.volumemapper.R
 import dev.spcdts.volumemapper.audio.AudioManagerVolumeBackend
 import dev.spcdts.volumemapper.core.BoundStepVolumeMap
@@ -14,6 +16,7 @@ import dev.spcdts.volumemapper.core.VolumeMappingState
 import dev.spcdts.volumemapper.data.SettingsRepository
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
@@ -177,6 +180,21 @@ internal fun isEffectivelyFixedVolume(
     range: RouteVolumeRange,
 ): Boolean = backendReportsFixed || range.minIndex == range.maxIndex
 
+internal enum class FixedVolumeSnapshotFailureDisposition {
+    WAIT_FOR_FINAL,
+    REJECT,
+    RETRY_AFTER_TRANSITION,
+}
+
+internal fun fixedVolumeSnapshotFailureDisposition(
+    isFinal: Boolean,
+    isStampCurrent: Boolean,
+): FixedVolumeSnapshotFailureDisposition = when {
+    !isFinal -> FixedVolumeSnapshotFailureDisposition.WAIT_FOR_FINAL
+    isStampCurrent -> FixedVolumeSnapshotFailureDisposition.REJECT
+    else -> FixedVolumeSnapshotFailureDisposition.RETRY_AFTER_TRANSITION
+}
+
 private fun RouteVolumeRange.hasSameIndexBounds(other: RouteVolumeRange): Boolean =
     minIndex == other.minIndex && maxIndex == other.maxIndex
 
@@ -202,6 +220,7 @@ class MappingCoordinator(
     private val desiredArmed = AtomicBoolean(false)
     private val desiredForegroundRunning = AtomicBoolean(false)
     private val desiredAccessibilityConnected = AtomicBoolean(false)
+    private val startedActivityCount = AtomicInteger(0)
     private val controlEpoch = AtomicLong(0L)
     private val routeEpoch = AtomicLong(0L)
     private val gestureOwner = AtomicReference<KeyToken?>(null)
@@ -209,10 +228,17 @@ class MappingCoordinator(
     private val tickerJob = AtomicReference<Job?>(null)
     private val ownerDrainWatchdogJob = AtomicReference<Job?>(null)
     private val verificationJob = AtomicReference<Job?>(null)
+    private val fixedVolumeVerificationJob = AtomicReference<Job?>(null)
+    private val fixedVolumeRequestSequence = AtomicLong(0L)
     private val observedSettings = AtomicReference(settingsRepository.settings.value)
 
     private val _runtime = MutableStateFlow(ControllerRuntimeState())
     val runtime: StateFlow<ControllerRuntimeState> = _runtime
+    private val _fixedVolumeRequestState = MutableStateFlow<FixedVolumeRequestState>(
+        FixedVolumeRequestState.Idle,
+    )
+    val fixedVolumeRequestState: StateFlow<FixedVolumeRequestState> =
+        _fixedVolumeRequestState
 
     /** Actor-side state. */
     private var actorControlEpoch = 0L
@@ -224,6 +250,7 @@ class MappingCoordinator(
     private var lastEnvironmentGuardAtMillis = Long.MIN_VALUE
     private val writeQueue = CoordinatorWriteQueue<PendingWrite>()
     private var verificationCycle: VerificationCycle? = null
+    private var fixedVolumeVerification: FixedVolumeVerification? = null
     private var nextVerificationId = 0L
 
     init {
@@ -288,6 +315,66 @@ class MappingCoordinator(
     fun refreshSnapshot() {
         val stamp = beginControlTransition()
         enqueueGuaranteed(Command.RefreshSnapshot(stamp))
+    }
+
+    fun onUiStarted() {
+        startedActivityCount.incrementAndGet()
+    }
+
+    fun onUiStopped() {
+        startedActivityCount.updateAndGet { count -> (count - 1).coerceAtLeast(0) }
+    }
+
+    /**
+     * Applies an explicit, visible-UI media-volume request without requiring Accessibility or the
+     * background controller. The actor still serializes it against physical-key writes and verifies
+     * the actual system result because Android and Bluetooth routes may silently quantize or reject.
+     */
+    @MainThread
+    fun requestFixedVolume(index: Int) {
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "Fixed volume requests must originate from the main thread"
+        }
+        require(index >= 0) { "Volume index must not be negative" }
+        val requestId = fixedVolumeRequestSequence.incrementAndGet()
+        if (!isUiVisible()) {
+            _fixedVolumeRequestState.value = FixedVolumeRequestState.Rejected(
+                requestId = requestId,
+                requestedIndex = index,
+                message = localizedText(R.string.fixed_volume_requires_visible_app),
+            )
+            return
+        }
+        val sourceSnapshot = _runtime.value.snapshot
+        if (sourceSnapshot == null) {
+            _fixedVolumeRequestState.value = FixedVolumeRequestState.Rejected(
+                requestId = requestId,
+                requestedIndex = index,
+                message = localizedText(R.string.audio_error_no_output),
+            )
+            return
+        }
+        val stamp = beginControlTransition()
+        _fixedVolumeRequestState.value = FixedVolumeRequestState.Applying(
+            requestId = requestId,
+            requestedIndex = index,
+        )
+        enqueueGuaranteed(
+            Command.SetFixedVolume(
+                requestId = requestId,
+                requestedIndex = index,
+                sourceRouteId = sourceSnapshot.route.stableId,
+                sourceRangeIdentity = sourceSnapshot.range.identity,
+                stamp = stamp,
+            ),
+        )
+    }
+
+    fun acknowledgeFixedVolumeRequest(requestId: Long) {
+        val state = _fixedVolumeRequestState.value
+        if (state is FixedVolumeRequestState.Rejected && state.requestId == requestId) {
+            _fixedVolumeRequestState.compareAndSet(state, FixedVolumeRequestState.Idle)
+        }
     }
 
     /**
@@ -430,6 +517,9 @@ class MappingCoordinator(
             is Command.ExpiredKeyGestureDrained -> handleExpiredKeyGestureDrained(command)
             is Command.EnvironmentChanged -> handleEnvironmentChanged(command)
             is Command.RefreshSnapshot -> handleRefreshSnapshot(command)
+            is Command.ObserveSnapshot -> handleObserveSnapshot(command)
+            is Command.SetFixedVolume -> handleSetFixedVolume(command)
+            is Command.VerifyFixedVolume -> verifyFixedVolume(command)
             is Command.VerifyWrite -> verifyWrite(command)
         }
     }
@@ -538,6 +628,7 @@ class MappingCoordinator(
 
     private fun handleKeyDown(command: Command.KeyDown) {
         if (!isGestureStartCurrent(command)) return
+        supersedeFixedVolumeRequestForPhysicalKey()
 
         // API 28-30 has no public mode-change listener. Refresh on the actor (never in the
         // Accessibility callback), then recheck the epoch before touching route/volume state.
@@ -724,6 +815,251 @@ class MappingCoordinator(
         if (!adoptTransition(command.stamp)) return
         mappingState = null
         refreshSnapshotInternal(command.stamp, allowRouteChange = true)
+    }
+
+    /** Non-destructive recovery read used after an explicit fixed-volume request. */
+    private fun handleObserveSnapshot(command: Command.ObserveSnapshot) {
+        if (!isStampCurrent(command.stamp)) return
+        if (activeGesture != null || verificationCycle != null) return
+        backend.refreshMediaContextSafety()
+        if (!isStampCurrent(command.stamp)) return
+        val observed = backend.snapshot().getOrNull() ?: return
+        if (!isStampCurrent(command.stamp)) return
+        if (!acceptSnapshot(observed, command.stamp, allowRouteChange = true)) return
+        if (!isStampCurrent(command.stamp)) return
+        synchronizeMappingToObserved(observed)
+    }
+
+    private fun handleSetFixedVolume(command: Command.SetFixedVolume) {
+        if (!adoptTransition(command.stamp)) {
+            rejectStaleFixedVolumeRequest(command)
+            return
+        }
+        if (!isLatestFixedVolumeRequest(command.requestId)) return
+
+        cancelFixedVolumeVerification()
+        mappingState = null
+        if (!isUiVisible()) {
+            rejectFixedVolumeRequest(
+                command = command,
+                message = localizedText(R.string.fixed_volume_requires_visible_app),
+            )
+            return
+        }
+        val mediaContextSafe = backend.refreshMediaContextSafety()
+        if (!isStampCurrent(command.stamp)) {
+            rejectStaleFixedVolumeRequest(command)
+            return
+        }
+        if (!mediaContextSafe) {
+            rejectFixedVolumeRequest(
+                command = command,
+                message = localizedText(R.string.runtime_unsafe_media_context),
+            )
+            return
+        }
+
+        val beforeWrite = backend.snapshot().getOrElse { throwable ->
+            if (isStampCurrent(command.stamp)) {
+                rejectFixedVolumeRequest(
+                    command = command,
+                    message = localizedText(
+                        R.string.runtime_read_volume_failed,
+                        throwable.message ?: throwable.javaClass.simpleName,
+                    ),
+                )
+            } else {
+                rejectStaleFixedVolumeRequest(command)
+            }
+            return
+        }
+        if (!isStampCurrent(command.stamp)) {
+            rejectStaleFixedVolumeRequest(command)
+            return
+        }
+
+        if (
+            beforeWrite.route.stableId != command.sourceRouteId ||
+            beforeWrite.range.identity != command.sourceRangeIdentity
+        ) {
+            rejectFixedVolumeRequest(
+                command = command,
+                message = localizedText(R.string.runtime_route_changed),
+                observed = beforeWrite,
+            )
+            return
+        }
+
+        if (isEffectivelyFixedVolume(backend.isVolumeFixed, beforeWrite.range)) {
+            rejectFixedVolumeRequest(
+                command = command,
+                message = localizedText(R.string.audio_error_fixed_volume),
+                observed = beforeWrite,
+            )
+            return
+        }
+        if (!beforeWrite.range.contains(command.requestedIndex)) {
+            rejectFixedVolumeRequest(
+                command = command,
+                message = localizedText(
+                    R.string.fixed_volume_out_of_range,
+                    command.requestedIndex,
+                    beforeWrite.range.minIndex,
+                    beforeWrite.range.maxIndex,
+                ),
+                observed = beforeWrite,
+            )
+            return
+        }
+
+        if (
+            !isStampCurrent(command.stamp) ||
+            !isLatestFixedVolumeRequest(command.requestId)
+        ) {
+            rejectStaleFixedVolumeRequest(command)
+            return
+        }
+        if (!isUiVisible()) {
+            rejectFixedVolumeRequest(
+                command = command,
+                message = localizedText(R.string.fixed_volume_requires_visible_app),
+            )
+            return
+        }
+        val writeResult = backend.setMediaVolume(
+            index = command.requestedIndex,
+            showSystemUi = settings.showSystemVolumeUi,
+        )
+        writeResult.onFailure { throwable ->
+            val message = localizedText(
+                R.string.runtime_write_rejected,
+                throwable.message ?: throwable.javaClass.simpleName,
+            )
+            if (isStampCurrent(command.stamp)) {
+                rejectFixedVolumeRequest(
+                    command = command,
+                    message = message,
+                    observed = beforeWrite,
+                )
+            } else {
+                rejectFixedVolumeRequestWithoutSnapshot(
+                    requestId = command.requestId,
+                    requestedIndex = command.requestedIndex,
+                    message = message,
+                )
+            }
+            return
+        }
+        if (!isLatestFixedVolumeRequest(command.requestId)) return
+
+        scheduleFixedVolumeVerification(
+            FixedVolumeVerification(
+                requestId = command.requestId,
+                requestedIndex = command.requestedIndex,
+                routeId = beforeWrite.route.stableId,
+                rangeIdentity = beforeWrite.range.identity,
+            ),
+        )
+    }
+
+    private fun verifyFixedVolume(command: Command.VerifyFixedVolume) {
+        val verification = fixedVolumeVerification ?: return
+        if (
+            verification.requestId != command.requestId ||
+            !isLatestFixedVolumeRequest(verification.requestId) ||
+            !isFixedVolumeRequestApplying(verification.requestId)
+        ) {
+            return
+        }
+
+        val stamp = currentStamp()
+        if (!isStampCurrent(stamp)) {
+            retryFixedVolumeVerificationAfterTransition(command, verification)
+            return
+        }
+
+        val mediaContextSafe = backend.refreshMediaContextSafety()
+        if (!isStampCurrent(stamp)) {
+            retryFixedVolumeVerificationAfterTransition(command, verification)
+            return
+        }
+        if (!mediaContextSafe) {
+            rejectFixedVolumeVerification(
+                verification = verification,
+                stamp = stamp,
+                message = localizedText(R.string.runtime_unsafe_media_context),
+            )
+            return
+        }
+
+        val observed = backend.snapshot().getOrElse { throwable ->
+            when (
+                fixedVolumeSnapshotFailureDisposition(
+                    isFinal = command.final,
+                    isStampCurrent = isStampCurrent(stamp),
+                )
+            ) {
+                FixedVolumeSnapshotFailureDisposition.WAIT_FOR_FINAL -> Unit
+                FixedVolumeSnapshotFailureDisposition.REJECT -> {
+                    rejectFixedVolumeVerification(
+                        verification = verification,
+                        stamp = stamp,
+                        message = localizedText(
+                            R.string.runtime_read_volume_failed,
+                            throwable.message ?: throwable.javaClass.simpleName,
+                        ),
+                    )
+                }
+
+                FixedVolumeSnapshotFailureDisposition.RETRY_AFTER_TRANSITION -> {
+                    retryFixedVolumeVerificationAfterTransition(command, verification)
+                }
+            }
+            return
+        }
+        if (!isStampCurrent(stamp)) {
+            retryFixedVolumeVerificationAfterTransition(command, verification)
+            return
+        }
+
+        if (
+            observed.route.stableId != verification.routeId ||
+            observed.range.identity != verification.rangeIdentity
+        ) {
+            rejectFixedVolumeVerification(
+                verification = verification,
+                stamp = stamp,
+                message = localizedText(R.string.runtime_route_changed),
+                observed = observed,
+            )
+            return
+        }
+        if (isEffectivelyFixedVolume(backend.isVolumeFixed, observed.range)) {
+            rejectFixedVolumeVerification(
+                verification = verification,
+                stamp = stamp,
+                message = localizedText(R.string.audio_error_fixed_volume),
+                observed = observed,
+            )
+            return
+        }
+
+        if (observed.currentIndex == verification.requestedIndex) {
+            completeFixedVolumeRequest(command, verification, observed, stamp)
+            return
+        }
+        if (!command.final) return
+
+        rejectFixedVolumeVerification(
+            verification = verification,
+            stamp = stamp,
+            message = localizedText(
+                R.string.runtime_readback_mismatch,
+                verification.requestedIndex,
+                observed.currentIndex,
+            ),
+            observed = observed,
+        )
     }
 
     /**
@@ -949,6 +1285,221 @@ class MappingCoordinator(
             )
         }
     }
+
+    private fun scheduleFixedVolumeVerification(verification: FixedVolumeVerification) {
+        cancelFixedVolumeVerification()
+        fixedVolumeVerification = verification
+        val job = scope.launch {
+            delay(FIRST_VERIFY_DELAY_MILLIS)
+            commands.send(
+                Command.VerifyFixedVolume(
+                    requestId = verification.requestId,
+                    final = false,
+                ),
+            )
+            delay(FINAL_VERIFY_DELAY_MILLIS - FIRST_VERIFY_DELAY_MILLIS)
+            commands.send(
+                Command.VerifyFixedVolume(
+                    requestId = verification.requestId,
+                    final = true,
+                ),
+            )
+        }
+        fixedVolumeVerificationJob.getAndSet(job)?.cancel()
+        if (
+            !isLatestFixedVolumeRequest(verification.requestId) ||
+            !isFixedVolumeRequestApplying(verification.requestId)
+        ) {
+            if (fixedVolumeVerificationJob.compareAndSet(job, null)) job.cancel()
+        }
+    }
+
+    private fun retryFixedVolumeVerificationAfterTransition(
+        command: Command.VerifyFixedVolume,
+        verification: FixedVolumeVerification,
+    ) {
+        if (!command.final) return
+        if (command.transitionRetries >= MAX_FIXED_VERIFICATION_TRANSITION_RETRIES) {
+            rejectFixedVolumeRequestWithoutSnapshot(
+                requestId = verification.requestId,
+                requestedIndex = verification.requestedIndex,
+                message = localizedText(R.string.fixed_volume_request_cancelled),
+            )
+            enqueueFixedVolumeRecoverySnapshot()
+            return
+        }
+        scope.launch {
+            delay(FIRST_VERIFY_DELAY_MILLIS)
+            commands.send(
+                command.copy(transitionRetries = command.transitionRetries + 1),
+            )
+        }
+    }
+
+    private fun completeFixedVolumeRequest(
+        command: Command.VerifyFixedVolume,
+        verification: FixedVolumeVerification,
+        observed: RouteVolumeSnapshot,
+        stamp: EpochStamp,
+    ) {
+        if (!isLatestFixedVolumeRequest(verification.requestId)) return
+        if (!isStampCurrent(stamp)) {
+            retryFixedVolumeVerificationAfterTransition(command, verification)
+            return
+        }
+        val applying = applyingFixedVolumeRequest(verification.requestId) ?: return
+        if (!acceptSnapshot(observed, stamp, allowRouteChange = true)) {
+            retryFixedVolumeVerificationAfterTransition(command, verification)
+            return
+        }
+        if (!isStampCurrent(stamp)) {
+            retryFixedVolumeVerificationAfterTransition(command, verification)
+            return
+        }
+        synchronizeMappingToObserved(observed)
+        if (!isStampCurrent(stamp)) {
+            retryFixedVolumeVerificationAfterTransition(command, verification)
+            return
+        }
+        if (!isLatestFixedVolumeRequest(verification.requestId)) return
+        val completed = _fixedVolumeRequestState.compareAndSet(
+            applying,
+            FixedVolumeRequestState.Applied(
+                requestId = verification.requestId,
+                requestedIndex = verification.requestedIndex,
+                observedIndex = observed.currentIndex,
+            ),
+        )
+        if (completed) cancelFixedVolumeVerification()
+    }
+
+    private fun rejectFixedVolumeRequest(
+        command: Command.SetFixedVolume,
+        message: LocalizedText,
+        observed: RouteVolumeSnapshot? = null,
+    ) {
+        rejectFixedVolumeRequest(
+            requestId = command.requestId,
+            requestedIndex = command.requestedIndex,
+            stamp = command.stamp,
+            message = message,
+            observed = observed,
+        )
+    }
+
+    private fun rejectFixedVolumeVerification(
+        verification: FixedVolumeVerification,
+        stamp: EpochStamp,
+        message: LocalizedText,
+        observed: RouteVolumeSnapshot? = null,
+    ) {
+        rejectFixedVolumeRequest(
+            requestId = verification.requestId,
+            requestedIndex = verification.requestedIndex,
+            stamp = stamp,
+            message = message,
+            observed = observed,
+        )
+        if (observed == null) enqueueFixedVolumeRecoverySnapshot()
+    }
+
+    private fun rejectFixedVolumeRequest(
+        requestId: Long,
+        requestedIndex: Int,
+        stamp: EpochStamp,
+        message: LocalizedText,
+        observed: RouteVolumeSnapshot?,
+    ) {
+        if (!isLatestFixedVolumeRequest(requestId)) return
+        if (!isStampCurrent(stamp)) {
+            rejectFixedVolumeRequestWithoutSnapshot(requestId, requestedIndex, message)
+            enqueueFixedVolumeRecoverySnapshot()
+            return
+        }
+        val applying = applyingFixedVolumeRequest(requestId) ?: return
+        if (observed != null) {
+            if (!acceptSnapshot(observed, stamp, allowRouteChange = true)) {
+                rejectFixedVolumeRequestWithoutSnapshot(requestId, requestedIndex, message)
+                enqueueFixedVolumeRecoverySnapshot()
+                return
+            }
+            if (!isStampCurrent(stamp)) {
+                rejectFixedVolumeRequestWithoutSnapshot(requestId, requestedIndex, message)
+                enqueueFixedVolumeRecoverySnapshot()
+                return
+            }
+            synchronizeMappingToObserved(observed)
+        } else {
+            // beginControlTransition() made callback eligibility false. Publish even when no fresh
+            // snapshot is available so a prior coherent mapping state can become eligible again.
+            publish { copy(isMediaContextSafe = backend.isMediaContextSafe) }
+        }
+        if (!isLatestFixedVolumeRequest(requestId)) return
+        if (!isStampCurrent(stamp)) {
+            rejectFixedVolumeRequestWithoutSnapshot(requestId, requestedIndex, message)
+            enqueueFixedVolumeRecoverySnapshot()
+            return
+        }
+        val rejected = _fixedVolumeRequestState.compareAndSet(
+            applying,
+            FixedVolumeRequestState.Rejected(
+                requestId = requestId,
+                requestedIndex = requestedIndex,
+                message = message,
+                observedIndex = observed?.currentIndex,
+            ),
+        )
+        if (rejected) cancelFixedVolumeVerification()
+    }
+
+    private fun rejectStaleFixedVolumeRequest(command: Command.SetFixedVolume) {
+        rejectFixedVolumeRequestWithoutSnapshot(
+            requestId = command.requestId,
+            requestedIndex = command.requestedIndex,
+            message = localizedText(R.string.fixed_volume_request_cancelled),
+        )
+    }
+
+    private fun enqueueFixedVolumeRecoverySnapshot() {
+        enqueueGuaranteed(Command.ObserveSnapshot(currentStamp()))
+    }
+
+    private fun rejectFixedVolumeRequestWithoutSnapshot(
+        requestId: Long,
+        requestedIndex: Int,
+        message: LocalizedText,
+    ) {
+        if (!isLatestFixedVolumeRequest(requestId)) return
+        val applying = applyingFixedVolumeRequest(requestId) ?: return
+        val rejected = _fixedVolumeRequestState.compareAndSet(
+            applying,
+            FixedVolumeRequestState.Rejected(
+                requestId = requestId,
+                requestedIndex = requestedIndex,
+                message = message,
+            ),
+        )
+        if (rejected) cancelFixedVolumeVerification()
+    }
+
+    private fun applyingFixedVolumeRequest(requestId: Long): FixedVolumeRequestState.Applying? =
+        (_fixedVolumeRequestState.value as? FixedVolumeRequestState.Applying)
+            ?.takeIf { state -> state.requestId == requestId }
+
+    private fun isFixedVolumeRequestApplying(requestId: Long): Boolean =
+        applyingFixedVolumeRequest(requestId) != null
+
+    private fun supersedeFixedVolumeRequestForPhysicalKey() {
+        val applying = _fixedVolumeRequestState.value as? FixedVolumeRequestState.Applying ?: return
+        if (_fixedVolumeRequestState.compareAndSet(applying, FixedVolumeRequestState.Idle)) {
+            cancelFixedVolumeVerification()
+        }
+    }
+
+    private fun isLatestFixedVolumeRequest(requestId: Long): Boolean =
+        fixedVolumeRequestSequence.get() == requestId
+
+    private fun isUiVisible(): Boolean = startedActivityCount.get() > 0
 
     /** One fixed verification cycle tracks the latest target instead of restarting per write. */
     private fun scheduleVerification(
@@ -1235,6 +1786,11 @@ class MappingCoordinator(
         verificationJob.getAndSet(null)?.cancel()
     }
 
+    private fun cancelFixedVolumeVerification() {
+        fixedVolumeVerification = null
+        fixedVolumeVerificationJob.getAndSet(null)?.cancel()
+    }
+
     private fun deferFinalVerification(cycle: VerificationCycle, delayMillis: Long) {
         if (verificationCycle?.id != cycle.id || !isWriteContextCurrent(cycle.context)) return
         val job = scope.launch {
@@ -1377,6 +1933,13 @@ class MappingCoordinator(
         var latestWriteAtMillis: Long,
     )
 
+    private data class FixedVolumeVerification(
+        val requestId: Long,
+        val requestedIndex: Int,
+        val routeId: String,
+        val rangeIdentity: VolumeRangeIdentity,
+    )
+
     private sealed interface Command {
         data class Arm(val stamp: EpochStamp) : Command
         data class Disarm(val reason: LocalizedText, val stamp: EpochStamp) : Command
@@ -1419,6 +1982,21 @@ class MappingCoordinator(
 
         data class EnvironmentChanged(val stamp: EpochStamp) : Command
         data class RefreshSnapshot(val stamp: EpochStamp) : Command
+        data class ObserveSnapshot(val stamp: EpochStamp) : Command
+        data class SetFixedVolume(
+            val requestId: Long,
+            val requestedIndex: Int,
+            val sourceRouteId: String,
+            val sourceRangeIdentity: VolumeRangeIdentity,
+            val stamp: EpochStamp,
+        ) : Command
+
+        data class VerifyFixedVolume(
+            val requestId: Long,
+            val final: Boolean,
+            val transitionRetries: Int = 0,
+        ) : Command
+
         data class VerifyWrite(val cycleId: Long, val final: Boolean) : Command
     }
 
@@ -1428,8 +2006,31 @@ class MappingCoordinator(
         const val ENVIRONMENT_GUARD_INTERVAL_MILLIS = 500L
         const val FIRST_VERIFY_DELAY_MILLIS = 80L
         const val FINAL_VERIFY_DELAY_MILLIS = 380L
+        const val MAX_FIXED_VERIFICATION_TRANSITION_RETRIES = 3
         const val FAILURE_LIMIT = 3
 
         fun maxLong(left: Long, right: Long): Long = maxOf(left, right)
     }
+}
+
+sealed interface FixedVolumeRequestState {
+    data object Idle : FixedVolumeRequestState
+
+    data class Applying(
+        val requestId: Long,
+        val requestedIndex: Int,
+    ) : FixedVolumeRequestState
+
+    data class Applied(
+        val requestId: Long,
+        val requestedIndex: Int,
+        val observedIndex: Int,
+    ) : FixedVolumeRequestState
+
+    data class Rejected(
+        val requestId: Long,
+        val requestedIndex: Int,
+        val message: LocalizedText,
+        val observedIndex: Int? = null,
+    ) : FixedVolumeRequestState
 }

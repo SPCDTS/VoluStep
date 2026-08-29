@@ -11,6 +11,8 @@
     <string name="action_ok">知道了</string>
     <string name="action_agree">同意</string>
     <string name="action_cancel">取消</string>
+    <string name="action_add">添加</string>
+    <string name="action_done">完成</string>
     <string name="error_open_settings_title">无法打开系统设置</string>
     <string name="error_open_settings_message">请手动进入系统设置并找到 %1$s。</string>
     <string name="error_controller_start_title">控制器启动失败</string>
@@ -35,7 +37,7 @@
     <string name="privacy_full_policy">完整政策</string>
     <string name="about">关于</string>
     <string name="privacy_on_device_title">仅在本机处理</string>
-    <string name="privacy_on_device_body">Android 可能通过无障碍服务向 %1$s 投递实体按键事件。%1$s 检查键码后会立即忽略非音量键；对于音量加减键，只在内存中临时处理键码、按下/释放状态、重复次数、事件时间、按下时间和输入设备 ID。应用通过 Android 音频 API 读取当前媒体输出、音量范围与音量，再按自定义曲线修改媒体音量。曲线、长按间隔和披露确认仅保存在应用私有存储中。</string>
+    <string name="privacy_on_device_body">Android 可能通过无障碍服务向 %1$s 投递实体按键事件。%1$s 检查键码后会立即忽略非音量键；对于音量加减键，只在内存中临时处理键码、按下/释放状态、重复次数、事件时间、按下时间和输入设备 ID。应用通过 Android 音频 API 读取当前媒体输出、音量范围与音量，再按自定义曲线或用户主动点击的固定音量按钮修改媒体音量。曲线、固定音量按钮、长按间隔和披露确认仅保存在应用私有存储中。</string>
     <string name="privacy_not_collected_title">不收集、不共享</string>
     <string name="privacy_not_collected_body">%1$s 不读取屏幕内容、触摸、密码、账号或个人文件；应用没有联网权限，也不包含广告或分析 SDK。按键和音量数据不会上传或共享。</string>
     <string name="privacy_retention_title">控制与删除</string>
@@ -52,6 +54,20 @@
     <plurals name="milliseconds_long">
         <item quantity="other">%1$d 毫秒</item>
     </plurals>
+
+    <string name="fixed_volume">固定音量</string>
+    <string name="fixed_volume_add">添加固定音量</string>
+    <string name="fixed_volume_set_to">将媒体音量设为 %1$d</string>
+    <string name="fixed_volume_remove">删除固定音量 %1$d</string>
+    <string name="fixed_volume_current">当前音量</string>
+    <string name="fixed_volume_index">媒体音量 index</string>
+    <string name="fixed_volume_value_of_max">%1$d / %2$d</string>
+    <string name="fixed_volume_decrease">降低固定音量</string>
+    <string name="fixed_volume_increase">提高固定音量</string>
+    <string name="fixed_volume_already_added">音量 %1$d 已添加</string>
+    <string name="fixed_volume_out_of_range">当前输出设备不支持音量 %1$d（范围 %2$d–%3$d）</string>
+    <string name="fixed_volume_requires_visible_app">请在 VoluStep 前台时设置固定音量</string>
+    <string name="fixed_volume_request_cancelled">音频环境已变化，请重试</string>
 
     <string name="device">设备</string>
     <string name="device_information">设备信息</string>

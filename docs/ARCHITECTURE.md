@@ -42,12 +42,13 @@ data/
 
 ui/
   CurveEditor              点/线段互斥选择、上下文增删、双轴硬吸附和当前音量水平标记
-  VolumeMapperApp          单页控制、长按间隔、披露和折叠设备状态
+  FixedVolumeSection       固定 media index 按钮与连续编辑底部层
+  VolumeMapperApp          单页控制、固定音量、长按间隔、披露和折叠设备状态
 ```
 
 所有组件都在单进程中，避免 AccessibilityService、前台服务和 UI 各自持有不同状态。
 
-设置仓库把“当前设置 + 初始加载完成”作为一个原子 UI 快照发布；加载完成前主开关、曲线和长按配置均不可写。内存状态变更与完整快照入队在同一临界区线性化，普通拖动快照按入队时间做 trailing-edge 防抖，立即写作为 FIFO barrier，带回执请求只在 DataStore 实际落盘后完成。单次非取消写失败只拒绝当前请求，writer 继续处理后续完整快照。
+设置仓库把“当前设置 + 初始加载完成”作为一个原子 UI 快照发布；加载完成前主开关、曲线、固定音量和长按配置均不可写。固定值使用实际 media index，按整数排序去重；添加和删除在 `stateLock` 内基于最新快照原子变换，避免快速连续操作覆盖。内存状态变更与完整快照入队在同一临界区线性化，普通拖动快照按入队时间做 trailing-edge 防抖，立即写作为 FIFO barrier，带回执请求只在 DataStore 实际落盘后完成。单次非取消写失败只拒绝当前请求，writer 继续处理后续完整快照。
 
 ## 按键一致性
 
@@ -82,6 +83,16 @@ Android 17 对后台音频焦点、播放和系统音量修改进行了强化。
 3. 服务立即向系统提交启动 FGS 所需的 `Notification` 对象；应用不声明通知权限，因此 Android 13+ 的普通通知抽屉不显示它，系统“运行中的应用”入口仍可见；
 4. AccessibilityService 只有在 FGS 健康时才消费新手势；
 5. `android:stopWithTask="false"` 明确规定划掉最近任务卡片不停止控制器；服务使用 `START_NOT_STICKY`，不在开机或无障碍回调中后台自启。
+
+固定音量按钮属于可见 Activity 内的显式操作，不依赖无障碍或映射 FGS。`MainActivity.onStart/onStop` 单独维护 UI 可见状态；coordinator 在排队前和紧贴 `setStreamVolume()` 前都复核该状态。按钮请求仍进入同一个 actor，与实体键写入串行执行，但使用独立请求代次和结果状态。
+
+## 固定音量快捷值
+
+- DataStore 保存的是 Android 实际媒体音量 index，不保存百分比，也不会在路由变化时缩放或截断；当前路由不支持的已保存值继续显示但不可执行，仍可从编辑层删除；
+- 点击时同时捕获 UI 所见 route ID 与 min/max 身份。actor 刷新媒体上下文和快照后必须与捕获值一致，并在 Binder 前再次复核 epoch、latest request 和 Activity 可见性；
+- 写入成功后约 80 ms 首读、约 380 ms 终读。该验证与曲线设置、FGS 和无障碍状态的通用 control transition 解耦，避免系统已经写入但绿色当前音量线仍停在旧值；路由或范围不一致则拒绝，不会把旧路由按钮应用到新路由；
+- 快速连续点击采用 latest-wins。终态只允许相同 request ID 的 `Applying` 原子转换为 `Applied` 或 `Rejected`，旧回读不能覆盖新请求；
+- 固定按钮失败使用独立状态和 Snackbar，不增加实体键映射的连续失败次数，也不会触发 fail-open。成功回读会重锚 reducer，使下一次实体按键从真实系统音量继续。
 
 应用并不播放媒体，因此不能把 FGS 冒充 `mediaPlayback`。`specialUse` 是否获准上架仍由 Play 审核决定。
 

@@ -63,11 +63,15 @@ class MainActivityTest {
 
     @After
     fun restoreSettings() {
-        try {
-            runBlocking { settingsRepository.replaceSettingsAndAwait(originalSettings) }
-        } finally {
-            restoreApplicationLocales()
-        }
+        runCleanupSteps(
+            ::dismissOpenDialogsForCleanup,
+            {
+                if (::settingsRepository.isInitialized && ::originalSettings.isInitialized) {
+                    runBlocking { settingsRepository.replaceSettingsAndAwait(originalSettings) }
+                }
+            },
+            ::restoreApplicationLocales,
+        )
     }
 
     @Test
@@ -136,6 +140,9 @@ class MainActivityTest {
             appString(R.string.curve_button_presses),
             contentDescription(CurveEditorTestTags.PRESS_COUNT_INPUT),
         )
+        composeRule.onNodeWithTag(VolumeMapperTestTags.PRESET_SECTION)
+            .performScrollTo()
+            .assertIsDisplayed()
         composeRule.onNodeWithTag(VolumeMapperTestTags.LONG_PRESS_INTERVAL_VALUE)
             .performScrollTo()
             .assertIsDisplayed()
@@ -201,6 +208,14 @@ class MainActivityTest {
         composeRule.onNodeWithText(
             appString(R.string.about_version, BuildConfig.VERSION_NAME),
         ).assertIsDisplayed()
+
+        // Locale restoration recreates the Activity. Detach the Dialog window first so teardown
+        // never asks Compose/Espresso to settle a recreation while the old About dialog is alive.
+        composeRule.onNodeWithText(appString(R.string.action_ok))
+            .assertIsDisplayed()
+            .performClick()
+        composeRule.onAllNodesWithTag(VolumeMapperTestTags.ABOUT_DIALOG)
+            .assertCountEquals(0)
     }
 
     @Test
@@ -784,17 +799,44 @@ class MainActivityTest {
     private fun restoreApplicationLocales() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         val locales = originalApplicationLocales ?: return
+        val localeManager = composeRule.activity.applicationContext
+            .getSystemService(LocaleManager::class.java)
         composeRule.runOnUiThread {
-            composeRule.activity
-                .getSystemService(LocaleManager::class.java)
-                .applicationLocales = locales
+            localeManager.applicationLocales = locales
         }
         composeRule.waitUntil(10_000L) {
-            composeRule.activity
-                .getSystemService(LocaleManager::class.java)
-                .applicationLocales == locales
+            localeManager.applicationLocales == locales
         }
         composeRule.waitForIdle()
+    }
+
+    private fun dismissOpenDialogsForCleanup() {
+        listOf(
+            VolumeMapperTestTags.PRIVACY_DIALOG,
+            VolumeMapperTestTags.ABOUT_DIALOG,
+        ).forEach { dialogTag ->
+            if (composeRule.onAllNodesWithTag(dialogTag).fetchSemanticsNodes().isEmpty()) {
+                return@forEach
+            }
+            composeRule.onNodeWithText(appString(R.string.action_ok)).performClick()
+            composeRule.waitUntil(5_000L) {
+                composeRule.onAllNodesWithTag(dialogTag).fetchSemanticsNodes().isEmpty()
+            }
+        }
+    }
+
+    private fun runCleanupSteps(vararg steps: () -> Unit) {
+        var firstFailure: Throwable? = null
+        steps.forEach { step ->
+            runCatching(step).onFailure { failure ->
+                if (firstFailure == null) {
+                    firstFailure = failure
+                } else {
+                    firstFailure.addSuppressed(failure)
+                }
+            }
+        }
+        firstFailure?.let { throw it }
     }
 
     private fun performCurveAction(@StringRes labelResourceId: Int) {

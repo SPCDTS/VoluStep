@@ -5,6 +5,7 @@ Key features
 • Drag and snap control points to design a discrete mapping on integer coordinates
 • Use short-press steps and an adjustable repeat interval for a held button
 • See the current system media volume on the curve
+• Add fixed-volume buttons that work without turning on physical-button mapping
 • Keep every setting on-device, with no account, ads, or network access
 
 Why VoluStep uses an Accessibility service

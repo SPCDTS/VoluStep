@@ -16,12 +16,12 @@
 
 当前覆盖：
 
-- `StepVolumeMap` 的非法整数控制几何、均匀按键网格插值与严格整数最优投影、修改按键次数后的 x 重投影、拖动越界时对相邻点的整数推挤、非零/缩容/固定路由绑定与重基准，以及选段中点插入；指定点删除闭环由设备侧 UI 测试覆盖；
+- `StepVolumeMap` 的非法整数控制几何、均匀按键网格插值与严格整数最优投影、拖动越界时对相邻点的整数推挤、非零/缩容/固定路由绑定与重基准，以及选段中点插入；修改按键次数和指定点删除闭环由设备侧 UI 测试覆盖；
 - `VolumeMappingReducer` 的外部 index 严格相邻步进、299/300 ms 长按起效边界、长按积分对 ticker 节奏不敏感、匹配与错误方向 UP、`SynchronizeObserved` 读回重锚、`CancelPress`，以及固定音量路由不发起平台写入；
-- 设置 `v4` 整数坐标 round-trip、旧 `hold_delay` 忽略与清理、`v1` / `v2` / `v3` 与 legacy fallback、全部 `1..150` 按键次数的 downgrade shadow、坏字段独立降级、非即时写尾沿合并、immediate 回执和一次 `IOException` 后继续处理；
-- 空闲映射位置只在快照一致时保留、固定范围判定与快照接受后的 ready 状态、普通命令优先且 tick 只保留最新值的 mailbox、已释放或已被新手势替换的 tick owner 处置，以及无障碍按键过期边界与 owned gesture 处置。
+- 设置 `v4` 整数坐标和固定音量列表 round-trip、固定值排序去重与坏字段独立降级、旧 `hold_delay` 忽略与清理、`v1` / `v2` / `v3` 与 legacy fallback、全部 `1..150` 按键次数的 downgrade shadow、非即时写尾沿合并和 immediate 回执；
+- 空闲映射位置只在快照一致时保留、固定范围判定与快照接受后的 ready 状态、普通命令优先且 tick 只保留最新值的 mailbox，以及无障碍按键过期边界与 owned gesture 处置。
 
-仓库恰好保留 20 个 JVM 测试和 10 个 Android instrumentation / E2E 测试，共 30 个唯一 `@Test` 入口。JVM 测试不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也不覆盖宿主 evdev 注入链路；未在上述清单列出的历史细节不能仅凭当前 JVM 套件宣称已自动验证。
+仓库恰好保留 18 个 JVM 测试和 12 个 Android instrumentation / E2E 测试，共 30 个唯一 `@Test` 入口。JVM 测试不会创建真实 AccessibilityService、FGS、AudioManager 路由回调，也不覆盖宿主 evdev 注入链路；未在上述清单列出的历史细节不能仅凭当前 JVM 套件宣称已自动验证。
 
 ### Lint 与构建
 
@@ -33,13 +33,14 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 
 ### Android instrumentation
 
-仓库包含三个设备侧测试类：
+仓库包含四个设备侧测试类：
 
 - `MainActivityTest`：共 8 项，分别验证正式单页、扩大后的图表、首次中点选择与当前音量语义，应用菜单中的隐私政策和版本信息，选段插入和选新增点删除闭环，普通点右插与末点左插，K 变化时的选择与容量，控制点 x/y 拖动吸附，点/线段动态无障碍操作，以及无障碍整数移动；测试结束会恢复进入测试前的完整设置；
+- `FixedVolumePresetTest`：共 2 项，分别验证底部层连续添加、删除且不自动关闭，以及在总开关与无障碍均关闭时从可见 Activity 点击有效固定值，等待真实 `AudioManager` 与 coordinator 回读一致，并同步按钮荧光状态和曲线当前音量语义；测试用 `finally` 恢复原媒体音量；
 - `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造初始 DOWN、同 token repeat、跨过 300 ms 起效阈值的持续按住和最终 UP，并验证真实 `STREAM_MUSIC` index 到达连续目标且最终清理。
 - `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 验证未勾选时不能同意、取消后不保存/不启动、再次触发后主动同意，并确认同意后直接进入系统无障碍设置；若同意状态已持久化，则验证已同意路径。随后确认应用未声明通知权限、真实绑定 AccessibilityService，并验证 `specialUse` FGS 仍能正常启动；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性整数控制点映射。
 
-第二项测试不会启动真实 AccessibilityService，也不会验证系统是否把物理按键分派给服务。第三项的 instrumentation 阶段不能独自证明按键分派，因为 UiAutomation 注入会绕过 Accessibility input filter；实体按键链路由下述宿主 E2E 使用内核 evdev 事件验证。模拟器结果仍不能替代 OEM、蓝牙耳机和真实系统授权页测试。编译测试 APK 与实际执行应区分：
+固定音量测试和 `VolumeKeyAudioIntegrationTest` 都不会启动真实 AccessibilityService，也不会验证系统是否把物理按键分派给服务。`RealSystemVolumeE2eTest` 的 instrumentation 阶段不能独自证明按键分派，因为 UiAutomation 注入会绕过 Accessibility input filter；实体按键链路由下述宿主 E2E 使用内核 evdev 事件验证。模拟器结果仍不能替代 OEM、蓝牙耳机和真实系统授权页测试。编译测试 APK 与实际执行应区分：
 
 ```powershell
 .\gradlew.bat :app:compileDebugAndroidTestKotlin

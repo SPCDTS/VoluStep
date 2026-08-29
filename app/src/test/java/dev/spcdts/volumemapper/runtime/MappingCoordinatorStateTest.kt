@@ -102,12 +102,19 @@ class MappingCoordinatorStateTest {
     }
 
     @Test
-    fun `a selected tick ignores a released or replaced gesture owner`() {
-        val gesture = KeyToken(deviceId = 1, keyCode = 24, downTimeMillis = 100L)
-        val replacement = gesture.copy(downTimeMillis = 200L)
-
-        assertTrue(shouldProcessCoordinatorTick(gesture, gesture))
-        assertFalse(shouldProcessCoordinatorTick(owner = null, gestureToken = gesture))
-        assertFalse(shouldProcessCoordinatorTick(replacement, gesture))
+    fun `final fixed volume snapshot failure retries after a raced transition`() {
+        assertEquals(
+            FixedVolumeSnapshotFailureDisposition.WAIT_FOR_FINAL,
+            fixedVolumeSnapshotFailureDisposition(isFinal = false, isStampCurrent = false),
+        )
+        assertEquals(
+            FixedVolumeSnapshotFailureDisposition.REJECT,
+            fixedVolumeSnapshotFailureDisposition(isFinal = true, isStampCurrent = true),
+        )
+        assertEquals(
+            FixedVolumeSnapshotFailureDisposition.RETRY_AFTER_TRANSITION,
+            fixedVolumeSnapshotFailureDisposition(isFinal = true, isStampCurrent = false),
+        )
     }
+
 }

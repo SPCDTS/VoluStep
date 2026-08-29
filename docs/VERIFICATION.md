@@ -1,5 +1,21 @@
 # 本机验证记录
 
+## 2026-08-29 固定音量快捷值
+
+本轮在主界面曲线下方增加“固定音量”卡片。用户可以在底部编辑层添加、删除并持久化实际媒体音量 `index`；快捷按钮按数值排序，当前值只使用绿色描边与光晕，不改变按钮底色。超出当前输出路由范围的既有值会保留但禁用，仍可进入编辑层删除。快速连续添加、删除使用仓库内的原子更新，不依赖 Compose 重组时机。
+
+固定值点击由可见 `Activity` 直接调用公开 `AudioManager` 音量接口，不要求无障碍授权、映射总开关或后台前台服务。写入前会重新确认可见性、媒体上下文、输出路由、音量范围和固定音量设备状态；写入与实体按键共用串行 actor，随后分两阶段回读。路由切换、请求替换、实体键抢占、系统静默拒绝或回读竞态都会得到确定的完成、重试或拒绝状态，不会让按钮长期停在处理中，也不会计入后台映射的 fail-open 失败次数。
+
+验证结果：
+
+- 当前源码恰好包含 30 个独立 `@Test` 入口：18 个 JVM 测试和 12 个 Android instrumentation / E2E 测试；没有把新增断言集中塞入单一测试方法；
+- API 37 AVD `VolumeMapper_API_37` 上 `:app:connectedDebugAndroidTest` 为 12/12 通过，0 skip、0 failure；其中两项固定值测试分别覆盖编辑层连续添加/删除，以及关闭映射总开关、未连接无障碍时通过真实 `AudioManager` 写入、精确回读、当前按钮与曲线同步，并在 `finally` 中恢复原媒体音量；
+- `MainActivityTest` 为 8/8 通过；语言恢复前会先卸载 Privacy/About 对话框，完整套件不再因旧 Dialog Window 与 Activity 重建并存而等待；
+- `:app:testDebugUnitTest :app:lintDebug :app:lintRelease :app:assembleDebug :app:assembleRelease :app:bundleRelease`：`BUILD SUCCESSFUL`；18/18 JVM 测试通过，Debug/Release lint 均为 0 error、6 个非阻断的版本或既有 API 建议；Debug APK、R8 Release APK 与 Release AAB 均成功生成；
+- 中文与英文分别执行 `scripts/emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild -AppLocale zh-CN|en-US`，两次均为 7/7 宿主断言通过：划掉任务卡片后实体按键短按完成 `5 → 11 → 5`，持续按住 360 ms 到 `13`，停止映射后由系统 `AudioService` 恢复接管；
+- 当前 Debug APK SHA-256 为 `7305F3AFF798B617FBA0166DE5558F8694D5AA8820496F64AEFAB6532963581D`；未签名 Release APK 为 `F3E1460A1D1EAB3F5CA8E42137B64BADD6E03090430172BA688172C0E894846A`，未签名 Release AAB 为 `1F7EA73B0DA84574D110FBAFDF3E45BEA5BAF6D21DB60AF173CFB4D926115F86`，后二者不能直接发布；
+- 收尾时 `adb devices -l` 与 mDNS 只发现 API 37 模拟器，先前的小米地址 `192.168.3.6:35819` 已拒绝连接。因此本节不把模拟器的直接音量写入结论冒充为 HyperOS / 蓝牙耳机真机结果；手机重新开启无线调试并提供当前连接端口后仍应补一次覆盖安装与可听档位回归。
+
 ## 2026-08-25 发布加固工作区门禁
 
 本节记录执行时尚未提交的发布加固工作区。当前源码恰好包含 30 个唯一 `@Test` 入口：20 个 JVM 测试和 10 个 Android instrumentation / E2E 测试；后者由 `MainActivityTest` 8 项、真实 `AudioManager` 集成 1 项和模拟器真实系统链路 1 项组成。宿主 PowerShell E2E 的 7 项断言独立于这 30 个入口，不重复计数。

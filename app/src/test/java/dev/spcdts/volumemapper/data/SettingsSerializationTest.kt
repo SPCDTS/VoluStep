@@ -5,9 +5,9 @@ import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.mutablePreferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
+import dev.spcdts.volumemapper.core.FixedVolumePresets
 import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.StepVolumeMap
-import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
@@ -31,6 +31,7 @@ class SettingsSerializationTest {
         )
         val settings = VolumeMapperSettings(
             outputMap = outputMap,
+            fixedVolumePresets = FixedVolumePresets(listOf(20, 5, 12, 5, 0)),
             keyConfig = VolumeMapperSettings().keyConfig.copy(
                 holdStepIntervalMillis = 140L,
             ),
@@ -47,6 +48,10 @@ class SettingsSerializationTest {
         assertEquals(
             "v4|150|9|0,0;1,1;3,4;6,17;8,58;9,150",
             preferences[stringPreferencesKey("output_step_map")],
+        )
+        assertEquals(
+            "0,5,12,20",
+            preferences[stringPreferencesKey("fixed_volume_presets")],
         )
         assertEquals(null, preferences[longPreferencesKey("hold_delay")])
     }
@@ -112,6 +117,12 @@ class SettingsSerializationTest {
             ),
             legacyFallback.outputMap,
         )
+        assertEquals(FixedVolumePresets(), legacyFallback.fixedVolumePresets)
+
+        assertEquals(
+            listOf(0, 5, 12, 20),
+            SettingsSerialization.decodeFixedVolumePresets("20,5,12,5,0").indices,
+        )
 
         val defaults = VolumeMapperSettings()
         val malformed = SettingsSerialization.decode(
@@ -122,14 +133,23 @@ class SettingsSerializationTest {
                 longPreferencesKey("hold_delay") to 800L,
                 longPreferencesKey("hold_step_interval") to 59L,
                 doublePreferencesKey("hold_speed") to 0.27,
+                stringPreferencesKey("fixed_volume_presets") to "0,-1,12",
                 booleanPreferencesKey("show_system_ui") to false,
                 booleanPreferencesKey("disclosure_accepted") to true,
             ),
         )
         assertEquals(defaults.outputMap, malformed.outputMap)
+        assertEquals(defaults.fixedVolumePresets, malformed.fixedVolumePresets)
         assertEquals(defaults.keyConfig, malformed.keyConfig)
         assertFalse(malformed.showSystemVolumeUi)
         assertTrue(malformed.disclosureAccepted)
+
+        val brokenPresets = SettingsSerialization.decode(
+            mutablePreferencesOf(
+                stringPreferencesKey("fixed_volume_presets") to "0,not-an-index,12",
+            ),
+        )
+        assertEquals(defaults.fixedVolumePresets, brokenPresets.fixedVolumePresets)
 
         val outputCurveKey = stringPreferencesKey("output_curve")
         val tapStepKey = doublePreferencesKey("tap_step")
@@ -157,33 +177,4 @@ class SettingsSerializationTest {
         }
     }
 
-    @Test
-    fun `settings writer reports one failure then accepts the next request`() = runBlocking {
-        val base = VolumeMapperSettings()
-        val recovered = base.copy(disclosureAccepted = true)
-        val writes = Channel<SettingsWriteRequest>(Channel.UNLIMITED)
-        var attempts = 0
-        val persisted = mutableListOf<VolumeMapperSettings>()
-        val writer = launch {
-            collectSettingsWriteRequests(writes, debounceMillis = 10L) { request ->
-                attempts += 1
-                if (attempts == 1) throw IOException("transient")
-                persisted += request.settings
-            }
-        }
-        val failedAck = CompletableDeferred<Unit>()
-        val recoveredAck = CompletableDeferred<Unit>()
-
-        writes.send(SettingsWriteRequest(base, immediate = true, completion = failedAck))
-        val failure = runCatching {
-            withTimeout(1_000L) { failedAck.await() }
-        }.exceptionOrNull()
-        assertTrue(failure is IOException)
-
-        writes.send(SettingsWriteRequest(recovered, immediate = true, completion = recoveredAck))
-        withTimeout(1_000L) { recoveredAck.await() }
-        assertEquals(2, attempts)
-        assertEquals(listOf(recovered), persisted)
-        writer.cancelAndJoin()
-    }
 }

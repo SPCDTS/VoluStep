@@ -43,10 +43,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,11 +78,14 @@ import dev.spcdts.volumemapper.core.AudioRouteType
 import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.ControllerRuntimeState
+import dev.spcdts.volumemapper.runtime.FixedVolumeRequestState
 import dev.spcdts.volumemapper.runtime.MappingControllerService
+import dev.spcdts.volumemapper.runtime.resolveLocalizedText
 
 @Composable
 fun VolumeMapperApp(graph: AppGraph) {
     val runtime by graph.mappingCoordinator.runtime.collectAsState()
+    val fixedVolumeRequestState by graph.mappingCoordinator.fixedVolumeRequestState.collectAsState()
     val settingsState by graph.settingsRepository.state.collectAsState()
     val settings = settingsState.settings
     val settingsLoaded = settingsState.initialSettingsLoaded
@@ -89,8 +95,21 @@ fun VolumeMapperApp(graph: AppGraph) {
     var showAppSettingsUnavailable by remember { mutableStateOf(false) }
     var controllerStartError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    Scaffold { innerPadding ->
+    LaunchedEffect(fixedVolumeRequestState) {
+        val rejected = fixedVolumeRequestState as? FixedVolumeRequestState.Rejected
+            ?: return@LaunchedEffect
+        try {
+            snackbarHostState.showSnackbar(context.resolveLocalizedText(rejected.message))
+        } finally {
+            graph.mappingCoordinator.acknowledgeFixedVolumeRequest(rejected.requestId)
+        }
+    }
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+    ) { innerPadding ->
         MainScreen(
             runtime = runtime,
             settings = settings,
@@ -201,6 +220,12 @@ private fun MainScreen(
     modifier: Modifier = Modifier,
 ) {
     val borderedSurfaceColor = MaterialTheme.colorScheme.outlineVariant
+    var showFixedVolumeEditor by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(runtime.snapshot == null) {
+        if (showFixedVolumeEditor && runtime.snapshot == null) {
+            showFixedVolumeEditor = false
+        }
+    }
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -259,6 +284,18 @@ private fun MainScreen(
         }
 
         item {
+            FixedVolumeCard(
+                presets = settings.fixedVolumePresets,
+                snapshot = runtime.snapshot,
+                isVolumeFixed = runtime.isVolumeFixed,
+                isMediaContextSafe = runtime.isMediaContextSafe,
+                settingsLoaded = settingsLoaded,
+                onApply = graph.mappingCoordinator::requestFixedVolume,
+                onOpenEditor = { showFixedVolumeEditor = true },
+            )
+        }
+
+        item {
             LongPressIntervalCard(
                 intervalMillis = settings.keyConfig.holdStepIntervalMillis,
                 enabled = settingsLoaded,
@@ -280,6 +317,28 @@ private fun MainScreen(
                 onOpenAppSettings = onOpenAppSettings,
             )
         }
+    }
+
+    val fixedVolumeSnapshot = runtime.snapshot
+    if (showFixedVolumeEditor && fixedVolumeSnapshot != null) {
+        FixedVolumeEditorSheet(
+            presets = settings.fixedVolumePresets,
+            snapshot = fixedVolumeSnapshot,
+            settingsLoaded = settingsLoaded,
+            onDismiss = { showFixedVolumeEditor = false },
+            onAddPreset = { index ->
+                if (settingsLoaded) {
+                    graph.settingsRepository.addFixedVolumePreset(index)
+                    graph.settingsRepository.flushPendingWrite()
+                }
+            },
+            onRemovePreset = { index ->
+                if (settingsLoaded) {
+                    graph.settingsRepository.removeFixedVolumePreset(index)
+                    graph.settingsRepository.flushPendingWrite()
+                }
+            },
+        )
     }
 }
 
@@ -788,6 +847,15 @@ object VolumeMapperTestTags {
     const val LONG_PRESS_INTERVAL_VALUE = "long_press_interval_value"
     const val LONG_PRESS_INTERVAL_DECREMENT = "long_press_interval_decrement"
     const val LONG_PRESS_INTERVAL_INCREMENT = "long_press_interval_increment"
+    const val PRESET_SECTION = "preset_section"
+    const val PRESET_LIST = "preset_list"
+    const val PRESET_ADD = "preset_add"
+    const val PRESET_SHEET = "preset_sheet"
+    const val PRESET_VALUE = "preset_value"
+    const val PRESET_DECREMENT = "preset_decrement"
+    const val PRESET_INCREMENT = "preset_increment"
+    const val PRESET_CONFIRM = "preset_confirm"
+    const val PRESET_DONE = "preset_done"
     const val DEVICE_TOGGLE = "device_toggle"
     const val DEVICE_DETAILS = "device_details"
     const val DEVICE_ACCESSIBILITY_ROW = "device_accessibility_row"
@@ -801,7 +869,10 @@ object VolumeMapperTestTags {
     const val SCREEN_CURVE = SCREEN_MAIN
     const val SCREEN_DIAGNOSTICS = "screen_diagnostics"
     const val CURVE_SCREEN_LIST = SCREEN_MAIN
-    const val PRESET_SECTION = "preset_section"
     const val KEY_BEHAVIOUR_CARD = "key_behaviour_card"
     const val KEY_BEHAVIOUR_TOGGLE = "key_behaviour_toggle"
+
+    fun presetButton(index: Int): String = "preset_button_$index"
+
+    fun presetDelete(index: Int): String = "preset_delete_$index"
 }

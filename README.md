@@ -1,20 +1,21 @@
 # VoluStep
 
-VoluStep 是一个面向 Android 28–37 的全局媒体音量键映射应用。它用无障碍服务接收手机实体音量键，把按键状态 `x(t)` 交给可编辑曲线，再通过公开 `AudioManager` API 写入当前媒体路由实际支持的整数音量档位。
+VoluStep 是一个面向 Android 28–37 的媒体音量控制应用。它既能用无障碍服务把手机实体音量键的状态 `x(t)` 映射到可编辑曲线，也能从主界面的自定义固定值按钮直接设置媒体音量；两条路径最终都只使用公开 `AudioManager` API 和当前路由实际支持的整数音量档位。
 
 项目当前实现：
 
 - `K` 次短按与 `P` 个自由控制点独立配置；`K+1` 个按键位置始终均匀采样，控制点可在横轴和整数 audio index 纵轴上分别吸附；选中线段可在该段插入，选中控制点则在其右侧线段插入（末点改用左侧），选中内部点后可精确删除；
-- 正式版只有一个简约主界面：直接拖动折线、输入 `K`、通过当前点/线段调整 `P`、查看当前音量水平标记，并设置固定长按步进间隔；
+- 正式版只有一个简约主界面：直接拖动折线、输入 `K`、通过当前点/线段调整 `P`、查看当前音量水平标记、管理固定音量按钮，并设置固定长按步进间隔；
 - 控制点横坐标与整数 index 一并持久化，修改 `K` 不改变折线，修改 `P` 也不会把已有控制点重新均匀排布；
 - 曲线按当前路由实际 min/max 投影；较小范围只临时减少有效按键次数，不覆盖完整 K/P 作者配置；
+- 固定音量按钮保存实际 media index，可连续添加、删除和横向滚动；点击按钮不依赖总开关、无障碍或映射前台服务，当前值仅以绿色荧光描边标示，换路由后的越界值保留但禁用；
 - AccessibilityService 全局过滤音量键，以 `(deviceId, keyCode, downTime)` 标识一次手势；repeat 只刷新心跳，固定 300 ms 阈值触发首个连续步进，active press 使用 20 ms、latest-only ticker；
 - Android 17 所需、由可见 Activity 显式启动的 `specialUse` 前台服务；
 - 音量写入后的单周期两阶段回读、control/route epoch 失效、路由切换重置和连续失败自动放行；
 - A2DP、LE Audio、USB、HDMI、有线与扬声器的运行时能力探测，并区分 `CONFIRMED` 与 `HEURISTIC` 路由；
 - 显著披露、应用内停止开关，以及收纳在“设备”折叠区中的跨 OEM 状态与公开应用详情入口；API 33+ 不声明通知权限，FGS 只在系统“运行中的应用”入口留有状态；
 - 英文默认资源与简体中文 `zh-CN` 资源；品牌名 VoluStep 在两种语言中保持一致，界面、无障碍语义、运行状态和系统通知随应用语言切换；
-- 20 条 JVM 单元测试、10 条 Android instrumentation / E2E 测试、API 36/37 模拟器完整 E2E、API 28 最低版本安装/启动烟测、真机诊断采集和 Release/AAB 流程。
+- 18 条 JVM 单元测试、12 条 Android instrumentation / E2E 测试、API 36/37 模拟器完整 E2E、API 28 最低版本安装/启动烟测、真机诊断采集和 Release/AAB 流程。
 
 ## 本机环境
 
@@ -75,7 +76,7 @@ VoluStep 是一个面向 Android 28–37 的全局媒体音量键映射应用。
 .\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild -AppLocale zh-CN
 ```
 
-完整 E2E 脚本只允许 `emulator-*`：它会清空测试应用数据、按 `-AppLocale` 选择英文或简体中文、临时修改 secure accessibility settings、把可调试模拟器的 adbd 切到 root，并从 evdev 注入真正经过 Accessibility input filter 的音量键事件；结束时会恢复原无障碍配置、媒体/铃声音量和 adbd 身份。仓库保持 20 条 JVM + 10 条 instrumentation / E2E，共 30 个唯一测试入口；语言矩阵复用同一测试与 E2E 旅程，不靠复制 `@Test` 增加条数。仓库中存在 AVD、脚本或测试源码，不代表任何 API 或真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)，本次实际执行结果见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
+完整 E2E 脚本只允许 `emulator-*`：它会清空测试应用数据、按 `-AppLocale` 选择英文或简体中文、临时修改 secure accessibility settings、把可调试模拟器的 adbd 切到 root，并从 evdev 注入真正经过 Accessibility input filter 的音量键事件；结束时会恢复原无障碍配置、媒体/铃声音量和 adbd 身份。仓库保持 18 条 JVM + 12 条 instrumentation / E2E，共 30 个唯一测试入口；固定音量编辑和真实 `AudioManager` 写入分别由独立测试覆盖，语言矩阵复用同一测试与 E2E 旅程，不靠复制 `@Test` 增加条数。仓库中存在 AVD、脚本或测试源码，不代表任何 API 或真机矩阵已经执行通过；执行范围与记录规则见 [docs/TESTING.md](docs/TESTING.md)，本次实际执行结果见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
 ## 小米真机使用
 
