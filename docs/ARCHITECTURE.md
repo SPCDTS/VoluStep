@@ -33,6 +33,7 @@ audio/
   AudioManagerVolumeBackend 公开 API 路由探测、范围缓存、读写和环境回调
 
 runtime/
+  AccessibilityRuntimeAnchor    透明不可交互的 1×1 无障碍窗口；有限重试并随服务解绑销毁
   VolumeKeyAccessibilityService  只把 KeyEvent 交给 coordinator，不读取窗口内容
   MappingControllerService       Android 17 specialUse FGS
   MappingCoordinator             token owner、双 epoch、单 actor、节流、回读、fail-open
@@ -82,7 +83,9 @@ Android 17 对后台音频焦点、播放和系统音量修改进行了强化。
 2. Activity 启动 `foregroundServiceType="specialUse"` 服务；
 3. 服务立即向系统提交启动 FGS 所需的 `Notification` 对象；应用不声明通知权限，因此 Android 13+ 的普通通知抽屉不显示它，系统“运行中的应用”入口仍可见；
 4. AccessibilityService 只有在 FGS 健康时才消费新手势；
-5. `android:stopWithTask="false"` 明确规定划掉最近任务卡片不停止控制器；服务使用 `START_NOT_STICKY`，不在开机或无障碍回调中后台自启。
+5. AccessibilityService 连接后创建 `TYPE_ACCESSIBILITY_OVERLAY`、1×1、透明、不可触摸且不可聚焦的运行锚点；添加瞬时失败时最多延迟重试三次，解绑或销毁时同步移除；它不需要 `SYSTEM_ALERT_WINDOW`；
+6. Launcher Activity 在 Manifest 中始终设置 `excludeFromRecents=true`，避免 HyperOS 把上划卡片升级成包级 Force Stop；用户从桌面图标重新打开控制页；
+7. `android:stopWithTask="false"` 继续作为服务生命周期防线；服务使用 `START_NOT_STICKY`，不在开机或无障碍回调中后台自启。
 
 固定音量按钮属于可见 Activity 内的显式操作，不依赖无障碍或映射 FGS。`MainActivity.onStart/onStop` 单独维护 UI 可见状态；coordinator 在排队前和紧贴 `setStreamVolume()` 前都复核该状态。按钮请求仍进入同一个 actor，与实体键写入串行执行，但使用独立请求代次和结果状态。
 
@@ -95,6 +98,8 @@ Android 17 对后台音频焦点、播放和系统音量修改进行了强化。
 - 固定按钮失败使用独立状态和 Snackbar，不增加实体键映射的连续失败次数，也不会触发 fail-open。成功回读会重锚 reducer，使下一次实体按键从真实系统音量继续。
 
 应用并不播放媒体，因此不能把 FGS 冒充 `mediaPlayback`。`specialUse` 是否获准上架仍由 Play 审核决定。
+
+运行锚点只是在小米等 OEM 上验证“持有无障碍窗口”是否改善后台调度的经验策略，不是 AOSP 保活契约。它不能恢复无障碍授权、绕过 force-stop、在重启后自动启动，或保证熄屏时系统仍分发实体键。当前默认构建优先用于直接分发；Play 候选包必须重新审查这项实现与 Accessibility API 政策，必要时拆分发布变体。
 
 官方资料：[Android 17 后台音频强化](https://developer.android.com/about/versions/17/changes/bg-audio)、[specialUse 服务类型](https://developer.android.com/develop/background-work/services/fgs/service-types#special-use)。
 

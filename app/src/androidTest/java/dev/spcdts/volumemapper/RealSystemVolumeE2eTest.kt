@@ -3,6 +3,7 @@ package dev.spcdts.volumemapper
 import android.Manifest
 import android.app.LocaleManager
 import android.app.UiAutomation
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -20,12 +21,14 @@ import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
+import dev.spcdts.volumemapper.runtime.AccessibilityRuntimeAnchor
 import dev.spcdts.volumemapper.runtime.MappingControllerService
 import dev.spcdts.volumemapper.runtime.MappingCoordinator
 import dev.spcdts.volumemapper.ui.VolumeMapperTestTags
 import java.util.Locale
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
@@ -102,6 +105,12 @@ class RealSystemVolumeE2eTest {
         try {
             shell(automation, "input keyevent KEYCODE_WAKEUP")
             shell(automation, "wm dismiss-keyguard")
+            assertTrue(
+                "主界面任务必须始终排除在最近任务之外",
+                composeRule.activity.packageManager
+                    .getActivityInfo(composeRule.activity.componentName, 0)
+                    .flags and ActivityInfo.FLAG_EXCLUDE_FROM_RECENTS != 0,
+            )
             assertFalse(
                 "静默前台服务不应声明通知权限",
                 requestedPermissions(packageName).contains(Manifest.permission.POST_NOTIFICATIONS),
@@ -156,6 +165,7 @@ class RealSystemVolumeE2eTest {
             composeRule.waitUntil(ACCESSIBILITY_TIMEOUT_MILLIS) {
                 !coordinator.runtime.value.isAccessibilityConnected
             }
+            assertRuntimeAnchorAbsent(automation)
             enableOnlyRequiredAccessibilityService(
                 automation = automation,
                 originalServices = originalAccessibilityServices,
@@ -164,6 +174,7 @@ class RealSystemVolumeE2eTest {
             composeRule.waitUntil(ACCESSIBILITY_TIMEOUT_MILLIS) {
                 coordinator.runtime.value.isAccessibilityConnected
             }
+            assertRuntimeAnchorPresent(automation)
 
             val routeRange = checkNotNull(coordinator.runtime.value.snapshot).range
             val routeSpan = routeRange.maxIndex - routeRange.minIndex
@@ -266,6 +277,42 @@ class RealSystemVolumeE2eTest {
             }
         }
         firstFailure?.let { throw it }
+    }
+
+    private fun assertRuntimeAnchorAbsent(automation: UiAutomation) {
+        val windowDump = shell(automation, "dumpsys window windows")
+        val windowTitle = AccessibilityRuntimeAnchor.windowTitle(
+            InstrumentationRegistry.getInstrumentation().targetContext.packageName,
+        )
+        assertFalse(
+            "无障碍断开后不应残留运行锚点窗口",
+            windowDump.contains(windowTitle),
+        )
+    }
+
+    private fun assertRuntimeAnchorPresent(automation: UiAutomation) {
+        val windowDump = shell(automation, "dumpsys window windows")
+        val windowTitle = AccessibilityRuntimeAnchor.windowTitle(
+            InstrumentationRegistry.getInstrumentation().targetContext.packageName,
+        )
+        val anchorStart = windowDump.indexOf(windowTitle)
+        assertTrue("无障碍连接后必须创建运行锚点窗口", anchorStart >= 0)
+        val anchorBlock = windowDump.substring(
+            startIndex = anchorStart,
+            endIndex = minOf(windowDump.length, anchorStart + WINDOW_DUMP_BLOCK_LENGTH),
+        )
+        listOf(
+            "1x1",
+            "ACCESSIBILITY_OVERLAY",
+            "TRANSPARENT",
+            "NOT_FOCUSABLE",
+            "NOT_TOUCHABLE",
+        ).forEach { expectedAttribute ->
+            assertTrue(
+                "运行锚点窗口缺少属性：$expectedAttribute",
+                anchorBlock.contains(expectedAttribute),
+            )
+        }
     }
 
     private fun enableOnlyRequiredAccessibilityService(
@@ -387,6 +434,7 @@ class RealSystemVolumeE2eTest {
     }
 
     private companion object {
+        const val WINDOW_DUMP_BLOCK_LENGTH = 2_000
         const val ACCESSIBILITY_TIMEOUT_MILLIS = 10_000L
         const val CONTROLLER_TIMEOUT_MILLIS = 10_000L
         const val SETTINGS_TIMEOUT_MILLIS = 5_000L

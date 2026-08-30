@@ -10,6 +10,7 @@ VoluStep 是一个面向 Android 28–37 的媒体音量控制应用。它既能
 - 曲线按当前路由实际 min/max 投影；较小范围只临时减少有效按键次数，不覆盖完整 K/P 作者配置；
 - 固定音量按钮保存实际 media index，可连续添加、删除和横向滚动；点击按钮不依赖总开关、无障碍或映射前台服务，当前值仅以绿色荧光描边标示，换路由后的越界值保留但禁用；
 - AccessibilityService 全局过滤音量键，以 `(deviceId, keyCode, downTime)` 标识一次手势；repeat 只刷新心跳，固定 300 ms 阈值触发首个连续步进，active press 使用 20 ms、latest-only ticker；
+- 无障碍连接期间持有一个透明、不可交互的 1×1 `TYPE_ACCESSIBILITY_OVERLAY` 运行锚点；主界面任务始终不进入最近任务，需从桌面图标重新打开；该策略不申请悬浮窗权限；
 - Android 17 所需、由可见 Activity 显式启动的 `specialUse` 前台服务；
 - 音量写入后的单周期两阶段回读、control/route epoch 失效、路由切换重置和连续失败自动放行；
 - A2DP、LE Audio、USB、HDMI、有线与扬声器的运行时能力探测，并区分 `CONFIRMED` 与 `HEURISTIC` 路由；
@@ -84,7 +85,7 @@ VoluStep 是一个面向 Android 28–37 的媒体音量控制应用。它既能
 2. 安装 Debug APK，打开应用并阅读、勾选显著披露。
 3. 进入“无障碍设置”，启用“VoluStep 音量控制”。
 4. 回到应用，打开顶部 VoluStep 主开关；Android 17 必须由这个可见界面启动前台服务。
-5. 启动后可以划掉最近任务卡片；控制器与无障碍服务应继续运行，重新打开应用可从主开关停止。
+5. 启动后按 Home 即可；VoluStep 不会出现在最近任务中，需从桌面图标重新打开并从主开关停止。
 6. 在主界面的“设备”折叠区确认蓝牙路由、系统 min/max 和运行状态。
 7. HyperOS 若连续回读失败，检查“调节媒体音量”权限、后台运行和省电限制。
 
@@ -104,6 +105,7 @@ VoluStep 是一个面向 Android 28–37 的媒体音量控制应用。它既能
 - 检测到系统通话音频模式时会放行；公开 API 无法可靠识别所有闹钟、相机和 OEM 前台场景，使用这些功能前应从应用主开关停止映射；
 - 消费实体音量键可能影响截图或厂商组合键；应用主开关和系统“运行中的应用”入口都可立即停止控制器；
 - 系统可同时把按键分发给多个请求过滤的无障碍服务；任一服务处理事件都可能阻止默认系统行为，共存结果与顺序不能保证，本应用也没有更高优先级。
+- 1×1 无障碍窗口只是针对部分 OEM 后台策略的实验性运行锚点；它不能恢复被撤销的授权、抵抗系统或用户的强制停止，也不保证熄屏后仍投递按键。
 
 应用不使用隐藏 API、不反射 AudioService、不绕过安全音量提示，也不会读取屏幕内容。
 
@@ -112,3 +114,5 @@ VoluStep 是一个面向 Android 28–37 的媒体音量控制应用。它既能
 签名材料绝不能提交。普通 `build.ps1 -Release` 只用于本地门禁，不会产出可直接发布的正式包。正式构建前先运行 `scripts/install-bundletool.ps1`；随后使用 `scripts/build-release.ps1 -SigningProfile AppSigning` 构建直接分发 APK，或使用 `-SigningProfile PlayUpload` 构建 Google Play AAB。两种模式都强制传入离线记录的证书 SHA-256 和最终公开的 HTTPS 隐私政策地址，完整命令见发布文档。
 
 完整签名、R8、APK/AAB 和 Play 声明流程见 [docs/RELEASE.md](docs/RELEASE.md)，可复核的 Console 填写草稿见 [docs/PLAY_CONSOLE_DECLARATIONS.md](docs/PLAY_CONSOLE_DECLARATIONS.md)，逐项阻断条件见 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)，商店图文素材位于 [distribution/store-assets](distribution/store-assets)，隐私说明草案见 [docs/PRIVACY.md](docs/PRIVACY.md)。发布前必须补充真实发布主体、联系邮箱和最终 HTTPS 隐私政策地址，并完成 Accessibility API 与 `specialUse` FGS 两套 Play Console 声明和演示视频。
+
+当前 1×1 运行锚点与始终隐藏最近任务的组合优先面向直接分发验证。若重新选择 Google Play，应在提交前单独复核 Accessibility API 政策与审核披露，不能把本地可用等同于商店合规。

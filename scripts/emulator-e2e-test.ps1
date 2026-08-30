@@ -220,36 +220,39 @@ function Get-AppTaskId {
     return [int]$match.Groups[1].Value
 }
 
-function Remove-AppTaskFromRecents {
+function Test-AppTaskExcludedFromRecents {
+    param([int]$TaskId)
+
+    $dump = [string]::Join(
+        [Environment]::NewLine,
+        [string[]](Invoke-Adb shell dumpsys activity recents)
+    )
+    $escapedPackage = [regex]::Escape($packageName)
+    $taskMatch = [regex]::Match(
+        $dump,
+        "(?ms)\* Recent #\d+: Task\{[^\r\n]*#${TaskId}[^\r\n]*${escapedPackage}[^\r\n]*\r?\n.*?^\s*intent=\{flg=0x([0-9a-fA-F]+)"
+    )
+    if (-not $taskMatch.Success) { return $false }
+
+    $flags = [Convert]::ToInt64($taskMatch.Groups[1].Value, 16)
+    return ($flags -band 0x00800000) -ne 0
+}
+
+function Hide-AppTaskFromRecents {
     $originalTaskId = Get-AppTaskId
     if ($null -eq $originalTaskId) {
-        throw '进入最近任务前未找到本应用 task，无法验证划卡生命周期。'
+        throw '返回桌面前未找到本应用 task，无法验证最近任务隐藏。'
     }
 
-    Invoke-Adb shell input keyevent KEYCODE_APP_SWITCH | Out-Null
-    Start-Sleep -Milliseconds 800
-
-    $sizeOutput = [string]::Join(
-        [Environment]::NewLine,
-        [string[]](Invoke-Adb shell wm size)
-    )
-    $sizeMatches = [regex]::Matches($sizeOutput, '(\d+)x(\d+)')
-    if ($sizeMatches.Count -eq 0) {
-        throw "无法解析模拟器屏幕尺寸：$sizeOutput"
-    }
-    $sizeMatch = $sizeMatches[$sizeMatches.Count - 1]
-    $width = [int]$sizeMatch.Groups[1].Value
-    $height = [int]$sizeMatch.Groups[2].Value
-    $x = [int]($width / 2)
-    $startY = [int]($height * 0.55)
-    $endY = [int]($height * 0.08)
-    Invoke-Adb shell input swipe $x $startY $x $endY 350 | Out-Null
-
-    Wait-ForCondition -FailureMessage "最近任务卡片划掉后，task $originalTaskId 仍然存在。" -Condition {
-        $currentTaskId = Get-AppTaskId
-        $null -eq $currentTaskId -or $currentTaskId -ne $originalTaskId
-    }
     Invoke-Adb shell input keyevent KEYCODE_HOME | Out-Null
+
+    Wait-ForCondition -FailureMessage "返回桌面后，task $originalTaskId 未标记为从最近任务隐藏。" -Condition {
+        Test-AppTaskExcludedFromRecents -TaskId $originalTaskId
+    }
+    $currentTaskId = Get-AppTaskId
+    if ($currentTaskId -ne $originalTaskId) {
+        throw "隐藏最近任务时不应结束 task：原 task $originalTaskId，当前 task $currentTaskId。"
+    }
 }
 
 function Wait-ForUiText {
@@ -450,6 +453,25 @@ function Test-AccessibilityServiceBound {
         $dump.IndexOf('hasBound=true', [StringComparison]::Ordinal) -ge 0
 }
 
+function Test-AccessibilityRuntimeAnchor {
+    $dump = [string]::Join(
+        [Environment]::NewLine,
+        [string[]](Invoke-Adb shell dumpsys window windows)
+    )
+    $anchorTitle = "${packageName}:VoluStepRuntimeAnchor"
+    $anchorStart = $dump.IndexOf($anchorTitle, [StringComparison]::Ordinal)
+    if ($anchorStart -lt 0) { return $false }
+
+    $anchorLength = [Math]::Min(2000, $dump.Length - $anchorStart)
+    $anchorBlock = $dump.Substring($anchorStart, $anchorLength)
+    foreach ($attribute in @('1x1', 'ACCESSIBILITY_OVERLAY', 'TRANSPARENT', 'NOT_FOCUSABLE', 'NOT_TOUCHABLE')) {
+        if ($anchorBlock.IndexOf($attribute, [StringComparison]::Ordinal) -lt 0) {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Test-ControllerServiceRunning {
     $dump = Get-AppServicesDump
     return $dump.IndexOf('MappingControllerService', [StringComparison]::Ordinal) -ge 0 -and
@@ -587,6 +609,9 @@ try {
     Wait-ForCondition -FailureMessage 'AccessibilityService 未绑定。' -Condition {
         Test-AccessibilityServiceBound
     }
+    Wait-ForCondition -FailureMessage 'AccessibilityService 未创建透明 1×1 运行锚点。' -Condition {
+        Test-AccessibilityRuntimeAnchor
+    }
 
     $range = Get-MediaVolume
     $span = $range.Maximum - $range.Minimum
@@ -607,6 +632,9 @@ try {
         Wait-ForCondition -FailureMessage '通知抽屉检查后 AccessibilityService 未重新绑定。' -Condition {
             Test-AccessibilityServiceBound
         }
+        Wait-ForCondition -FailureMessage '通知抽屉检查后 1×1 运行锚点未重新创建。' -Condition {
+            Test-AccessibilityRuntimeAnchor
+        }
     }
     Start-Sleep -Milliseconds 750
 
@@ -618,13 +646,16 @@ try {
     $expectedMappedDown = $range.Minimum + [int][Math]::Floor(
         ([Math]::Max(0.0, $logicalAfterUp - 0.4) * $span) + 0.5
     )
-    Write-Host "[5/7] 划掉最近任务卡片后注入 evdev 音量键（映射目标 $expectedMappedUp）"
-    Remove-AppTaskFromRecents
-    Wait-ForCondition -FailureMessage '划掉最近任务卡片后前台控制器停止运行。' -Condition {
+    Write-Host "[5/7] 主界面退到后台并隐藏最近任务后注入 evdev 音量键（映射目标 $expectedMappedUp）"
+    Hide-AppTaskFromRecents
+    Wait-ForCondition -FailureMessage '隐藏最近任务后前台控制器停止运行。' -Condition {
         Test-ControllerServiceRunning
     }
-    Wait-ForCondition -FailureMessage '划掉最近任务卡片后 AccessibilityService 未保持绑定。' -Condition {
+    Wait-ForCondition -FailureMessage '隐藏最近任务后 AccessibilityService 未保持绑定。' -Condition {
         Test-AccessibilityServiceBound
+    }
+    Wait-ForCondition -FailureMessage '隐藏最近任务后 1×1 运行锚点未保持。' -Condition {
+        Test-AccessibilityRuntimeAnchor
     }
     Send-EmulatorVolumeKey -Direction UP
     Wait-ForCondition -FailureMessage '后台系统音量加键没有到达 40% 映射目标。' -Condition {

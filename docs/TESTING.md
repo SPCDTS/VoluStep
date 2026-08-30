@@ -38,7 +38,7 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 - `MainActivityTest`：共 8 项，分别验证正式单页、扩大后的图表、首次中点选择与当前音量语义，应用菜单中的隐私政策和版本信息，选段插入和选新增点删除闭环，普通点右插与末点左插，K 变化时的选择与容量，控制点 x/y 拖动吸附，点/线段动态无障碍操作，以及无障碍整数移动；测试结束会恢复进入测试前的完整设置；
 - `FixedVolumePresetTest`：共 2 项，分别验证底部层连续添加、删除且不自动关闭，以及在总开关与无障碍均关闭时从可见 Activity 点击有效固定值，等待真实 `AudioManager` 与 coordinator 回读一致，并同步按钮荧光状态和曲线当前音量语义；测试用 `finally` 恢复原媒体音量；
 - `VolumeKeyAudioIntegrationTest`：在可见 Activity 中直接把 coordinator 标记为 Accessibility/FGS 已连接，构造初始 DOWN、同 token repeat、跨过 300 ms 起效阈值的持续按住和最终 UP，并验证真实 `STREAM_MUSIC` index 到达连续目标且最终清理。
-- `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 验证未勾选时不能同意、取消后不保存/不启动、再次触发后主动同意，并确认同意后直接进入系统无障碍设置；若同意状态已持久化，则验证已同意路径。随后确认应用未声明通知权限、真实绑定 AccessibilityService，并验证 `specialUse` FGS 仍能正常启动；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性整数控制点映射。
+- `RealSystemVolumeE2eTest`：在模拟器空白应用数据下通过真实 Compose UI 验证未勾选时不能同意、取消后不保存/不启动、再次触发后主动同意，并确认同意后直接进入系统无障碍设置；若同意状态已持久化，则验证已同意路径。随后确认主任务声明始终排除最近任务、应用未声明通知权限、真实绑定 AccessibilityService、创建透明 1×1 无障碍运行锚点，并验证 `specialUse` FGS 仍能正常启动；宿主 E2E 会先执行 `pm clear`，再复用它准备包含 40% 跨度的确定性整数控制点映射。
 
 固定音量测试和 `VolumeKeyAudioIntegrationTest` 都不会启动真实 AccessibilityService，也不会验证系统是否把物理按键分派给服务。`RealSystemVolumeE2eTest` 的 instrumentation 阶段不能独自证明按键分派，因为 UiAutomation 注入会绕过 Accessibility input filter；实体按键链路由下述宿主 E2E 使用内核 evdev 事件验证。模拟器结果仍不能替代 OEM、蓝牙耳机和真实系统授权页测试。编译测试 APK 与实际执行应区分：
 
@@ -58,7 +58,7 @@ Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
 .\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild
 ```
 
-`emulator-e2e-test.ps1` 只允许 `emulator-*`。它从空白应用数据开始，完成真实披露 UI，绑定目标无障碍服务，从可见 Activity 启动控制器并验证 FGS；API 33+ 会实际展开 SystemUI、确认目标标题不在通知抽屉。随后脚本进入最近任务并向上划掉本应用卡片，确认 FGS 与无障碍仍在，再从 Linux evdev 注入后台音量加/减键，最后重新打开应用通过主开关停止并验证 fail-open。脚本会临时把可调试模拟器的 adbd 切到 root，并在 `finally` 中恢复原无障碍配置、媒体/铃声音量、通知面板和 adbd 身份；任何清理失败都会使脚本失败。应用数据会在测试开始和结束时被清空，不能恢复测试前内容。
+`emulator-e2e-test.ps1` 只允许 `emulator-*`。它从空白应用数据开始，完成真实披露 UI，绑定目标无障碍服务，核验 1×1 运行锚点，从可见 Activity 启动控制器并验证 FGS；API 33+ 会实际展开 SystemUI、确认目标标题不在通知抽屉。随后脚本按 Home，确认同一个 task 仍存在但根 Intent 已带最近任务排除标志，再从 Linux evdev 注入后台音量加/减键，最后从 Launcher 重新打开应用、通过主开关停止并验证 fail-open。脚本会临时把可调试模拟器的 adbd 切到 root，并在 `finally` 中恢复原无障碍配置、媒体/铃声音量、通知面板和 adbd 身份；任何清理失败都会使脚本失败。应用数据会在测试开始和结束时被清空，不能恢复测试前内容。
 
 普通 `connectedDebugAndroidTest` 重复运行时会保留 Debug 应用数据，因此已接受披露的 AVD 可能跳过披露页面。需要确定性验证首次披露时，应运行宿主 E2E；它会在安装测试 APK 后清空应用数据，再执行定向 instrumentation。
 

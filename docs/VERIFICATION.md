@@ -1,5 +1,20 @@
 # 本机验证记录
 
+## 2026-08-30 无障碍运行锚点与最近任务隐藏
+
+本轮把直接分发构建调整为更接近李跳跳的运行形态：`VolumeKeyAccessibilityService` 连接后持有一个透明、不可触摸、不可聚焦的 1×1 `TYPE_ACCESSIBILITY_OVERLAY`，添加失败时进行有限延迟重试并在解绑/销毁时移除；Launcher Activity 从任务创建起始终排除最近任务。Android 17 后台音量修改所需的 `specialUse` FGS 仍保留，因为运行锚点不能替代该资格。
+
+验证结果：
+
+- 源码仍恰好是 18 条 JVM + 12 条 instrumentation / E2E，共 30 个 `@Test`；运行锚点和最近任务声明断言并入原有系统生命周期 E2E，没有增加测试入口或把无关职责塞进单个测试；
+- `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest :app:bundleRelease` 为 `BUILD SUCCESSFUL`；API 37 AVD 上直接运行 AndroidJUnitRunner 为 12/12 通过、0 failure、0 skip；
+- AndroidJUnitRunner 实际完成无障碍 disable → enable，确认目标包专属窗口标题存在，窗口 dump 同时包含 `1x1`、`ACCESSIBILITY_OVERLAY`、`TRANSPARENT`、`NOT_FOCUSABLE`、`NOT_TOUCHABLE`；
+- `scripts/emulator-e2e-test.ps1 -Serial emulator-5554 -SkipBuild -AppLocale zh-CN|en-US` 两次均为 7/7 通过：按 Home 后同一 task 保留且带 `FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS`，FGS 与无障碍继续运行；后台 evdev 短按映射 `5 → 11 → 5`，持续按住 360 ms 到 `13`，停止后由系统 `AudioService` 恢复接管；
+- 小米真机 `192.168.3.6:46747` 首次安装被 HyperOS“应用安装拦截”以 `INSTALL_FAILED_USER_RESTRICTED` 拒绝；用户允许后再次安装成功，Debug 版本为 `1.0.0-debug`。前台任务根 Intent 为 `0x10800000`、`isExcluded=true`；按 Home 后进入最近任务的截图中没有 VoluStep 卡片，同一个 task、PID `18100`、FGS 和 Bound AccessibilityService 均保持，exit-info 没有退出记录；
+- 真机上李跳跳与 VoluStep 同时 Enabled/Bound。两者各自在屏幕左下角持有一个 `frame=[0,2669][1,2670]` 的窗口；VoluStep 窗口实际为 `TYPE_ACCESSIBILITY_OVERLAY`、`TRANSPARENT`、`NOT_FOCUSABLE`、`NOT_TOUCHABLE`、`HARDWARE_ACCELERATED`，Surface shown。应用后台时实体短按一次音量加，媒体 index 从 `70 → 72`，AudioService 明确记录 `setStreamVolume(... index:72 ... oldIndex:70) from dev.spcdts.volumemapper.debug`，PID 未变化；
+
+该窗口是 OEM 经验性运行锚点，不是系统保活保证：撤销无障碍、真正 force-stop、重启或厂商不再分发按键时，应用仍不能自行恢复。若改走 Google Play，需在发布前重新审核 Accessibility API 政策与披露，必要时拆分不含该策略的发布变体。
+
 ## 2026-08-29 固定音量快捷值
 
 本轮在主界面曲线下方增加“固定音量”卡片。用户可以在底部编辑层添加、删除并持久化实际媒体音量 `index`；快捷按钮按数值排序，当前值只使用绿色描边与光晕，不改变按钮底色。超出当前输出路由范围的既有值会保留但禁用，仍可进入编辑层删除。快速连续添加、删除使用仓库内的原子更新，不依赖 Compose 重组时机。
