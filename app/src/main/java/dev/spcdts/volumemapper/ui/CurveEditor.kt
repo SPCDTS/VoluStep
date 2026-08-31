@@ -978,14 +978,14 @@ fun MappingCurveEditor(
                     val start = controlPoints[segmentIndex]
                     val end = controlPoints[segmentIndex + 1]
                     drawLine(
-                        color = selection.copy(alpha = 0.10f),
+                        color = selection.copy(alpha = 0.18f),
                         start = start,
                         end = end,
                         strokeWidth = 11.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
                     drawLine(
-                        color = selection.copy(alpha = 0.22f),
+                        color = selection.copy(alpha = 0.34f),
                         start = start,
                         end = end,
                         strokeWidth = 7.dp.toPx(),
@@ -1033,12 +1033,12 @@ fun MappingCurveEditor(
                     val isSelected = selectedPointVisible && index == selectedIndex
                     if (isSelected) {
                         drawCircle(
-                            color = selection.copy(alpha = 0.10f),
+                            color = selection.copy(alpha = 0.18f),
                             radius = 12.dp.toPx(),
                             center = point,
                         )
                         drawCircle(
-                            color = selection.copy(alpha = 0.16f),
+                            color = selection.copy(alpha = 0.34f),
                             radius = 8.dp.toPx(),
                             center = point,
                         )

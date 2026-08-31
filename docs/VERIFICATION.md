@@ -1,5 +1,16 @@
 # 本机验证记录
 
+## 2026-08-31 选中态荧光增强
+
+本轮只增强曲线编辑器的选中态光晕：控制点和线段仍保持原本的中性色，外层与内层光晕透明度分别从 `0.10/0.16`、`0.10/0.22` 统一提高到 `0.18/0.34`；半径、线宽、虚线坐标和绿色当前音量标记均未改变。
+
+验证结果：
+
+- `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 为 `BUILD SUCCESSFUL`，源码仍为 18 条 JVM + 12 条 instrumentation / E2E，共 30 个 `@Test`；
+- API 37 AVD 上分别截取浅色、深色的选中控制点与选中线段画面并目视核验：双层光晕清晰可辨，未选对象、曲线本体和绿色当前音量线没有视觉回归；
+- `MainActivityTest#selectedSegmentInsertionAndSelectedPointDeletionFormAnExactRoundTrip` 与 `MainActivityTest#draggingAControlPointHardSnapsBothAxes` 两条直接相关的设备测试均通过；
+- 全量 12 条设备测试在第 3 条无关的 `overflowProvidesInAppPrivacyAndVersionInformation` 语言切换/窗口重建阶段长时间不收敛，日志没有断言失败，已终止无效等待；本轮未把该基础设施挂起误记为通过。
+
 ## 2026-08-30 无障碍运行锚点与最近任务隐藏
 
 本轮把直接分发构建调整为更接近李跳跳的运行形态：`VolumeKeyAccessibilityService` 连接后持有一个透明、不可触摸、不可聚焦的 1×1 `TYPE_ACCESSIBILITY_OVERLAY`，添加失败时进行有限延迟重试并在解绑/销毁时移除；Launcher Activity 从任务创建起始终排除最近任务。Android 17 后台音量修改所需的 `specialUse` FGS 仍保留，因为运行锚点不能替代该资格。
