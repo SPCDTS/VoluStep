@@ -44,6 +44,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.SolidColor
@@ -243,8 +244,8 @@ fun MappingCurveEditor(
     val chartHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.42f)
         .coerceIn(280.dp, 360.dp)
     val leftPaddingPx = with(density) { 56.dp.toPx() }
-    val rightPaddingPx = with(density) { 8.dp.toPx() }
-    val topPaddingPx = with(density) { 14.dp.toPx() }
+    val rightPaddingPx = with(density) { 18.dp.toPx() }
+    val topPaddingPx = with(density) { 18.dp.toPx() }
     val bottomPaddingPx = with(density) { 30.dp.toPx() }
     val pointCoreRadiusPx = with(density) { 8.dp.toPx() }
     val hitRadiusPx = with(density) { 22.dp.toPx() }
@@ -255,7 +256,7 @@ fun MappingCurveEditor(
     val surface = MaterialTheme.colorScheme.surface
     val grid = MaterialTheme.colorScheme.outlineVariant
     val tick = MaterialTheme.colorScheme.onSurfaceVariant
-    val selection = curve
+    val selection = MaterialTheme.colorScheme.tertiary
     val current = primary
     val currentContent = MaterialTheme.colorScheme.onPrimary
 
@@ -978,17 +979,24 @@ fun MappingCurveEditor(
                     val start = controlPoints[segmentIndex]
                     val end = controlPoints[segmentIndex + 1]
                     drawLine(
-                        color = selection.copy(alpha = 0.18f),
+                        color = selection.copy(alpha = 0.14f),
                         start = start,
                         end = end,
-                        strokeWidth = 11.dp.toPx(),
+                        strokeWidth = 17.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
                     drawLine(
-                        color = selection.copy(alpha = 0.34f),
+                        color = selection.copy(alpha = 0.32f),
                         start = start,
                         end = end,
-                        strokeWidth = 7.dp.toPx(),
+                        strokeWidth = 10.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                    drawLine(
+                        color = selection.copy(alpha = 0.82f),
+                        start = start,
+                        end = end,
+                        strokeWidth = 5.5.dp.toPx(),
                         cap = StrokeCap.Round,
                     )
                     drawLine(
@@ -1010,6 +1018,44 @@ fun MappingCurveEditor(
                 } else {
                     null
                 }
+                controlPoints.forEachIndexed { index, point ->
+                    val isSelected = selectedPointVisible && index == selectedIndex
+                    if (isSelected) {
+                        val glowRadius = 17.dp.toPx()
+                        drawCircle(
+                            brush = Brush.radialGradient(
+                                colorStops = arrayOf(
+                                    0f to selection.copy(alpha = 0.52f),
+                                    0.45f to selection.copy(alpha = 0.32f),
+                                    0.72f to selection.copy(alpha = 0.16f),
+                                    1f to selection.copy(alpha = 0f),
+                                ),
+                                center = point,
+                                radius = glowRadius,
+                            ),
+                            radius = glowRadius,
+                            center = point,
+                        )
+                        drawCircle(
+                            color = selection.copy(alpha = 0.95f),
+                            radius = 7.dp.toPx(),
+                            center = point,
+                            style = Stroke(width = 1.8.dp.toPx()),
+                        )
+                    }
+                    drawCircle(
+                        color = surface,
+                        radius = 4.2.dp.toPx(),
+                        center = point,
+                    )
+                    drawCircle(
+                        color = curve,
+                        radius = 4.2.dp.toPx(),
+                        center = point,
+                        style = Stroke(width = 1.6.dp.toPx()),
+                    )
+                }
+
                 currentIntersection?.let { intersection ->
                     drawCircle(
                         color = current.copy(alpha = 0.18f),
@@ -1026,33 +1072,6 @@ fun MappingCurveEditor(
                         radius = 4.dp.toPx(),
                         center = intersection,
                         style = Stroke(width = 2.dp.toPx()),
-                    )
-                }
-
-                controlPoints.forEachIndexed { index, point ->
-                    val isSelected = selectedPointVisible && index == selectedIndex
-                    if (isSelected) {
-                        drawCircle(
-                            color = selection.copy(alpha = 0.18f),
-                            radius = 12.dp.toPx(),
-                            center = point,
-                        )
-                        drawCircle(
-                            color = selection.copy(alpha = 0.34f),
-                            radius = 8.dp.toPx(),
-                            center = point,
-                        )
-                    }
-                    drawCircle(
-                        color = surface,
-                        radius = 4.2.dp.toPx(),
-                        center = point,
-                    )
-                    drawCircle(
-                        color = curve,
-                        radius = 4.2.dp.toPx(),
-                        center = point,
-                        style = Stroke(width = 1.6.dp.toPx()),
                     )
                 }
 

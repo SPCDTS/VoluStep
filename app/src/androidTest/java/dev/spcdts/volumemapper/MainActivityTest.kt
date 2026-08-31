@@ -448,8 +448,8 @@ class MainActivityTest {
         val bounds = canvas.fetchSemanticsNode().boundsInRoot
         val density = composeRule.activity.resources.displayMetrics.density
         val plotLeft = 56f * density
-        val plotRight = bounds.width - 8f * density
-        val plotTop = 14f * density
+        val plotRight = bounds.width - 18f * density
+        val plotTop = 18f * density
         val plotBottom = bounds.height - 30f * density
         val plotWidth = plotRight - plotLeft
         val plotHeight = plotBottom - plotTop
@@ -699,8 +699,8 @@ class MainActivityTest {
     ): Offset {
         val density = composeRule.activity.resources.displayMetrics.density
         val plotLeft = 56f * density
-        val plotRight = canvasWidth - 8f * density
-        val plotTop = 14f * density
+        val plotRight = canvasWidth - 18f * density
+        val plotTop = 18f * density
         val plotBottom = canvasHeight - 30f * density
         val snapshot = (composeRule.activity.application as VolumeMapperApplication)
             .graph
