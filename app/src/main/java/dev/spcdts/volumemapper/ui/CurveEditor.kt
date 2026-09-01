@@ -243,10 +243,10 @@ fun MappingCurveEditor(
     val density = LocalDensity.current
     val chartHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.42f)
         .coerceIn(280.dp, 360.dp)
-    val leftPaddingPx = with(density) { 56.dp.toPx() }
-    val rightPaddingPx = with(density) { 18.dp.toPx() }
-    val topPaddingPx = with(density) { 18.dp.toPx() }
-    val bottomPaddingPx = with(density) { 30.dp.toPx() }
+    val leftPaddingPx = with(density) { CurveEditorGeometry.PLOT_LEFT_PADDING_DP.dp.toPx() }
+    val rightPaddingPx = with(density) { CurveEditorGeometry.PLOT_RIGHT_PADDING_DP.dp.toPx() }
+    val topPaddingPx = with(density) { CurveEditorGeometry.PLOT_TOP_PADDING_DP.dp.toPx() }
+    val bottomPaddingPx = with(density) { CurveEditorGeometry.PLOT_BOTTOM_PADDING_DP.dp.toPx() }
     val pointCoreRadiusPx = with(density) { 8.dp.toPx() }
     val hitRadiusPx = with(density) { 22.dp.toPx() }
     val segmentHitRadiusPx = with(density) { 14.dp.toPx() }

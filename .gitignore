@@ -19,12 +19,18 @@ keystore/
 *.pem
 *.key
 signing.properties
+.env
+.env.*
 
 # 测试与诊断输出
 artifacts/
 captures/
 .scratch/
 *.hprof
+*.log
+*.apk
+*.aab
+*.apks
 
 # 系统文件
 .DS_Store

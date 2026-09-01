@@ -67,7 +67,7 @@ Google Play 上传使用独立 upload key：
 
 Gradle 只在 keystore、store password、alias 与 key password 四项签名环境变量全部存在时启用 Release 签名；只提供其中一部分会直接失败，不会静默生成看似成功的未签名包。正式候选包仍只能通过上述脚本生成并由校验器验收。
 
-两种 profile 都会互斥使用当前工作区，先执行 20 条 JVM 测试、编译 10 条 instrumentation/E2E 测试、`lintRelease`、Release APK/AAB 构建和签名核验。核验包括：
+两种 profile 都会互斥使用当前工作区，先执行 18 条 JVM 测试、编译 12 条 instrumentation/E2E 测试、`lintRelease`、Release APK/AAB 构建和签名核验。核验包括：
 
 - APK 的 16 KiB/4 字节 zipalign、`apksigner -Werr` 与唯一证书 SHA-256；
 - APK 的包名、`versionCode` 和 `versionName`；

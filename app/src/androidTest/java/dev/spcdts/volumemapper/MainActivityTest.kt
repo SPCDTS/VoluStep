@@ -27,6 +27,7 @@ import androidx.compose.ui.test.performTouchInput
 import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.SettingsRepository
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
+import dev.spcdts.volumemapper.ui.CurveEditorGeometry
 import dev.spcdts.volumemapper.ui.CurveEditorTestTags
 import dev.spcdts.volumemapper.ui.VolumeMapperTestTags
 import java.util.Locale
@@ -447,10 +448,10 @@ class MainActivityTest {
             .assertIsDisplayed()
         val bounds = canvas.fetchSemanticsNode().boundsInRoot
         val density = composeRule.activity.resources.displayMetrics.density
-        val plotLeft = 56f * density
-        val plotRight = bounds.width - 18f * density
-        val plotTop = 18f * density
-        val plotBottom = bounds.height - 30f * density
+        val plotLeft = CurveEditorGeometry.PLOT_LEFT_PADDING_DP * density
+        val plotRight = bounds.width - CurveEditorGeometry.PLOT_RIGHT_PADDING_DP * density
+        val plotTop = CurveEditorGeometry.PLOT_TOP_PADDING_DP * density
+        val plotBottom = bounds.height - CurveEditorGeometry.PLOT_BOTTOM_PADDING_DP * density
         val plotWidth = plotRight - plotLeft
         val plotHeight = plotBottom - plotTop
         val movedPoint = 2
@@ -698,10 +699,10 @@ class MainActivityTest {
         canvasHeight: Float,
     ): Offset {
         val density = composeRule.activity.resources.displayMetrics.density
-        val plotLeft = 56f * density
-        val plotRight = canvasWidth - 18f * density
-        val plotTop = 18f * density
-        val plotBottom = canvasHeight - 30f * density
+        val plotLeft = CurveEditorGeometry.PLOT_LEFT_PADDING_DP * density
+        val plotRight = canvasWidth - CurveEditorGeometry.PLOT_RIGHT_PADDING_DP * density
+        val plotTop = CurveEditorGeometry.PLOT_TOP_PADDING_DP * density
+        val plotBottom = canvasHeight - CurveEditorGeometry.PLOT_BOTTOM_PADDING_DP * density
         val snapshot = (composeRule.activity.application as VolumeMapperApplication)
             .graph
             .mappingCoordinator
