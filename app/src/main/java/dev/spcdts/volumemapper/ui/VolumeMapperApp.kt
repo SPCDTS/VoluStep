@@ -1,7 +1,6 @@
 package dev.spcdts.volumemapper.ui
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.annotation.StringRes
@@ -736,8 +735,6 @@ private fun DisclosureDialog(
 @Composable
 private fun PrivacyPolicyDialog(onDismiss: () -> Unit) {
     val appName = stringResource(R.string.app_name)
-    val context = LocalContext.current
-    val fullPolicyUrl = BuildConfig.PRIVACY_POLICY_URL
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier.testTag(VolumeMapperTestTags.PRIVACY_DIALOG),
@@ -757,26 +754,6 @@ private fun PrivacyPolicyDialog(onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_ok)) }
-        },
-        dismissButton = if (fullPolicyUrl.isNotBlank()) {
-            {
-                TextButton(
-                    onClick = {
-                        runCatching {
-                            context.startActivity(
-                                Intent(Intent.ACTION_VIEW, Uri.parse(fullPolicyUrl)).apply {
-                                    addCategory(Intent.CATEGORY_BROWSABLE)
-                                },
-                            )
-                        }
-                    },
-                    modifier = Modifier.testTag(VolumeMapperTestTags.PRIVACY_FULL_POLICY),
-                ) {
-                    Text(stringResource(R.string.privacy_full_policy))
-                }
-            }
-        } else {
-            null
         },
     )
 }
@@ -842,7 +819,6 @@ object VolumeMapperTestTags {
     const val PRIVACY_MENU_ITEM = "privacy_menu_item"
     const val ABOUT_MENU_ITEM = "about_menu_item"
     const val PRIVACY_DIALOG = "privacy_dialog"
-    const val PRIVACY_FULL_POLICY = "privacy_full_policy"
     const val ABOUT_DIALOG = "about_dialog"
     const val LONG_PRESS_INTERVAL_VALUE = "long_press_interval_value"
     const val LONG_PRESS_INTERVAL_DECREMENT = "long_press_interval_decrement"

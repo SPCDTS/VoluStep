@@ -4,10 +4,6 @@ VoluStep 是一个本地优先的 Android 媒体音量控制器。它把实体�
 
 > Android 公开 API 只能写入当前媒体路由支持的整数 `index`。VoluStep 可以重新设计“按几次键到达哪个档位”，但不能生成系统或耳机本身不存在的音量档位，也不能控制真实声压级。
 
-<p align="center">
-  <img src="distribution/store-assets/screenshots/zh-CN/01-main.png" width="360" alt="VoluStep 中文主界面" />
-</p>
-
 ## 功能
 
 - 用可拖动折线定义按键次数到媒体音量 `index` 的映射；控制点的 X/Y 坐标均吸附到整数网格。
@@ -96,9 +92,8 @@ Debug APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。完整环境说�
 | `app/src/main/java/.../runtime` | 无障碍服务、前台服务与串行协调器 |
 | `app/src/main/java/.../data` | DataStore 设置与迁移 |
 | `app/src/main/java/.../ui` | Jetpack Compose 单页界面与曲线编辑器 |
-| `scripts` | Windows 构建、模拟器、E2E 与签名门禁脚本 |
-| `docs` | 架构、测试、隐私、OEM 兼容和发布文档 |
-| `distribution` / `fastlane` | 商店素材与元数据草稿 |
+| `scripts` | Windows 构建、模拟器与 E2E 脚本 |
+| `docs` | 架构、测试、隐私与 OEM 兼容文档 |
 
 ## 隐私与安全
 
@@ -109,9 +104,9 @@ Debug APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。完整环境说�
 
 隐私说明见 [docs/PRIVACY.md](docs/PRIVACY.md)。报告问题前请主动移除配对码、设备序列号、局域网地址、账号、本机路径和未修复漏洞的可利用细节。
 
-## 贡献与发布
+## 贡献
 
-正式签名、APK/AAB 校验和商店声明见 [docs/RELEASE.md](docs/RELEASE.md)；签名材料与本机诊断输出均不得提交。
+签名材料与本机诊断输出均不得提交；本仓库不包含正式签名与发布流程。
 
 ## 许可证
 

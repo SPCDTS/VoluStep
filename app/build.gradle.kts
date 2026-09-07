@@ -1,48 +1,7 @@
-import java.net.URI
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
 }
-
-val releaseStorePath = providers.environmentVariable("VOLUME_MAPPER_KEYSTORE").orNull
-val releaseStorePassword = providers.environmentVariable("VOLUME_MAPPER_STORE_PASSWORD").orNull
-val releaseKeyAlias = providers.environmentVariable("VOLUME_MAPPER_KEY_ALIAS").orNull
-val releaseKeyPassword = providers.environmentVariable("VOLUME_MAPPER_KEY_PASSWORD").orNull
-val releasePrivacyPolicyUrl = providers.environmentVariable("VOLUME_MAPPER_PRIVACY_POLICY_URL").orNull
-val releaseSigningInputs = listOf(
-    releaseStorePath,
-    releaseStorePassword,
-    releaseKeyAlias,
-    releaseKeyPassword,
-)
-val hasAnyReleaseSigningInput = releaseSigningInputs.any { !it.isNullOrBlank() }
-val hasReleaseSigning = releaseSigningInputs.all { !it.isNullOrBlank() }
-if (hasAnyReleaseSigningInput && !hasReleaseSigning) {
-    throw GradleException(
-        "Release 签名环境变量必须完整提供 keystore、store password、alias 和 key password；不会静默回退到未签名产物。",
-    )
-}
-
-fun requireHttpsPrivacyPolicyUrl(value: String?): String {
-    val candidate = value?.trim().orEmpty()
-    val uri = runCatching { URI(candidate) }.getOrNull()
-    if (
-        uri == null ||
-        !uri.isAbsolute ||
-        !uri.scheme.equals("https", ignoreCase = true) ||
-        uri.host.isNullOrBlank() ||
-        !uri.userInfo.isNullOrEmpty()
-    ) {
-        throw GradleException(
-            "已签名 Release 必须通过 VOLUME_MAPPER_PRIVACY_POLICY_URL 提供不含用户凭据的有效 HTTPS URL。",
-        )
-    }
-    return candidate
-}
-
-fun String.asBuildConfigString(): String =
-    "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
     namespace = "dev.spcdts.volumemapper"
@@ -57,23 +16,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
-        buildConfigField("String", "PRIVACY_POLICY_URL", "\"\"")
-        manifestPlaceholders["privacyPolicyUrl"] = ""
-    }
-
-    signingConfigs {
-        if (hasReleaseSigning) {
-            create("release") {
-                storeFile = file(checkNotNull(releaseStorePath))
-                storePassword = checkNotNull(releaseStorePassword)
-                keyAlias = checkNotNull(releaseKeyAlias)
-                keyPassword = checkNotNull(releaseKeyPassword)
-                enableV1Signing = true
-                enableV2Signing = true
-                enableV3Signing = true
-                enableV4Signing = true
-            }
-        }
     }
 
     buildTypes {
@@ -84,16 +26,6 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            if (hasReleaseSigning) {
-                val privacyPolicyUrl = requireHttpsPrivacyPolicyUrl(releasePrivacyPolicyUrl)
-                signingConfig = signingConfigs.getByName("release")
-                buildConfigField(
-                    "String",
-                    "PRIVACY_POLICY_URL",
-                    privacyPolicyUrl.asBuildConfigString(),
-                )
-                manifestPlaceholders["privacyPolicyUrl"] = privacyPolicyUrl
-            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

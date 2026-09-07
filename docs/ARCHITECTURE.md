@@ -97,9 +97,9 @@ Android 17 对后台音频焦点、播放和系统音量修改进行了强化。
 - 快速连续点击采用 latest-wins。终态只允许相同 request ID 的 `Applying` 原子转换为 `Applied` 或 `Rejected`，旧回读不能覆盖新请求；
 - 固定按钮失败使用独立状态和 Snackbar，不增加实体键映射的连续失败次数，也不会触发 fail-open。成功回读会重锚 reducer，使下一次实体按键从真实系统音量继续。
 
-应用并不播放媒体，因此不能把 FGS 冒充 `mediaPlayback`。`specialUse` 是否获准上架仍由 Play 审核决定。
+应用并不播放媒体，因此不能把 FGS 冒充 `mediaPlayback`；`specialUse` 是符合该用途的类型。
 
-运行锚点只是在小米等 OEM 上验证“持有无障碍窗口”是否改善后台调度的经验策略，不是 AOSP 保活契约。它不能恢复无障碍授权、绕过 force-stop、在重启后自动启动，或保证熄屏时系统仍分发实体键。当前默认构建优先用于直接分发；Play 候选包必须重新审查这项实现与 Accessibility API 政策，必要时拆分发布变体。
+运行锚点只是在小米等 OEM 上验证“持有无障碍窗口”是否改善后台调度的经验策略，不是 AOSP 保活契约。它不能恢复无障碍授权、绕过 force-stop、在重启后自动启动，或保证熄屏时系统仍分发实体键。如果未来在商店上架，必须重新审查这项实现与 Accessibility API 政策，必要时拆分发布变体。
 
 官方资料：[Android 17 后台音频强化](https://developer.android.com/about/versions/17/changes/bg-audio)、[specialUse 服务类型](https://developer.android.com/develop/background-work/services/fgs/service-types#special-use)。
 
@@ -138,4 +138,4 @@ API 33+ 为媒体属性恰好返回一个设备时标记 `CONFIRMED`；返回多
 
 无障碍 XML 在所有版本明确设置 `canRetrieveWindowContent=false`，API 31+ 资源另设 `isAccessibilityTool=false`，且不申请截图、手势或窗口内容能力。系统可能向服务投递其他实体按键事件；应用检查键码后立即放行非音量键，只对音量键在内存中临时使用键码、按下/释放状态、重复次数、事件/按下时间和输入设备 ID。所有曲线与配置数据保存在本地，事件数据不持久化或上传。
 
-Google Play 发布时需要在正常流程中显示独立显著披露、取得主动同意，并提交 Accessibility API declaration。相关政策：[Accessibility API 政策](https://support.google.com/googleplay/android-developer/answer/10964491)。
+应用在用户启用无障碍服务之前，必须在正常流程中显示独立显著披露并取得主动同意。

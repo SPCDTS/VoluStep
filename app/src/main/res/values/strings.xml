@@ -36,7 +36,6 @@
     <string name="master_switch_content_description">%1$s master switch</string>
     <string name="app_menu">More options</string>
     <string name="privacy_policy">Privacy</string>
-    <string name="privacy_full_policy">Full policy</string>
     <string name="about">About</string>
     <string name="privacy_on_device_title">Processed on this device</string>
     <string name="privacy_on_device_body">Android may deliver physical key events to %1$s through its Accessibility service. %1$s checks the key code and immediately ignores non-volume keys. For volume-up and volume-down, it temporarily processes the key code, press/release state, repeat count, event and down time, and input-device ID. It reads the active media output, volume range, and current volume through Android audio APIs, then changes media volume according to your curve or an explicit fixed-volume button tap. Your curve, fixed-volume buttons, long-press interval, and disclosure choice are stored only in the app’s private storage.</string>

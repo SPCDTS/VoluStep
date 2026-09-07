@@ -14,7 +14,7 @@
 | AndroidTest 编译 | `:app:compileDebugAndroidTestKotlin` 通过 |
 | Android instrumentation | API 37 AVD 完整 12/12 通过，0 skip、0 failure |
 | 浅色/深色选中态 | API 37 AVD 四种点/线段画面已人工检查，无端点裁切 |
-| Release | `:app:lintRelease :app:assembleRelease :app:bundleRelease` 通过；未签名产物只作构建门禁 |
+| Release | `:app:lintRelease :app:assembleRelease` 通过；未签名产物只作构建门禁 |
 
 最近一次界面改动将选中态改为独立的电紫色语义：控制点使用径向渐隐光晕与细环，线段使用三层荧光轨道，原曲线颜色不变；绿色仅表示当前音量。绘图区几何由生产代码和设备测试共享，避免调整端点留白后测试继续使用旧坐标。
 
@@ -51,7 +51,7 @@ $env:ANDROID_SERIAL = 'emulator-5554'
 - 点/线段选择、上下文增删、按键次数容量和双轴整数吸附；
 - 固定音量连续添加/删除，以及不依赖无障碍的可见界面真实写入；
 - 显著披露、无障碍授权入口、前台控制器停止和中英文资源；
-- Debug/Release Lint、R8 Release、APK/AAB 签名与隐私政策 metadata 校验脚本；
+- Debug/Release Lint 与 R8 Release 门禁；
 - API 28 最低版本安装启动，以及 API 36/37 模拟器和小米 HyperOS 的历史人工验证。
 
 ## 未宣称的范围
@@ -59,7 +59,7 @@ $env:ANDROID_SERIAL = 'emulator-5554'
 - 仓库没有 Pixel、Samsung、OPPO、vivo、Honor 等全部厂商的持续真机实验室；
 - 蓝牙显示名称不能证明耳机硬件型号，A2DP 与 LE Audio 的可听档位也不能只靠系统回读推断；
 - 1×1 无障碍窗口不是 AOSP 保活保证，不能恢复授权或抵抗 force-stop；
-- Google Play 是否接受 Accessibility API 与 `specialUse` FGS 用途取决于发布时政策和审核；
+- 无障碍 API 与 `specialUse` FGS 是否被各分发渠道接受取决于渠道政策和审核；
 - 未运行的设备、ROM、耳机或测试矩阵不得从本页的已有结果外推为通过。
 
 ## 提交验证记录

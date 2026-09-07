@@ -15,10 +15,6 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.VolumeMapper">
 
-        <meta-data
-            android:name="dev.spcdts.volumemapper.PRIVACY_POLICY_URL"
-            android:value="${privacyPolicyUrl}" />
-
         <activity
             android:name=".MainActivity"
             android:excludeFromRecents="true"

@@ -34,7 +34,6 @@
     <string name="master_switch_content_description">%1$s 主开关</string>
     <string name="app_menu">更多选项</string>
     <string name="privacy_policy">隐私</string>
-    <string name="privacy_full_policy">完整政策</string>
     <string name="about">关于</string>
     <string name="privacy_on_device_title">仅在本机处理</string>
     <string name="privacy_on_device_body">Android 可能通过无障碍服务向 %1$s 投递实体按键事件。%1$s 检查键码后会立即忽略非音量键；对于音量加减键，只在内存中临时处理键码、按下/释放状态、重复次数、事件时间、按下时间和输入设备 ID。应用通过 Android 音频 API 读取当前媒体输出、音量范围与音量，再按自定义曲线或用户主动点击的固定音量按钮修改媒体音量。曲线、固定音量按钮、长按间隔和披露确认仅保存在应用私有存储中。</string>

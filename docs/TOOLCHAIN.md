@@ -74,4 +74,4 @@ android describe --project_dir .
 - `Unsupported class file`：确认 Gradle 实际使用 JDK 17 或更高。
 - API 37 资源或平台缺失：通过 Android SDK Manager 安装 Platform 37 与对应 Build Tools。
 - 多设备导致测试跑错目标：设置 `ANDROID_SERIAL`，或在命令中显式指定设备。
-- Release 没有签名：这是默认安全行为；正式构建必须走 [RELEASE.md](RELEASE.md) 的签名门禁。
+- Release 默认为未签名产物，仅作构建/静态门禁；仓库不包含正式签名与发布流程。

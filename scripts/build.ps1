@@ -15,7 +15,6 @@ $tasks += ':app:lintDebug'
 $tasks += ':app:assembleDebug'
 if ($Release) {
     $tasks += ':app:assembleRelease'
-    $tasks += ':app:bundleRelease'
 }
 
 & $gradle --stacktrace @tasks

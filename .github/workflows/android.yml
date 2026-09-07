@@ -39,9 +39,8 @@ jobs:
           :app:compileDebugAndroidTestKotlin
           :app:lintDebug
           :app:assembleDebug
-      - name: 无生产密钥的 Release Lint、APK 与 AAB 门禁
+      - name: 未签名 Release 的 Lint 与 APK 门禁
         run: >-
           ./gradlew --no-daemon
           :app:lintRelease
           :app:assembleRelease
-          :app:bundleRelease

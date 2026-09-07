@@ -26,10 +26,10 @@
 ### Lint 与构建
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:assembleDebug :app:bundleRelease
+.\gradlew.bat :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin :app:lintDebug :app:assembleDebug
 ```
 
-Release 默认可生成未签名 AAB；正式签名见 `docs/RELEASE.md`。
+Release 默认为未签名产物，仅作构建/静态门禁；仓库不包含正式签名与发布流程。
 
 ### Android instrumentation
 
