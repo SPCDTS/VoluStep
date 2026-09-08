@@ -1,141 +1,71 @@
-# 架构说明
+# 架构与曲线设计
 
-## 目标与约束
+VoluStep 将实体音量键事件映射为 Android `STREAM_MUSIC` 的整数档位。曲线决定每次按键跨越多少个系统档位；实际音量范围由当前输出设备提供。
 
-应用把手机实体音量键的离散事件转换为用户定义的整数 index 序列，数据模型从一开始就接受 Android 公开音量接口只能写整数档位。核心状态方程是：
+## 代码结构
 
-```text
-初始 DOWN → KeyToken(deviceId, keyCode, downTime)
-repeat → 只刷新 heartbeat；UP → 结束同一 token
-        ↓
-x(t) ∈ {-1, 0, +1}
-        ↓  仅 active press 启动 20 ms latest-only ticker，不依赖 OEM key-repeat 频率
-离散状态 q ∈ {0, …, K}；短按移动一个状态，300 ms 时触发首个连续状态，之后按固定间隔累积
-        ↓  在 P 个整数按键位控制点折线 C(x) 上按均匀 q/K 采样，投影为严格递增表 I[q]
-STREAM_MUSIC 目标整数 index = I[q]
-        ↓  setStreamVolume + 单 verification cycle 的约 80/380 ms 回读
-AudioPolicy → 蓝牙 AVRCP/VCS → 耳机固件
-```
+源码位于 [`app/src/main/java/dev/spcdts/volumemapper/`](../app/src/main/java/dev/spcdts/volumemapper)。所有组件运行在同一进程，共享设置和运行状态。
 
-`K` 表示从最小音量到最大音量需要的短按次数，`P` 表示搭建折线的控制点总数。每个控制点保存 `0…K` 内严格递增的整数按键位置与整数 y，因此 `P≤K+1`；`K_effective+1` 个实际按键位置固定均匀。运行时在这些位置采样折线，再用最小平方整数投影生成严格递增的实际 index 表，保证每次有效短按至少改变一个 Android index。较小路由只降低 `K_effective`，不会在编辑任一参数时覆盖完整作者曲线。完整交互和投影规则见 [CURVE_EDITOR.md](CURVE_EDITOR.md)。
+| 模块 | 职责 |
+|---|---|
+| `core/StepVolumeMap`、`BoundStepVolumeMap` | 保存整数控制点，将曲线绑定到当前路由的音量范围 |
+| `core/VolumeMappingReducer` | 处理短按、长按、松手、取消和真实音量同步 |
+| `audio/AudioManagerVolumeBackend` | 通过公开 API 探测输出路由，缓存范围，读写媒体音量 |
+| `runtime/VolumeKeyAccessibilityService` | 接收按键事件，交给 coordinator 判断是否消费 |
+| `runtime/MappingCoordinator` | 串行处理手势、设置、路由变化、音量写入和回读 |
+| `runtime/MappingControllerService`、`AccessibilityRuntimeAnchor` | 管理前台控制器和随无障碍服务绑定的透明运行窗口 |
+| `data/SettingsRepository` | 加载、迁移和保存设置 |
+| `ui/` | 曲线编辑、固定音量、长按间隔、权限披露和设备状态 |
 
-## 代码边界
+## 曲线模型
 
-```text
-core/
-  StepVolumeMap            整数按键位控制点、选段中点插入、选点删除与严格单调投影
-  BoundStepVolumeMap       把设置曲线绑定到当前路由的实际整数 index 表
-  MappingCurve             预设形状与旧设置迁移
-  VolumeMappingReducer     离散短按/固定间隔长按/UP 状态机；orphan repeat 严格 no-op
-  RouteVolume              路由、范围、dB 表和快照模型
+`StepVolumeMap` 保存基准跨度 `S_basis`、按键次数 `K` 和 `P` 个控制点。控制点坐标为整数 `(pressPosition, offset)`，两端固定为 `(0, 0)` 与 `(K, S_basis)`，两轴都严格递增。
 
-audio/
-  AudioManagerVolumeBackend 公开 API 路由探测、范围缓存、读写和环境回调
+- `K` 表示从最小音量到最大音量需要的短按次数，满足 `1 ≤ K ≤ S_basis`。
+- `P` 包含两个端点，满足 `2 ≤ P ≤ K+1`；界面另外限制最多 16 个控制点。
+- 控制点不必等距；归一化横坐标由 `pressPosition / K` 派生，不单独保存。
 
-runtime/
-  AccessibilityRuntimeAnchor    透明不可交互的 1×1 无障碍窗口；有限重试并随服务解绑销毁
-  VolumeKeyAccessibilityService  只把 KeyEvent 交给 coordinator，不读取窗口内容
-  MappingControllerService       Android 17 specialUse FGS
-  MappingCoordinator             token owner、双 epoch、单 actor、节流、回读、fail-open
+绑定当前路由时，设 `S_route = maxIndex - minIndex`，有效按键次数为 `K_effective = min(K, S_route)`。算法在均匀按键位置采样控制折线，将纵轴缩放到实际范围，再用最小平方整数投影生成严格递增的目标表 `I[0…K_effective]`。投影固定端点，复杂度为 `O(K_effective × S_route)`。
 
-data/
-  SettingsRepository       原子加载快照、FIFO 单写入 actor、拖动防抖与立即写 barrier
+因此，每次有效短按至少跨越一个系统档位。当前音量若不在目标表中，音量加选择第一个严格更大的目标，音量减选择第一个严格更小的目标。跨度为零或后端报告固定音量时，映射交还系统处理。
 
-ui/
-  CurveEditor              点/线段互斥选择、上下文增删、双轴硬吸附和当前音量水平标记
-  FixedVolumeSection       固定 media index 按钮与连续编辑底部层
-  VolumeMapperApp          单页控制、固定音量、长按间隔、披露和折叠设备状态
-```
+切换到档位较少的路由只改变运行时目标表，不覆盖保存的基准曲线。显式 `rebase()` 会优先保留形状；若整数量化改变了已绑定的目标，则改用每个目标一个控制点，保持按键行为。
 
-所有组件都在单进程中，避免 AccessibilityService、前台服务和 UI 各自持有不同状态。
+## 曲线编辑
 
-设置仓库把“当前设置 + 初始加载完成”作为一个原子 UI 快照发布；加载完成前主开关、曲线、固定音量和长按配置均不可写。固定值使用实际 media index，按整数排序去重；添加和删除在 `stateLock` 内基于最新快照原子变换，避免快速连续操作覆盖。内存状态变更与完整快照入队在同一临界区线性化，普通拖动快照按入队时间做 trailing-edge 防抖，立即写作为 FIFO barrier，带回执请求只在 DataStore 实际落盘后完成。单次非取消写失败只拒绝当前请求，writer 继续处理后续完整快照。
+| 操作 | 规则 |
+|---|---|
+| 调整按键次数 | 保留点数和纵轴值，按原比例将横坐标重新投影到严格递增的整数网格 |
+| 新增控制点 | 选线段时在该段插入；选点时使用右侧段，末点使用左侧段。目标段必须有空余整数 X/Y，新点取段内整数中点附近的折线值 |
+| 删除控制点 | 只删除选中的内部点，之后选中合并后的线段；端点不可删除 |
+| 拖动控制点 | 两轴吸附整数；横向限制在相邻点之间，纵向跨越相邻值时最小幅度推移邻点，保持严格递增 |
 
-## 按键一致性
+点和线段互斥选择。选中态使用紫色，绿色水平线和交点表示系统回读的当前音量。拖动先更新草稿，抬手后提交；路由或外部设置改变导致拖动取消时，恢复最新已保存状态。画布为 TalkBack 提供选择和整数移动操作。
 
-`onKeyEvent()` 必须尽快返回。回调只读取原子缓存，构造 `KeyToken(deviceId, keyCode, downTime)`，以 CAS 取得单一 owner，并用有界 `Channel(64)` 的 `trySend` 投递首次 DOWN。它不会调用会触发 Binder 的 AudioManager 查询或写入。
+## 按键与并发
 
-一次新的 DOWN 仅在以下条件全部满足时消费：
+`onKeyEvent()` 只检查缓存状态、建立 `KeyToken(deviceId, keyCode, downTime)` 并投递命令，不执行文件 I/O 或 AudioManager 查询。新的 DOWN 只有在控制器、无障碍服务、媒体模式和路由均可用，且有界队列接受命令时才被消费；过期初始事件会放行。
 
-- 用户已从可见 Activity 启动前台控制器；
-- AccessibilityService 已连接；
-- 当前不是固定音量、故障放行或通话音频模式；
-- 已有有效媒体路由快照；
-- actor 队列接受首次 DOWN，且入队前 control/route epoch 没有变化。
+同一手势只有一个 owner。首次 DOWN 产生短按，repeat 只刷新心跳；达到 300 ms 后开始连续步进，随后按用户设置的 `60…500 ms` 间隔前进。只有持续按住期间才运行 20 ms ticker，按绝对时间累积步数；松手时提交最终目标。约 2 秒没有心跳或 UP 时，watchdog 停止连续调整。
 
-DOWN 一旦消费，同一 token 的 repeat 只更新 atomic heartbeat，不进入 actor；UP 会排空已消费手势，`trySend` 失败时改用可挂起的异步 `send`。disarm、FGS stop、settings、手动刷新、路由变化或 fail-open 会立刻禁止新手势并取消 active/pending/verification，但保留 owner 到 UP；Accessibility 断连会立即清 owner，因为服务已不可能继续接收完整事件流。
+coordinator 使用单个 actor 串行执行写入。普通命令优先处理，tick 通道只保留最新时间，避免积压后继续调整。已消费的手势在一般失效后仍排空到匹配的 UP；无障碍断连时直接清除 owner。
 
-Android 各厂商的 repeat 首延迟和间隔不同。状态机只把首次 DOWN 当成一次 tap；固定 300 ms 阈值本身产生首个连续状态，后续才使用用户配置的间隔。actor 真正确认 active press 后创建 20 ms ticker，结束或失效立即取消，不存在常驻全局 ticker。Tick 使用独立的 conflated channel，只保留最新绝对时间；控制、UP、watchdog 与验证继续使用可靠 FIFO channel，并在两者同时就绪时优先执行。2 秒未收到 heartbeat/UP 时 watchdog 停止连续调整；已经取消但仍等待 UP 的 owner 另有低频 drain watchdog，避免永久粘住。长按按绝对时间累积状态数，只有跨过完整状态时才写入，未满一步的余量留给后续 tick，因此丢弃中间 tick 不会丢失最终位移，但 OEM 是否投递稳定 KeyEvent 仍须真机验证。
+生命周期和设置变化先禁止接收新手势，再递增 `controlEpoch`；音频环境变化还递增 `routeEpoch`。每次 I/O 前后核对代次、路由和范围，丢弃旧结果。长按期间每约 500 ms 重新核对媒体模式、路由、范围和固定音量状态。
 
-## 并发与 epoch
+## 写入与故障处理
 
-所有生命周期、设置、手动刷新和音频环境变化都会先在调用侧把 eligibility 设为 false，再增加 `controlEpoch`；音频环境或未预告的实际路由变化还增加 `routeEpoch`。首次 DOWN 捕获两个 epoch、route ID 与 min/max 范围身份，actor 在 snapshot、`setStreamVolume()` 和写后 snapshot 的 I/O 前后都复核这些值。同一 route ID 的范围变化也会取消手势；只改变诊断 dB 元数据则不会无谓重建 index reducer。即使失效事件和 Binder 调用并发，旧结果也不能重新启用映射或继续排队写入。
+每次新手势从系统实际音量开始。首次成功写入建立回读周期，后续写入只更新该周期的最新目标；约 80 ms 首读、约 380 ms 终读，并为最新写入保留稳定时间。
 
-命令队列有界；可合并的 Tick 在队列满时允许丢弃，因为 reducer 按绝对时间积分。生命周期命令和已消费手势的 UP 使用保证投递路径。coordinator 只在 actor 中修改 mapping、pending target 和 verification cycle；回调侧只拥有原子资格、owner 与 heartbeat。
+稳定时间内的暂时不匹配不会覆盖较新的目标；成熟的不匹配才按实际读数重新定位。连续三次读写或最终回读失败后进入故障放行，后续新按键由系统处理。系统回读一致只能证明 Android 接受了整数档位，不能证明耳机产生了对应的可听差异。
 
-## Android 17 生命周期
+固定音量按钮也通过同一 actor 写入，但使用独立请求状态。操作要求 Activity 可见，且点击时与写入前的路由和范围一致，不依赖无障碍或映射控制器。快速连续点击以最新请求为准，失败通过独立状态提示，成功回读会同步曲线标记和下一次按键的起点。
 
-Android 17 对后台音频焦点、播放和系统音量修改进行了强化。后台 `setStreamVolume()` 需要可见 Activity，或满足要求的非 `shortService` 前台服务；target 37 还涉及 while-in-use 资格，违规调用可能静默无效。
+## 设置与生命周期
 
-本项目采用：
+设置加载完成前，界面不接受配置写入。DataStore 使用单写入队列：普通变更合并尾部写入，立即保存请求按顺序落盘。`v4` 格式保存基准跨度、按键次数和整数控制点；旧版本迁移逻辑保留在 `SettingsRepository`。固定音量保存实际 index，排序去重；路由不支持的值保留显示但禁用执行。
 
-1. 用户在可见 Activity 中打开顶部“控制”开关；
-2. Activity 启动 `foregroundServiceType="specialUse"` 服务；
-3. 服务立即向系统提交启动 FGS 所需的 `Notification` 对象；应用不声明通知权限，因此 Android 13+ 的普通通知抽屉不显示它，系统“运行中的应用”入口仍可见；
-4. AccessibilityService 只有在 FGS 健康时才消费新手势；
-5. AccessibilityService 连接后创建 `TYPE_ACCESSIBILITY_OVERLAY`、1×1、透明、不可触摸且不可聚焦的运行锚点；添加瞬时失败时最多延迟重试三次，解绑或销毁时同步移除；它不需要 `SYSTEM_ALERT_WINDOW`；
-6. Launcher Activity 在 Manifest 中始终设置 `excludeFromRecents=true`，避免 HyperOS 把上划卡片升级成包级 Force Stop；用户从桌面图标重新打开控制页；
-7. `android:stopWithTask="false"` 继续作为服务生命周期防线；服务使用 `START_NOT_STICKY`，不在开机或无障碍回调中后台自启。
+主开关从可见 Activity 启动 `specialUse` 前台服务，服务使用 `START_NOT_STICKY`，不在开机或无障碍回调中自动启动。主任务排除在最近任务列表之外，用户从桌面图标返回应用。
 
-固定音量按钮属于可见 Activity 内的显式操作，不依赖无障碍或映射 FGS。`MainActivity.onStart/onStop` 单独维护 UI 可见状态；coordinator 在排队前和紧贴 `setStreamVolume()` 前都复核该状态。按钮请求仍进入同一个 actor，与实体键写入串行执行，但使用独立请求代次和结果状态。
+无障碍服务连接期间持有透明、不可触摸且不可聚焦的 1×1 窗口，解绑时移除。这是后台运行的兼容策略，不能恢复授权、绕过强行停止或保证熄屏按键分发。
 
-## 固定音量快捷值
-
-- DataStore 保存的是 Android 实际媒体音量 index，不保存百分比，也不会在路由变化时缩放或截断；当前路由不支持的已保存值继续显示但不可执行，仍可从编辑层删除；
-- 点击时同时捕获 UI 所见 route ID 与 min/max 身份。actor 刷新媒体上下文和快照后必须与捕获值一致，并在 Binder 前再次复核 epoch、latest request 和 Activity 可见性；
-- 写入成功后约 80 ms 首读、约 380 ms 终读。该验证与曲线设置、FGS 和无障碍状态的通用 control transition 解耦，避免系统已经写入但绿色当前音量线仍停在旧值；路由或范围不一致则拒绝，不会把旧路由按钮应用到新路由；
-- 快速连续点击采用 latest-wins。终态只允许相同 request ID 的 `Applying` 原子转换为 `Applied` 或 `Rejected`，旧回读不能覆盖新请求；
-- 固定按钮失败使用独立状态和 Snackbar，不增加实体键映射的连续失败次数，也不会触发 fail-open。成功回读会重锚 reducer，使下一次实体按键从真实系统音量继续。
-
-应用并不播放媒体，因此不能把 FGS 冒充 `mediaPlayback`；`specialUse` 是符合该用途的类型。
-
-运行锚点只是在小米等 OEM 上验证“持有无障碍窗口”是否改善后台调度的经验策略，不是 AOSP 保活契约。它不能恢复无障碍授权、绕过 force-stop、在重启后自动启动，或保证熄屏时系统仍分发实体键。如果未来在商店上架，必须重新审查这项实现与 Accessibility API 政策，必要时拆分发布变体。
-
-官方资料：[Android 17 后台音频强化](https://developer.android.com/about/versions/17/changes/bg-audio)、[specialUse 服务类型](https://developer.android.com/develop/background-work/services/fgs/service-types#special-use)。
-
-## 路由与多厂商策略
-
-核心算法不按 `Build.MANUFACTURER` 分支，也不假定媒体范围是 0–15 或 0–150。后端按音频环境 generation 缓存路由范围，并读取：
-
-- `isVolumeFixed`；
-- `getStreamMinVolume()` / `getStreamMaxVolume()`；
-- 当前 index；
-- API 33+ 的 `getAudioDevicesForAttributes(USAGE_MEDIA)`；
-- API 28–32 的 MediaRouter/已连接输出设备启发式结果；
-- 仅对 `CONFIRMED` 路由读取每个 index 的 `getStreamVolumeDb()`。
-
-API 33+ 为媒体属性恰好返回一个设备时标记 `CONFIRMED`；返回多个设备、结果含歧义或 API 28–32 回退选择时标记 `HEURISTIC`。启发式 device type 可能生成“看似有效但属于错误设备”的 dB 表，因此此时 dB 表保持为空。dB 只用于诊断，不参与离散曲线的目标计算。`stableId` 组合 route type、`AudioDeviceInfo.id` 与产品名，只用于当前运行时识别，不能作为跨重连或 OTA 的永久设备 ID。
-
-设备、MediaRouter 或 API 31+ mode 回调会使范围缓存失效并触发重新探测。active press 还每约 500 ms 在 actor 中刷新 mode 并读取轻量缓存快照，覆盖 API 28–30 没有 mode listener、以及设备未 add/remove 却发生实际媒体路由切换的情况；该 guard 不用观察到的 current index 覆盖 active logical/expected。
-
-## 写入、节流和故障放行
-
-- 连续长按用 20 ms latest-only ticker 与 20 ms 写入门限；最短 60 ms 配置平均最多约 16.7 个相邻状态/秒，空闲时把轮询量化降至约 20 ms，遇到线程调度或 Binder 停顿时则由最新 tick 按绝对时间追赶，不积压旧 tick；首次 DOWN 和最终 UP 的强制写入不受这条稳态门限限制；
-- UP 总是强制收敛到 reducer 的最终整数目标，避免最后一个已跨过但仍被节流的状态丢失；
-- 每次新手势先读取真实音量，并强制 `expectedIndex = observed`；如果 observed 正好是配置状态，短按移动到相邻状态；如果位于两个状态之间，则按方向选择严格大于或小于它的第一个目标；
-- active hold 的匹配回读会保留未满一个状态的时间余量；松手后余量清零。下一次新手势仅在平台 index、路由和范围都未变化时保留“当前是哪个精确配置状态”的身份；
-- 第一次成功写入创建一个 verification cycle，后续连续写只更新该 cycle 的 latest expected，而不是创建会持续饿死的 per-write generation；
-- cycle 约 80 ms 首次回读、约 380 ms 最终回读；若 latest write 尚不足 380 ms，松手后会延后 final，连续 active hold 则开始下一固定周期；
-- control/route epoch 或 route ID 过期的验证直接丢弃；
-- 新写入尚未获得完整 settling 窗口时，mismatch 不覆盖 exact state、长按余量或更新的 pending target；成熟 mismatch 才清除旧 pending 并以系统 observed index 重锚，final mismatch 计一次失败；settling 时间从阻塞 Binder 写入成功返回后开始；
-- 连续三次失败进入 fail-open，后续新按键恢复系统默认行为；
-- 后端报告 fixed volume，或 min/max 实际只有一个 index 时，都不消费按键；
-- 用户可在 UI 重新探测，并通过应用主开关或系统“运行中的应用”入口停止服务；API 28–32 还可使用可见 FGS 通知的停止 action。
-
-小米可能把两个系统 index 映射到相同 AVRCP 值；“系统回读一致”只能证明 AudioService 接受了请求，不能证明耳机产生了可听响度差异。
-
-## 安全与隐私
-
-无障碍 XML 在所有版本明确设置 `canRetrieveWindowContent=false`，API 31+ 资源另设 `isAccessibilityTool=false`，且不申请截图、手势或窗口内容能力。系统可能向服务投递其他实体按键事件；应用检查键码后立即放行非音量键，只对音量键在内存中临时使用键码、按下/释放状态、重复次数、事件/按下时间和输入设备 ID。所有曲线与配置数据保存在本地，事件数据不持久化或上传。
-
-应用在用户启用无障碍服务之前，必须在正常流程中显示独立显著披露并取得主动同意。
+权限和数据处理见 [隐私说明](PRIVACY.md)，设备限制见 [兼容性说明](OEM_COMPATIBILITY.md)，验证入口见 [测试说明](TESTING.md)。
