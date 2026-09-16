@@ -229,7 +229,7 @@ function Get-AppTaskId {
     $escapedPackage = [regex]::Escape($packageName)
     $match = [regex]::Match(
         $dump,
-        "\* Task\{[^\r\n]*#(\d+)[^\r\n]*A=\d+:${escapedPackage}(?:\s|$)"
+        "\* Task(?:Record)?\{[^\r\n]*#(\d+)[^\r\n]*A=(?:\d+:)?${escapedPackage}(?:\s|$)"
     )
     if (-not $match.Success) { return $null }
     return [int]$match.Groups[1].Value
@@ -245,7 +245,7 @@ function Test-AppTaskExcludedFromRecents {
     $escapedPackage = [regex]::Escape($packageName)
     $taskMatch = [regex]::Match(
         $dump,
-        "(?ms)\* Recent #\d+: Task\{[^\r\n]*#${TaskId}[^\r\n]*${escapedPackage}[^\r\n]*\r?\n.*?^\s*intent=\{flg=0x([0-9a-fA-F]+)"
+        "(?ms)\* Recent #\d+: Task(?:Record)?\{[^\r\n]*#${TaskId}[^\r\n]*${escapedPackage}[^\r\n]*\r?\n.*?^\s*intent=\{[^\r\n]*\bflg=0x([0-9a-fA-F]+)"
     )
     if (-not $taskMatch.Success) { return $false }
 
@@ -487,12 +487,13 @@ function Test-AccessibilityRuntimeAnchor {
 
     $anchorLength = [Math]::Min(2000, $dump.Length - $anchorStart)
     $anchorBlock = $dump.Substring($anchorStart, $anchorLength)
-    foreach ($attribute in @('1x1', 'ACCESSIBILITY_OVERLAY', 'TRANSPARENT', 'NOT_FOCUSABLE', 'NOT_TOUCHABLE')) {
+    foreach ($attribute in @('1x1', 'TRANSPARENT', 'NOT_FOCUSABLE', 'NOT_TOUCHABLE')) {
         if ($anchorBlock.IndexOf($attribute, [StringComparison]::Ordinal) -lt 0) {
             return $false
         }
     }
-    return $true
+    # Android 9 以数字输出 TYPE_ACCESSIBILITY_OVERLAY，新系统使用符号名。
+    return $anchorBlock -match '\bty=(?:ACCESSIBILITY_OVERLAY|2032)\b'
 }
 
 function Test-ControllerServiceRunning {

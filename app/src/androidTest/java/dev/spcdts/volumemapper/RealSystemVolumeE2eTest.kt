@@ -303,7 +303,6 @@ class RealSystemVolumeE2eTest {
         )
         listOf(
             "1x1",
-            "ACCESSIBILITY_OVERLAY",
             "TRANSPARENT",
             "NOT_FOCUSABLE",
             "NOT_TOUCHABLE",
@@ -313,6 +312,11 @@ class RealSystemVolumeE2eTest {
                 anchorBlock.contains(expectedAttribute),
             )
         }
+        val overlayType = android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        assertTrue(
+            "运行锚点必须是无障碍浮层类型",
+            Regex("\\bty=(?:ACCESSIBILITY_OVERLAY|$overlayType)\\b").containsMatchIn(anchorBlock),
+        )
     }
 
     private fun enableOnlyRequiredAccessibilityService(
@@ -407,8 +411,12 @@ class RealSystemVolumeE2eTest {
 
     private fun useApplicationLocale(languageTag: String?) {
         if (languageTag.isNullOrBlank()) return
-        check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            "宿主 E2E 的应用语言参数只支持 Android 13 及以上版本"
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            check(composeRule.activity.resources.configuration.locales[0].language ==
+                LocaleList.forLanguageTags(languageTag)[0].language) {
+                "Android 12 及以下请先将模拟器系统语言设为 $languageTag"
+            }
+            return
         }
         val requestedLocales = LocaleList.forLanguageTags(languageTag)
         composeRule.runOnUiThread {

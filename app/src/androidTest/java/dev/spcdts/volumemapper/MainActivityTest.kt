@@ -14,6 +14,7 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -22,6 +23,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import dev.spcdts.volumemapper.core.StepVolumeMap
@@ -147,9 +149,10 @@ class MainActivityTest {
         composeRule.onNodeWithTag(VolumeMapperTestTags.LONG_PRESS_INTERVAL_VALUE)
             .performScrollTo()
             .assertIsDisplayed()
-        composeRule.onNodeWithTag(VolumeMapperTestTags.DEVICE_TOGGLE)
-            .performScrollTo()
-            .assertIsDisplayed()
+        // 小屏的 LazyColumn 尚未组合末尾卡片，应先让列表滚动到目标节点。
+        composeRule.onNodeWithTag(VolumeMapperTestTags.SCREEN_MAIN)
+            .performScrollToNode(hasTestTag(VolumeMapperTestTags.DEVICE_TOGGLE))
+        composeRule.onNodeWithTag(VolumeMapperTestTags.DEVICE_TOGGLE).assertIsDisplayed()
 
         listOf(
             VolumeMapperTestTags.NAV_CONTROL,
@@ -165,6 +168,8 @@ class MainActivityTest {
 
         val snapshot = checkNotNull(graph.mappingCoordinator.runtime.value.snapshot)
         val currentIndex = snapshot.currentIndex
+        composeRule.onNodeWithTag(VolumeMapperTestTags.SCREEN_MAIN)
+            .performScrollToNode(hasTestTag(CurveEditorTestTags.CANVAS))
         val markerDescription = contentDescription(CurveEditorTestTags.CURRENT_VOLUME_MARKER)
         assertTrue(markerDescription.contains(appString(R.string.curve_chart_description)))
         assertTrue(
