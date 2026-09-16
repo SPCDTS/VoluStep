@@ -145,8 +145,9 @@ class RealSystemVolumeE2eTest {
                 composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
                     repository.settings.value.disclosureAccepted
                 }
-                composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
-                    !composeRule.activity.hasWindowFocus()
+                composeRule.waitUntil(ACCESSIBILITY_TIMEOUT_MILLIS) {
+                    // 对话框关闭也会暂时丢失焦点，必须等系统设置真正恢复到前台。
+                    automation.rootInActiveWindow?.packageName?.toString() == "com.android.settings"
                 }
                 shell(automation, "input keyevent KEYCODE_BACK")
                 composeRule.waitUntil(SETTINGS_TIMEOUT_MILLIS) {
@@ -206,7 +207,7 @@ class RealSystemVolumeE2eTest {
             awaitCoordinatorSettings(coordinator, testSettings)
 
             // 宿主机 E2E 只用本方法通过真实 UI 完成披露并写入确定性的 40% 离散档位。
-            // 返回后 UiAutomation 已断开；宿主机随后通过 root sendevent 向模拟器 evdev
+            // 返回后 UiAutomation 已断开；宿主机随后以 root 向模拟器 evdev
             // 注入硬件层事件，避免 adb shell input/UiAutomation 绕过 Accessibility input filter。
             if (prepareExternalJourney) {
                 instrumentation.sendStatus(

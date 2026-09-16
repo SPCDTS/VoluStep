@@ -347,17 +347,23 @@ function Send-EmulatorVolumeKey {
     $keyCode = if ($Direction -eq 'UP') { 115 } else { 114 }
     # 直接写入模拟器 evdev，在内核层生成 Linux input event；adb shell input 与
     # UiAutomation 的注入路径会跳过 Accessibility input filter，不能用于本断言。
-    # 整个手势放在一次设备端 shell 中，避免四次独立 adb 往返把标称按住时间拉长。
+    # 通过 shell 内置 print 一次写入 EV_KEY + SYN_REPORT；四次 sendevent 进程启动
+    # 在低性能 CI 上会把 60 ms 短按拖过 300 ms 长按阈值。
     $holdSeconds = ($HoldMillis / 1000.0).ToString(
         '0.000',
         [Globalization.CultureInfo]::InvariantCulture
     )
-    $gestureCommand =
-        "sendevent $script:volumeInputDevice 1 $keyCode 1; " +
-        "sendevent $script:volumeInputDevice 0 0 0; " +
-        "sleep $holdSeconds; " +
-        "sendevent $script:volumeInputDevice 1 $keyCode 0; " +
-        "sendevent $script:volumeInputDevice 0 0 0"
+    $keyOffset = $script:inputEventSize - 8
+    $downFrame = [byte[]]::new($script:inputEventSize * 2)
+    $downFrame[$keyOffset] = 1 # EV_KEY
+    $downFrame[$keyOffset + 2] = $keyCode
+    $downFrame[$keyOffset + 4] = 1
+    $upFrame = [byte[]]$downFrame.Clone()
+    $upFrame[$keyOffset + 4] = 0
+    $downOctal = ($downFrame | ForEach-Object { '\0' + [Convert]::ToString($_, 8).PadLeft(3, '0') }) -join ''
+    $upOctal = ($upFrame | ForEach-Object { '\0' + [Convert]::ToString($_, 8).PadLeft(3, '0') }) -join ''
+    $gestureCommand = "exec 3>$script:volumeInputDevice; " +
+        "print -n -- '$downOctal' >&3; sleep $holdSeconds; print -n -- '$upOctal' >&3"
     Invoke-Adb shell $gestureCommand | Out-Null
 }
 
@@ -516,6 +522,13 @@ try {
         Enable-AdbRoot
     }
     $script:volumeInputDevice = Get-VolumeInputDevice
+    # input_event 的 timeval 长度取决于写入进程的位数，读取设备 shell 的 ELF class。
+    $shellElfClass = [int](([string](Invoke-Adb shell 'od -An -t u1 -j 4 -N 1 /system/bin/sh')).Trim())
+    $script:inputEventSize = switch ($shellElfClass) {
+        1 { 16 }
+        2 { 24 }
+        default { throw '无法识别 Android shell 的 input_event ABI。' }
+    }
 
     $originalServicesValue =
         ([string](Invoke-Adb shell settings get secure enabled_accessibility_services)).Trim()
