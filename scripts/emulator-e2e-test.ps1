@@ -575,7 +575,8 @@ try {
         -Output $instrumentOutput `
         -Key 'e2eHoldUpIndex')
 
-    Invoke-Adb shell am start '-W' '--activity-new-task' '--activity-clear-task' '-n' $activityComponent | Out-Null
+    # FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK，am 的 -f 接受数字 Intent flags。
+    Invoke-Adb shell am start '-W' '-f' '0x10008000' '-n' $activityComponent | Out-Null
 
     # 先在目标服务尚未启用时取得主开关坐标，避免 uiautomator dump 注册的
     # UiAutomation 与真实 AccessibilityService 反复断连/重绑。服务 bound 后再点击缓存坐标。
@@ -848,6 +849,9 @@ try {
     [IO.File]::WriteAllText((Join-Path $diagnosticDirectory 'e2e-key-delivery.txt'), $diagnostic, [Text.UTF8Encoding]::new($false))
     $diagnostic = (& $adb -s $Serial shell dumpsys activity activities 2>&1) -join "`n"
     [IO.File]::WriteAllText((Join-Path $diagnosticDirectory 'e2e-activities.txt'), $diagnostic, [Text.UTF8Encoding]::new($false))
+    if (Test-Path -LiteralPath $localWindowDump) {
+        Copy-Item -LiteralPath $localWindowDump -Destination (Join-Path $diagnosticDirectory 'e2e-window.xml') -Force
+    }
     & $adb -s $Serial shell screencap -p /sdcard/volustep-e2e-failure.png | Out-Null
     & $adb -s $Serial pull /sdcard/volustep-e2e-failure.png (Join-Path $diagnosticDirectory 'e2e-failure.png') | Out-Null
 } finally {
