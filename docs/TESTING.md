@@ -37,7 +37,7 @@ $env:ANDROID_SERIAL = 'emulator-5554'
 |---|---|
 | `MainActivityTest` | 单页界面、隐私菜单、点/线段选择、增删、按键次数、双轴吸附及无障碍操作 |
 | `FixedVolumePresetTest` | 连续添加删除、关闭映射时的真实音量写入、按钮与曲线状态同步 |
-| `MappingCoordinatorRecoveryTest` | 可控音频后端故障、显式重试、路由重连、超过 2 秒的长按心跳、丢失松手后的自动停止 |
+| `MappingCoordinatorRecoveryTest` | 后端故障与重试、路由重连、长按心跳、丢失松手后的停止、边界音量条反馈及显示开关 |
 | `VolumeKeyAudioIntegrationTest` | 直接向 coordinator 传入手势，验证真实媒体音量；不验证系统按键分派 |
 | `RealSystemVolumeE2eTest` | 披露流程、真实无障碍绑定、运行窗口、前台服务和停止流程；实体键分派由下述宿主脚本验证 |
 
@@ -51,11 +51,11 @@ CI 使用 `python scripts/run-device-tests.py --serial emulator-5554` 安装并�
 .\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -AppLocale zh-CN
 ```
 
-脚本默认先构建并安装应用和测试 APK；已有最新产物时可加 `-SkipBuild`。它验证披露、无障碍服务、前台控制器、通知行为、后台短按与长按、媒体播放期间的熄屏分发能力、唤醒恢复、无障碍解绑重连，以及停止后由系统恢复接管。播放夹具仅存在于 Debug 构建中，循环静音 PCM，不进入正式包。
+脚本默认先构建并安装应用和测试 APK；已有最新产物时可加 `-SkipBuild`。它验证披露、无障碍服务、前台控制器、通知行为、后台短按与长按、音量边界的系统音量条反馈、媒体播放期间的熄屏分发能力、唤醒恢复、无障碍解绑重连，以及停止后由系统恢复接管。边界测试检查系统窗口确实显示、音量不变，并保存截图。播放夹具仅存在于 Debug 构建中，循环静音 PCM，不进入正式包。
 
 **仅在可丢弃的 `emulator-*` 上运行。** 脚本会在开始和结束时清空应用与测试包数据，测试前设置无法恢复；无障碍配置、媒体/铃声音量、通知面板和临时 adbd root 状态会在 `finally` 中恢复，清理失败会使测试失败。
 
-熄屏首键可能在系统策略层直接调节音量而不分发到无障碍。脚本以服务接收计数与 AudioService 写入日志区分映射和系统接管，并强制检查没有重复写入、唤醒与重连可恢复；能力结果保存在 rtifacts/ci/screen-off-capability.json。screenOffMapping=false 不表示熄屏映射通过。
+熄屏首键可能在系统策略层直接调节音量而不分发到无障碍。脚本以服务接收计数与 AudioService 写入日志区分映射和系统接管，并强制检查没有重复写入、唤醒与重连可恢复；能力结果保存在 `artifacts/ci/screen-off-capability.json`。screenOffMapping=false 不表示熄屏映射通过。
 
 脚本从 Linux evdev 注入按键，以经过 Accessibility input filter。`adb shell input keyevent` 和 UiAutomation 注入不能替代这一阶段，因为它们绕过该过滤链路。`emulator-smoke-test.ps1` 仅用于快速安装和启动，不替代完整 E2E。
 

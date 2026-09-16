@@ -197,7 +197,7 @@ class RealSystemVolumeE2eTest {
                 keyConfig = repository.settings.value.keyConfig.copy(
                     holdStepIntervalMillis = 500L,
                 ),
-                showSystemVolumeUi = false,
+                showSystemVolumeUi = prepareExternalJourney,
             )
             repository.updateOutputMap(testSettings.outputMap)
             repository.updateKeyConfig(testSettings.keyConfig)

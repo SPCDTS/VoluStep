@@ -583,6 +583,12 @@ class MappingCoordinator(
 
         if (reduction.writeRequested) {
             applyTarget(reduction.targetIndex, force = true, context = gesture.writeContext)
+        } else if (settings.showSystemVolumeUi && isWriteContextCurrent(gesture.writeContext)) {
+            // 边界按键仍需反馈。只在初始 DOWN 请求音量条，repeat/tick 不重复唤起，
+            // 也不启动音量写入或回读验证；快速 DOWN/UP 仍保留这次已接收的反馈。
+            backend.showMediaVolumeUi().onFailure { failure ->
+                android.util.Log.w("VoluStepController", "Could not show system volume UI", failure)
+            }
         }
         if (isActiveGestureCurrent(gesture)) startTicker(gesture)
     }

@@ -142,6 +142,17 @@ function Set-MediaVolume {
     Set-StreamVolume -Stream 3 -Index $Index
 }
 
+function Test-SystemVolumeBarVisible {
+    # 只读 WindowManager，避免 UiAutomation 建连干扰真实无障碍按键通道。
+    $dump = [string]::Join("`n", [string[]](Invoke-Adb shell dumpsys window windows))
+    foreach ($window in [regex]::Split($dump, '(?m)^\s*Window #\d+ ')) {
+        if ($window -match '^Window\{[^\r\n]*VolumeDialog' -and
+            $window -match 'package=com\.android\.systemui' -and
+            $window -match 'isOnScreen=true') { return $true }
+    }
+    return $false
+}
+
 function Get-WindowXml {
     Invoke-Adb shell uiautomator dump --compressed $remoteWindowDump | Out-Null
     Invoke-Adb pull $remoteWindowDump $localWindowDump | Out-Null
@@ -711,6 +722,34 @@ try {
         throw "持续按住 360 ms 没有在 300 ms 阈值进入连续映射：期望 $expectedHeldUp，实际 $observedHeldUp。"
     }
     $heldUpIndex = (Get-MediaVolume).Current
+
+    Write-Host '补充验证：音量边界的系统音量条反馈'
+    foreach ($boundary in @(
+        @{ Index = $range.Minimum; Direction = 'DOWN'; Name = 'minimum' },
+        @{ Index = $range.Maximum; Direction = 'UP'; Name = 'maximum' }
+    )) {
+        Wait-ForCondition -TimeoutSeconds 15 -FailureMessage '上一条系统音量条未消失，无法验证新按键反馈。' -Condition {
+            -not (Test-SystemVolumeBarVisible)
+        }
+        Set-MediaVolume -Index $boundary.Index
+        $beforeBoundaryCounters = Get-KeyDeliveryCounters
+        Send-EmulatorVolumeKey -Direction $boundary.Direction
+        Wait-ForCondition -FailureMessage "到达 $($boundary.Name) 后再按音量键未显示系统音量条。" -Condition {
+            Test-SystemVolumeBarVisible
+        }
+        $afterBoundaryCounters = Get-KeyDeliveryCounters
+        if ($afterBoundaryCounters.Received -ne $beforeBoundaryCounters.Received + 1 -or
+            $afterBoundaryCounters.Expired -ne $beforeBoundaryCounters.Expired) {
+            throw '边界按键没有及时经过应用的真实无障碍回调。'
+        }
+        if ((Get-MediaVolume).Current -ne $boundary.Index) { throw '边界反馈意外改变了媒体音量。' }
+        $boundaryDirectory = Join-Path $script:ProjectRoot 'artifacts/ci'
+        New-Item -ItemType Directory -Force -Path $boundaryDirectory | Out-Null
+        $boundaryRemote = "/sdcard/volustep-boundary-$($boundary.Name).png"
+        Invoke-Adb shell screencap '-p' $boundaryRemote | Out-Null
+        Invoke-Adb pull $boundaryRemote (Join-Path $boundaryDirectory "boundary-$($boundary.Name).png") | Out-Null
+        Invoke-Adb shell rm $boundaryRemote | Out-Null
+    }
 
     Write-Host '补充验证：媒体播放界面、熄屏、唤醒与无障碍重连'
     Invoke-Adb shell am start '-W' '-n' "$packageName/dev.spcdts.volumemapper.PlaybackFixtureActivity" | Out-Null

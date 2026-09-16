@@ -84,6 +84,14 @@ class AudioManagerVolumeBackend(context: Context) : VolumeBackend {
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, index, flags)
     }
 
+    override fun showMediaVolumeUi(): Result<Unit> = runCatching {
+        audioManager.adjustStreamVolume(
+            AudioManager.STREAM_MUSIC,
+            AudioManager.ADJUST_SAME,
+            AudioManager.FLAG_SHOW_UI,
+        )
+    }
+
     /**
      * Emits when device topology, the selected legacy media route, or audio mode changes.
      * Every signal invalidates route-dependent capability data before it reaches consumers.

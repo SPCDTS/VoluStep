@@ -13,6 +13,7 @@ import dev.spcdts.volumemapper.core.StepVolumeMap
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.MappingCoordinator
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -108,13 +109,74 @@ class MappingCoordinatorRecoveryTest {
         await { backend.writes.size > countAfterWatchdog }
     }
 
-    private fun withController(test: (FakeBackend, MappingCoordinator) -> Unit) {
+    @Test
+    fun lowerBoundaryTapShowsFeedbackWithoutWritingVolume() = withController(initialIndex = 0) { backend, coordinator ->
+        repeat(2) { press ->
+            val down = keyDown()
+            assertTrue(coordinator.handleAccessibilityKey(down))
+            assertTrue(coordinator.handleAccessibilityKey(keyUp(down)))
+            await { backend.uiRequests.get() == press + 1 }
+        }
+        assertEquals(0, backend.observed.currentIndex)
+        assertTrue(backend.writes.isEmpty())
+    }
+
+    @Test
+    fun upperBoundaryHoldShowsFeedbackOnceWithoutWritingVolume() = withController { backend, coordinator ->
+        val down = keyDown(KeyEvent.KEYCODE_VOLUME_UP)
+        assertTrue(coordinator.handleAccessibilityKey(down))
+        await { backend.uiRequests.get() == 1 }
+        repeat(10) { repeat ->
+            SystemClock.sleep(100)
+            assertTrue(coordinator.handleAccessibilityKey(
+                KeyEvent.changeTimeRepeat(down, SystemClock.uptimeMillis(), repeat + 1),
+            ))
+        }
+        assertTrue(coordinator.handleAccessibilityKey(keyUp(down)))
+        assertEquals(1, backend.uiRequests.get())
+        assertEquals(150, backend.observed.currentIndex)
+        assertTrue(backend.writes.isEmpty())
+    }
+
+    @Test
+    fun boundaryFeedbackRespectsHiddenSystemUiSetting() = withController(initialIndex = 0, showSystemUi = false) { backend, coordinator ->
+        val down = keyDown()
+        assertTrue(coordinator.handleAccessibilityKey(down))
+        assertTrue(coordinator.handleAccessibilityKey(keyUp(down)))
+        // 后续反向按键真正写入，证明之前的边界命令已由 actor 处理完毕。
+        val reverse = keyDown(KeyEvent.KEYCODE_VOLUME_UP)
+        assertTrue(coordinator.handleAccessibilityKey(reverse))
+        assertTrue(coordinator.handleAccessibilityKey(keyUp(reverse)))
+        await { backend.writes.isNotEmpty() }
+        assertEquals(0, backend.uiRequests.get())
+    }
+
+    @Test
+    fun feedbackFailureDoesNotDisableVolumeMapping() = withController(initialIndex = 0) { backend, coordinator ->
+        backend.failUiRequest = true
+        val down = keyDown()
+        assertTrue(coordinator.handleAccessibilityKey(down))
+        assertTrue(coordinator.handleAccessibilityKey(keyUp(down)))
+        await { backend.uiRequests.get() == 1 }
+        val reverse = keyDown(KeyEvent.KEYCODE_VOLUME_UP)
+        assertTrue(coordinator.handleAccessibilityKey(reverse))
+        assertTrue(coordinator.handleAccessibilityKey(keyUp(reverse)))
+        await { backend.writes.isNotEmpty() }
+        assertFalse(coordinator.runtime.value.isFailOpen)
+    }
+
+    private fun withController(
+        initialIndex: Int = 150,
+        showSystemUi: Boolean = true,
+        test: (FakeBackend, MappingCoordinator) -> Unit,
+    ) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val backend = FakeBackend()
+        val backend = FakeBackend().apply { observed = observed.copy(currentIndex = initialIndex) }
         val settings = VolumeMapperSettings().let {
             it.copy(
                 outputMap = StepVolumeMap(150, 25, listOf(0, 13, 25), listOf(0, 20, 150)),
                 keyConfig = it.keyConfig.copy(holdStepIntervalMillis = 500),
+                showSystemVolumeUi = showSystemUi,
             )
         }
         val coordinator = MappingCoordinator(backend, MutableStateFlow(settings), scope)
@@ -133,6 +195,8 @@ class MappingCoordinatorRecoveryTest {
     private class FakeBackend : VolumeBackend {
         val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
         val writes = CopyOnWriteArrayList<Int>()
+        val uiRequests = AtomicInteger()
+        @Volatile var failUiRequest = false
         @Volatile var throwOnRefresh = false
         @Volatile var observed = RouteVolumeSnapshot(
             AudioRouteDescriptor("speaker", AudioRouteType.BUILT_IN_SPEAKER, confidence = RouteConfidence.CONFIRMED),
@@ -151,11 +215,16 @@ class MappingCoordinatorRecoveryTest {
             return Result.success(Unit)
         }
         override fun environmentChanges() = changes
+        override fun showMediaVolumeUi(): Result<Unit> {
+            uiRequests.incrementAndGet()
+            return if (failUiRequest) Result.failure(IllegalStateException("Injected UI failure"))
+            else Result.success(Unit)
+        }
     }
 
-    private fun keyDown(): KeyEvent {
+    private fun keyDown(keyCode: Int = KeyEvent.KEYCODE_VOLUME_DOWN): KeyEvent {
         val now = SystemClock.uptimeMillis()
-        return KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN, 0)
+        return KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0)
     }
     private fun keyUp(down: KeyEvent) = KeyEvent.changeTimeRepeat(
         KeyEvent.changeAction(down, KeyEvent.ACTION_UP), SystemClock.uptimeMillis(), 0,
