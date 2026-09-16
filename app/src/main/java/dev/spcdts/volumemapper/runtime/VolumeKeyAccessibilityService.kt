@@ -11,6 +11,8 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import dev.spcdts.volumemapper.VolumeMapperApplication
+import java.io.FileDescriptor
+import java.io.PrintWriter
 
 class VolumeKeyAccessibilityService : AccessibilityService() {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -50,6 +52,15 @@ class VolumeKeyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
 
     override fun onInterrupt() = Unit
+
+    override fun dump(fd: FileDescriptor, writer: PrintWriter, args: Array<out String>) {
+        val delivery = coordinator.keyDeliveryMonitor.state.value
+        writer.println("receivedDowns=${delivery.receivedDowns}")
+        writer.println("expiredDowns=${delivery.expiredDowns}")
+        writer.println("lastDelayMillis=${delivery.lastDelayMillis}")
+        writer.println("anchorAttached=${delivery.anchorAttached}")
+        writer.println("canInterceptKeys=${coordinator.runtime.value.canInterceptKeys}")
+    }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         detachRuntimeAnchor()

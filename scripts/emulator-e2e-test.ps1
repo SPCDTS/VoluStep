@@ -550,6 +550,10 @@ try {
     $originalVolume = (Get-MediaVolume).Current
     $originalRingVolume = (Get-StreamVolume -Stream 2).Current
     $stateCaptured = $true
+    Invoke-Adb shell input keyevent KEYCODE_WAKEUP | Out-Null
+    Invoke-Adb shell wm dismiss-keyguard | Out-Null
+    Invoke-Adb shell cmd statusbar collapse | Out-Null
+    Invoke-Adb shell input keyevent KEYCODE_HOME | Out-Null
 
     Write-Host "[1/7] 安装 APK 并从空白应用数据开始"
     $baselineServiceEntries = @(
@@ -632,7 +636,25 @@ try {
         Test-ControllerServiceRunning
     }
     if ([int]([string](Invoke-Adb shell getprop ro.build.version.sdk)).Trim() -ge 33) {
-        Assert-NotificationAbsentFromShade -Title $notificationTitle
+        # 通知检查独立于按键过滤。UiAutomator 默认抑制无障碍服务，避免在采集层级时
+        # 反复创建/移除运行窗口；控制器保持真实前台运行，检查后恢复服务再测试按键。
+        $notificationOtherServices = @($serviceEntries | Where-Object { $_ -ne $accessibilityComponent })
+        try {
+            if ($notificationOtherServices.Count -eq 0) {
+                Invoke-Adb shell settings delete secure enabled_accessibility_services | Out-Null
+                Invoke-Adb shell settings put secure accessibility_enabled 0 | Out-Null
+            } else {
+                Invoke-Adb shell settings put secure enabled_accessibility_services ($notificationOtherServices -join ':') | Out-Null
+            }
+            Wait-ForCondition -FailureMessage '通知检查前无障碍服务未解绑。' -Condition {
+                -not (Test-AccessibilityServiceBound)
+            }
+            Assert-NotificationAbsentFromShade -Title $notificationTitle
+            if (-not (Test-ControllerServiceRunning)) { throw '通知检查期间前台控制器停止运行。' }
+        } finally {
+            Invoke-Adb shell settings put secure enabled_accessibility_services ($serviceEntries -join ':') | Out-Null
+            Invoke-Adb shell settings put secure accessibility_enabled 1 | Out-Null
+        }
         Wait-ForCondition -FailureMessage '通知抽屉检查后 AccessibilityService 未重新绑定。' -Condition {
             Test-AccessibilityServiceBound
         }
@@ -775,6 +797,14 @@ try {
     Write-Host "E2E PASS：后台短按映射 $initialIndex -> $mappedUpIndex -> $mappedDownIndex，持续按住 360 ms -> $heldUpIndex；停止后由系统 AudioService 接管，media $initialIndex -> $nativeMediaIndex，ring $ringInitial -> $nativeRingIndex。"
 } catch {
     $primaryFailure = $_
+    $diagnosticDirectory = Join-Path $script:ProjectRoot 'artifacts/ci'
+    New-Item -ItemType Directory -Force -Path $diagnosticDirectory | Out-Null
+    foreach ($service in @('audio', 'power', 'accessibility')) {
+        $diagnostic = (& $adb -s $Serial shell dumpsys $service 2>&1) -join "`n"
+        [IO.File]::WriteAllText((Join-Path $diagnosticDirectory "e2e-$service.txt"), $diagnostic, [Text.UTF8Encoding]::new($false))
+    }
+    $diagnostic = (& $adb -s $Serial shell dumpsys activity service $accessibilityComponent 2>&1) -join "`n"
+    [IO.File]::WriteAllText((Join-Path $diagnosticDirectory 'e2e-key-delivery.txt'), $diagnostic, [Text.UTF8Encoding]::new($false))
 } finally {
     Invoke-CleanupStep -Description '唤醒测试屏幕' -Action {
         Invoke-Adb shell input keyevent KEYCODE_WAKEUP | Out-Null

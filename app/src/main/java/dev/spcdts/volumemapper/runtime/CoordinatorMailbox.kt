@@ -72,4 +72,3 @@ internal suspend fun <C : Any, T : Any> receiveNextCoordinatorMessage(
         ticks.onReceive { CoordinatorMailboxMessage.LatestTick(it) }
     }
 }
-
