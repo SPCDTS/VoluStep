@@ -341,18 +341,14 @@ function Invoke-UiTapText {
 function Send-EmulatorVolumeKey {
     param(
         [ValidateSet('UP', 'DOWN')][string]$Direction,
-        [ValidateRange(1, 1500)][int]$HoldMillis = 60
+        [ValidateRange(0, 1500)][int]$HoldMillis = 0
     )
 
     $keyCode = if ($Direction -eq 'UP') { 115 } else { 114 }
     # 直接写入模拟器 evdev，在内核层生成 Linux input event；adb shell input 与
     # UiAutomation 的注入路径会跳过 Accessibility input filter，不能用于本断言。
-    # 通过 shell 内置 print 一次写入 EV_KEY + SYN_REPORT；四次 sendevent 进程启动
-    # 在低性能 CI 上会把 60 ms 短按拖过 300 ms 长按阈值。
-    $holdSeconds = ($HoldMillis / 1000.0).ToString(
-        '0.000',
-        [Globalization.CultureInfo]::InvariantCulture
-    )
+    # 短按把 DOWN/SYN/UP/SYN 一次写入，避免启动 sleep 进程的调度延迟
+    # 将短按拖过长按阈值；只有显式长按才在两个事件之间等待。
     $keyOffset = $script:inputEventSize - 8
     $downFrame = [byte[]]::new($script:inputEventSize * 2)
     $downFrame[$keyOffset] = 1 # EV_KEY
@@ -362,8 +358,16 @@ function Send-EmulatorVolumeKey {
     $upFrame[$keyOffset + 4] = 0
     $downOctal = ($downFrame | ForEach-Object { '\0' + [Convert]::ToString($_, 8).PadLeft(3, '0') }) -join ''
     $upOctal = ($upFrame | ForEach-Object { '\0' + [Convert]::ToString($_, 8).PadLeft(3, '0') }) -join ''
-    $gestureCommand = "exec 3>$script:volumeInputDevice; " +
-        "print -n -- '$downOctal' >&3; sleep $holdSeconds; print -n -- '$upOctal' >&3"
+    if ($HoldMillis -eq 0) {
+        $gestureCommand = "print -n -- '$downOctal$upOctal' >$script:volumeInputDevice"
+    } else {
+        $holdSeconds = ($HoldMillis / 1000.0).ToString(
+            '0.000',
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        $gestureCommand = "exec 3>$script:volumeInputDevice; " +
+            "print -n -- '$downOctal' >&3; sleep $holdSeconds; print -n -- '$upOctal' >&3"
+    }
     Invoke-Adb shell $gestureCommand | Out-Null
 }
 
