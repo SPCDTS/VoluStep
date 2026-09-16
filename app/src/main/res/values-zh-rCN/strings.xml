@@ -158,4 +158,13 @@
     <string name="runtime_fail_open">%1$s；已自动放行后续音量键</string>
     <string name="audio_error_fixed_volume">该设备报告固定音量，系统不允许应用调整</string>
     <string name="audio_error_no_output">系统没有报告媒体输出设备</string>
+    <string name="runtime_backend_failed">音频服务暂不可用，音量键已交还系统。设备恢复后可重新检测。</string>
+    <string name="device_key_delivery">音量键接收</string>
+    <string name="device_key_count">%1$d 次 · 延迟 %2$d 次</string>
+    <string name="device_key_delay">最近一次分发延迟</string>
+    <string name="device_key_delay_ms">%1$d 毫秒</string>
+    <string name="device_key_no_events">本次连接尚未收到按键</string>
+    <string name="device_key_help">按下音量键后查看计数。若后台或熄屏时计数不增加，请检查无障碍授权与应用电池设置。</string>
+    <string name="device_background_warning">后台支持暂不可用，请重新启用无障碍并检查应用电池设置。</string>
+    <string name="device_retry">重新检测音量控制</string>
 </resources>

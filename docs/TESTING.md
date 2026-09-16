@@ -18,7 +18,9 @@ Windows 使用 `gradlew.bat`；采用仓库辅助环境时，先执行 `. .\scri
 | `SettingsSerializationTest` | 设置编解码、旧格式迁移、损坏字段降级和保存队列 |
 | `MappingCoordinatorStateTest`、`AccessibilityKeyFreshnessTest` | 状态一致性、命令优先级、固定音量回读竞争和迟到事件处理 |
 
-源码位于 [`app/src/test`](../app/src/test)。[Android CI](../.github/workflows/android.yml) 执行上述构建检查，并限制 JVM 与 Android 测试合计不超过 30 个 `@Test` 入口；CI 不运行设备测试。
+音量键接收诊断由 `KeyDeliveryMonitorTest` 覆盖，包括 500 ms 超时边界、时钟异常和重连清零。
+
+源码位于 [`app/src/test`](../app/src/test)。[Android CI](../.github/workflows/android.yml) 执行上述构建检查，取消固定测试数量上限，并在 API 28、36 模拟器中执行所有 instrumentation 和真实输入链路 E2E。失败时保存构建报告及设备日志；跳过数单独报告，不视为通过。
 
 ## Android 设备测试
 
@@ -35,8 +37,11 @@ $env:ANDROID_SERIAL = 'emulator-5554'
 |---|---|
 | `MainActivityTest` | 单页界面、隐私菜单、点/线段选择、增删、按键次数、双轴吸附及无障碍操作 |
 | `FixedVolumePresetTest` | 连续添加删除、关闭映射时的真实音量写入、按钮与曲线状态同步 |
+| `MappingCoordinatorRecoveryTest` | 可控音频后端故障、显式重试、路由重连、超过 2 秒的长按心跳、丢失松手后的自动停止 |
 | `VolumeKeyAudioIntegrationTest` | 直接向 coordinator 传入手势，验证真实媒体音量；不验证系统按键分派 |
 | `RealSystemVolumeE2eTest` | 披露流程、真实无障碍绑定、运行窗口、前台服务和停止流程；实体键分派由下述宿主脚本验证 |
+
+CI 使用 `python scripts/run-device-tests.py --serial emulator-5554` 安装并检查 instrumentation 结果；它会明确拒绝真机序列号。
 
 普通设备测试会保留 Debug 应用数据，已接受披露的设备走已同意路径。需要从空白数据验证首次披露时，使用宿主 E2E。
 
@@ -46,7 +51,7 @@ $env:ANDROID_SERIAL = 'emulator-5554'
 .\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -AppLocale zh-CN
 ```
 
-脚本默认先构建并安装应用和测试 APK；已有最新产物时可加 `-SkipBuild`。它验证披露、无障碍服务、前台控制器、通知行为、后台音量加减，以及停止后由系统恢复接管。
+脚本默认先构建并安装应用和测试 APK；已有最新产物时可加 `-SkipBuild`。它验证披露、无障碍服务、前台控制器、通知行为、后台短按与长按、媒体播放期间熄屏与唤醒、无障碍解绑重连，以及停止后由系统恢复接管。播放夹具仅存在于 Debug 构建中，循环静音 PCM，不进入正式包。
 
 **仅在可丢弃的 `emulator-*` 上运行。** 脚本会在开始和结束时清空应用与测试包数据，测试前设置无法恢复；无障碍配置、媒体/铃声音量、通知面板和临时 adbd root 状态会在 `finally` 中恢复，清理失败会使测试失败。
 

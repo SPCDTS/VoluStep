@@ -33,7 +33,7 @@ import kotlin.math.max
  * 厂商差异通过运行时读取 min/max/dB 表以及写后回读处理，不硬编码“小米 150 档”之类的
  * 品牌规则。耳机实际声压和 AVRCP/VCS 原始值不属于公开 API 能力。
  */
-class AudioManagerVolumeBackend(context: Context) {
+class AudioManagerVolumeBackend(context: Context) : VolumeBackend {
     private val applicationContext = context.applicationContext
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private val mediaRouter = context.getSystemService(MediaRouter::class.java)
@@ -49,20 +49,20 @@ class AudioManagerVolumeBackend(context: Context) {
     private val routeRangeKeys = ConcurrentHashMap<RouteCacheKey, RangeCacheKey>()
     private val rangeCacheGeneration = AtomicLong(0L)
 
-    val isVolumeFixed: Boolean
+    override val isVolumeFixed: Boolean
         get() = audioManager.isVolumeFixed
 
-    val isMediaContextSafe: Boolean
+    override val isMediaContextSafe: Boolean
         get() = mediaContextSafe.get()
 
     /** Refreshes the callback-safe media-context cache outside AccessibilityService.onKeyEvent. */
-    fun refreshMediaContextSafety(): Boolean {
+    override fun refreshMediaContextSafety(): Boolean {
         val safe = audioManager.mode == AudioManager.MODE_NORMAL
         mediaContextSafe.set(safe)
         return safe
     }
 
-    fun snapshot(): Result<RouteVolumeSnapshot> = runCatching {
+    override fun snapshot(): Result<RouteVolumeSnapshot> = runCatching {
         val resolvedRoute = resolveOutputDevice()
         val device = resolvedRoute.device
         val descriptor = device.toDescriptor(resolvedRoute.confidence)
@@ -78,7 +78,7 @@ class AudioManagerVolumeBackend(context: Context) {
         )
     }
 
-    fun setMediaVolume(index: Int, showSystemUi: Boolean): Result<Unit> = runCatching {
+    override fun setMediaVolume(index: Int, showSystemUi: Boolean): Result<Unit> = runCatching {
         check(!isVolumeFixed) { applicationContext.getString(R.string.audio_error_fixed_volume) }
         val flags = if (showSystemUi) AudioManager.FLAG_SHOW_UI else 0
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, index, flags)
@@ -88,7 +88,7 @@ class AudioManagerVolumeBackend(context: Context) {
      * Emits when device topology, the selected legacy media route, or audio mode changes.
      * Every signal invalidates route-dependent capability data before it reaches consumers.
      */
-    fun environmentChanges(): Flow<Unit> = callbackFlow {
+    override fun environmentChanges(): Flow<Unit> = callbackFlow {
         fun signalEnvironmentChanged(mode: Int? = null) {
             if (mode != null) mediaContextSafe.set(mode == AudioManager.MODE_NORMAL)
             invalidateRangeCache()

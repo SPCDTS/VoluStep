@@ -8,7 +8,9 @@ param(
 
 . (Join-Path $PSScriptRoot 'android-env.ps1')
 
-$adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
+$adbName = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { 'adb.exe' } else { 'adb' }
+$adb = Join-Path $env:ANDROID_HOME "platform-tools/$adbName"
+$gradleName = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { 'gradlew.bat' } else { 'gradlew' }
 $packageName = 'dev.spcdts.volumemapper.debug'
 $testPackageName = 'dev.spcdts.volumemapper.debug.test'
 $activityComponent = "$packageName/dev.spcdts.volumemapper.MainActivity"
@@ -175,10 +177,12 @@ function Assert-NotificationAbsentFromShade {
     try {
         $script:shadeDocument = $null
         Wait-ForCondition `
-            -TimeoutSeconds 8 `
+            -TimeoutSeconds 30 `
             -FailureMessage '通知抽屉未成功展开，无法验证静默前台服务。' `
             -Condition {
                 try {
+                    # UiAutomation 建连可能短暂重绑无障碍并收起面板，每次探测重新展开。
+                    Invoke-Adb shell cmd statusbar expand-notifications | Out-Null
                     $candidate = Get-WindowXml
                     $shadeMarker = $candidate.SelectNodes('//node') | Where-Object {
                         $resourceId = $_.GetAttribute('resource-id')
@@ -509,12 +513,12 @@ function Disable-AdbRoot {
 }
 
 if (-not $SkipBuild) {
-    & (Join-Path $script:ProjectRoot 'gradlew.bat') :app:assembleDebug :app:assembleDebugAndroidTest
+    & (Join-Path $script:ProjectRoot $gradleName) :app:assembleDebug :app:assembleDebugAndroidTest
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-$debugApk = Join-Path $script:ProjectRoot 'app\build\outputs\apk\debug\app-debug.apk'
-$testApk = Join-Path $script:ProjectRoot 'app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk'
+$debugApk = Join-Path $script:ProjectRoot 'app/build/outputs/apk/debug/app-debug.apk'
+$testApk = Join-Path $script:ProjectRoot 'app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk'
 if (-not (Test-Path -LiteralPath $debugApk)) { throw "缺少 APK：$debugApk" }
 if (-not (Test-Path -LiteralPath $testApk)) { throw "缺少测试 APK：$testApk" }
 
@@ -678,6 +682,51 @@ try {
     }
     $heldUpIndex = (Get-MediaVolume).Current
 
+    Write-Host '补充验证：媒体播放界面、熄屏、唤醒与无障碍重连'
+    Invoke-Adb shell am start '-W' '-n' "$packageName/dev.spcdts.volumemapper.PlaybackFixtureActivity" | Out-Null
+    Start-Sleep -Milliseconds 500
+    Set-MediaVolume -Index $initialIndex
+    Send-EmulatorVolumeKey -Direction UP
+    Wait-ForCondition -FailureMessage '媒体播放期间短按没有到达映射目标。' -Condition {
+        (Get-MediaVolume).Current -eq $expectedMappedUp
+    }
+    Set-MediaVolume -Index $initialIndex
+    Invoke-Adb shell input keyevent KEYCODE_SLEEP | Out-Null
+    Wait-ForCondition -FailureMessage '模拟器没有进入熄屏状态。' -Condition {
+        ([string]::Join("`n", [string[]](Invoke-Adb shell dumpsys power))) -match 'mWakefulness=Asleep'
+    }
+    Send-EmulatorVolumeKey -Direction UP
+    Wait-ForCondition -FailureMessage '媒体播放、熄屏期间短按没有到达映射目标。' -Condition {
+        (Get-MediaVolume).Current -eq $expectedMappedUp
+    }
+    Invoke-Adb shell input keyevent KEYCODE_WAKEUP | Out-Null
+    Invoke-Adb shell wm dismiss-keyguard | Out-Null
+    Start-Sleep -Milliseconds 750
+    Set-MediaVolume -Index $initialIndex
+    Send-EmulatorVolumeKey -Direction UP -HoldMillis 360
+    Wait-ForCondition -FailureMessage '唤醒后长按映射未恢复。' -Condition {
+        (Get-MediaVolume).Current -eq $expectedHeldUp
+    }
+    # 真正解绑再绑定；重连不能擅自重新打开主开关，也不能保留上一手势。
+    $otherServices = @($serviceEntries | Where-Object { $_ -ne $accessibilityComponent })
+    if ($otherServices.Count -eq 0) {
+        Invoke-Adb shell settings delete secure enabled_accessibility_services | Out-Null
+        Invoke-Adb shell settings put secure accessibility_enabled 0 | Out-Null
+    } else {
+        Invoke-Adb shell settings put secure enabled_accessibility_services ($otherServices -join ':') | Out-Null
+    }
+    Wait-ForCondition -FailureMessage '无障碍服务未解绑。' -Condition { -not (Test-AccessibilityServiceBound) }
+    Invoke-Adb shell settings put secure enabled_accessibility_services ($serviceEntries -join ':') | Out-Null
+    Invoke-Adb shell settings put secure accessibility_enabled 1 | Out-Null
+    Wait-ForCondition -FailureMessage '无障碍服务重连失败。' -Condition { Test-AccessibilityServiceBound }
+    Wait-ForCondition -FailureMessage '无障碍重连后运行窗口未恢复。' -Condition { Test-AccessibilityRuntimeAnchor }
+    Start-Sleep -Milliseconds 750
+    Set-MediaVolume -Index $initialIndex
+    Send-EmulatorVolumeKey -Direction UP
+    Wait-ForCondition -FailureMessage '无障碍重连后短按映射未恢复。' -Condition {
+        (Get-MediaVolume).Current -eq $expectedMappedUp
+    }
+
     Write-Host "[6/7] 回到应用并通过主开关停止映射"
     Invoke-Adb shell am start '-W' '-n' $activityComponent | Out-Null
     Start-Sleep -Milliseconds 750
@@ -727,6 +776,10 @@ try {
 } catch {
     $primaryFailure = $_
 } finally {
+    Invoke-CleanupStep -Description '唤醒测试屏幕' -Action {
+        Invoke-Adb shell input keyevent KEYCODE_WAKEUP | Out-Null
+        Invoke-Adb shell wm dismiss-keyguard | Out-Null
+    }
     if ($stateCaptured) {
         Invoke-CleanupStep -Description '停止 Debug 应用' -Action {
             Invoke-Adb shell am force-stop $packageName | Out-Null

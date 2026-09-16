@@ -1,0 +1,73 @@
+name: Signed release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/android.yml
+  package:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platform-tools' 'platforms;android-37.0' 'build-tools;37.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+      - name: 校验版本标签
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/check-release-version.py
+      - name: 签名并校验正式 APK
+        env:
+          VOLUSTEP_KEYSTORE_BASE64: ${{ secrets.VOLUSTEP_KEYSTORE_BASE64 }}
+          VOLUSTEP_STORE_PASSWORD: ${{ secrets.VOLUSTEP_STORE_PASSWORD }}
+          VOLUSTEP_KEY_ALIAS: ${{ secrets.VOLUSTEP_KEY_ALIAS }}
+          VOLUSTEP_KEY_PASSWORD: ${{ secrets.VOLUSTEP_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          export VOLUSTEP_KEYSTORE="$RUNNER_TEMP/volustep-release.p12"
+          trap 'rm -f "$VOLUSTEP_KEYSTORE"' EXIT
+          printf '%s' "$VOLUSTEP_KEYSTORE_BASE64" | base64 --decode > "$VOLUSTEP_KEYSTORE"
+          unset VOLUSTEP_KEYSTORE_BASE64
+          ./gradlew --no-daemon --no-configuration-cache -PrequireReleaseSigning=true :app:assembleRelease
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+          mkdir -p artifacts/release
+          cp app/build/outputs/apk/release/app-release.apk "artifacts/release/VoluStep-${GITHUB_REF_NAME}.apk"
+          cd artifacts/release
+          sha256sum *.apk > SHA256SUMS
+      - name: 保存正式包和混淆映射
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release
+          path: |
+            artifacts/release/
+            app/build/outputs/mapping/release/mapping.txt
+          retention-days: 30
+      - name: 生成 Release 草稿
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" artifacts/release/* --verify-tag --draft --title "VoluStep $GITHUB_REF_NAME" --generate-notes

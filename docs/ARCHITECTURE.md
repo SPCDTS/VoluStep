@@ -10,12 +10,16 @@ VoluStep 将实体音量键事件映射为 Android `STREAM_MUSIC` 的整数档�
 |---|---|
 | `core/StepVolumeMap`、`BoundStepVolumeMap` | 保存整数控制点，将曲线绑定到当前路由的音量范围 |
 | `core/VolumeMappingReducer` | 处理短按、长按、松手、取消和真实音量同步 |
+| `audio/VolumeBackend` | 定义系统音量边界，允许使用可控后端验证故障和路由竞争 |
 | `audio/AudioManagerVolumeBackend` | 通过公开 API 探测输出路由，缓存范围，读写媒体音量 |
 | `runtime/VolumeKeyAccessibilityService` | 接收按键事件，交给 coordinator 判断是否消费 |
+| `runtime/CoordinatorMailbox`、`CoordinatorState` | 命令优先级、写入节流、状态及纯连续性判断 |
+| `runtime/KeyDeliveryMonitor` | 当前连接的音量键接收次数和分发延迟，内存中计数 |
 | `runtime/MappingCoordinator` | 串行处理手势、设置、路由变化、音量写入和回读 |
 | `runtime/MappingControllerService`、`AccessibilityRuntimeAnchor` | 管理前台控制器和随无障碍服务绑定的透明运行窗口 |
 | `data/SettingsRepository` | 加载、迁移和保存设置 |
-| `ui/` | 曲线编辑、固定音量、长按间隔、权限披露和设备状态 |
+| `ui/CurveEditor`、`CurveRenderer`、`CompactCurveStepper` | 分别负责曲线交互与提交、不可变单帧绘制、数值输入控件 |
+| `ui/` 其他组件 | 固定音量、长按间隔、权限披露和设备状态 |
 
 ## 曲线模型
 
@@ -58,6 +62,8 @@ coordinator 使用单个 actor 串行执行写入。普通命令优先处理，t
 
 稳定时间内的暂时不匹配不会覆盖较新的目标；成熟的不匹配才按实际读数重新定位。连续三次读写或最终回读失败后进入故障放行，后续新按键由系统处理。系统回读一致只能证明 Android 接受了整数档位，不能证明耳机产生了对应的可听差异。
 
+后端抛出未包装的系统调用异常时，actor 会取消当前工作并立即故障放行，保留命令循环，允许用户从设备详情重新检测。协程作用域跟随父 Job 取消，避免测试或宿主退出后遗留后台任务。
+
 固定音量按钮也通过同一 actor 写入，但使用独立请求状态。操作要求 Activity 可见，且点击时与写入前的路由和范围一致，不依赖无障碍或映射控制器。快速连续点击以最新请求为准，失败通过独立状态提示，成功回读会同步曲线标记和下一次按键的起点。
 
 ## 设置与生命周期
@@ -66,6 +72,8 @@ coordinator 使用单个 actor 串行执行写入。普通命令优先处理，t
 
 主开关从可见 Activity 启动 `specialUse` 前台服务，服务使用 `START_NOT_STICKY`，不在开机或无障碍回调中自动启动。主任务排除在最近任务列表之外，用户从桌面图标返回应用。
 
-无障碍服务连接期间持有透明、不可触摸且不可聚焦的 1×1 窗口，解绑时移除。这是后台运行的兼容策略，不能恢复授权、绕过强行停止或保证熄屏按键分发。
+无障碍服务连接期间持有透明、不可触摸且不可聚焦的 1×1 窗口，解绑时移除。屏幕唤醒后重新检查窗口并刷新路由，取消睡眠前遗留的手势。设备详情区分服务状态与实际按键计数，重连后清零。
+
+这是后台运行的兼容策略，不能恢复授权、绕过强行停止或保证熄屏按键分发。
 
 权限和数据处理见 [隐私说明](PRIVACY.md)，设备限制见 [兼容性说明](OEM_COMPATIBILITY.md)，验证入口见 [测试说明](TESTING.md)。

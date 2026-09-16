@@ -78,6 +78,7 @@ import dev.spcdts.volumemapper.core.KeyMappingConfig
 import dev.spcdts.volumemapper.data.VolumeMapperSettings
 import dev.spcdts.volumemapper.runtime.ControllerRuntimeState
 import dev.spcdts.volumemapper.runtime.FixedVolumeRequestState
+import dev.spcdts.volumemapper.runtime.KeyDeliveryState
 import dev.spcdts.volumemapper.runtime.MappingControllerService
 import dev.spcdts.volumemapper.runtime.resolveLocalizedText
 
@@ -312,6 +313,8 @@ private fun MainScreen(
         item {
             DeviceCard(
                 runtime = runtime,
+                delivery = graph.mappingCoordinator.keyDeliveryMonitor.state.collectAsState().value,
+                onRetry = graph.mappingCoordinator::retry,
                 onOpenAccessibility = onOpenAccessibility,
                 onOpenAppSettings = onOpenAppSettings,
             )
@@ -534,6 +537,8 @@ private fun LongPressIntervalCard(
 @Composable
 private fun DeviceCard(
     runtime: ControllerRuntimeState,
+    delivery: KeyDeliveryState,
+    onRetry: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onOpenAppSettings: () -> Unit,
 ) {
@@ -621,6 +626,32 @@ private fun DeviceCard(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 DeviceSettingRow(label = phoneLabel, value = manufacturer)
+                Text(
+                    text = LocalContext.current.resolveLocalizedText(runtime.statusMessage),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (runtime.isFailOpen) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                DeviceSettingRow(
+                    label = stringResource(R.string.device_key_delivery),
+                    value = stringResource(R.string.device_key_count, delivery.receivedDowns, delivery.expiredDowns),
+                )
+                Text(
+                    text = delivery.lastDelayMillis?.let {
+                        stringResource(R.string.device_key_delay) + ": " +
+                            stringResource(R.string.device_key_delay_ms, it)
+                    } ?: stringResource(R.string.device_key_no_events),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(stringResource(R.string.device_key_help), style = MaterialTheme.typography.bodySmall)
+                if (runtime.isAccessibilityConnected && !delivery.anchorAttached) {
+                    Text(
+                        stringResource(R.string.device_background_warning),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                TextButton(onClick = onRetry) { Text(stringResource(R.string.device_retry)) }
                 DeviceSettingRow(
                     label = outputLabel,
                     value = outputName,

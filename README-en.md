@@ -26,6 +26,8 @@ Supports **Android 9 (API 28) and later**, with English and Simplified Chinese i
 
 Use the main switch to start or stop key mapping. Volume presets work independently of key mapping and accessibility access.
 
+If volume keys stop working in the background or with the screen off, expand **Device** to check received presses and delivery delays, review Accessibility and battery settings, or recheck volume control.
+
 ## Device support and privacy
 
 VoluStep remaps the volume levels already provided by Android and your connected device. Your device determines the quietest audible level and the available adjustment precision. Background and screen-off behavior varies by phone and firmware. See [Compatibility](docs/OEM_COMPATIBILITY.md).

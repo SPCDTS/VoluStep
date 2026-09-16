@@ -162,4 +162,13 @@
     <string name="runtime_fail_open">%1$s; subsequent volume keys now pass through</string>
     <string name="audio_error_fixed_volume">The device reports fixed volume; apps cannot adjust it</string>
     <string name="audio_error_no_output">The system reported no media output device</string>
+    <string name="runtime_backend_failed">Audio service unavailable; volume keys now use system defaults. Retry when the device is ready.</string>
+    <string name="device_key_delivery">Volume-key reception</string>
+    <string name="device_key_count">Received %1$d · delayed %2$d</string>
+    <string name="device_key_delay">Last delivery delay</string>
+    <string name="device_key_delay_ms">%1$d ms</string>
+    <string name="device_key_no_events">No presses received in this connection</string>
+    <string name="device_key_help">Press a volume key, then check this count. If it does not increase in the background or with the screen off, check Accessibility and the app battery settings.</string>
+    <string name="device_background_warning">Background support is unavailable. Re-enable Accessibility and check app battery settings.</string>
+    <string name="device_retry">Recheck volume control</string>
 </resources>

@@ -23,7 +23,7 @@ sdk.dir=/absolute/path/to/Android/Sdk
 ./gradlew :app:assembleDebug
 ```
 
-Windows 使用 `gradlew.bat`。首次构建需要下载依赖，有完整缓存后可加 `--offline`。Debug APK 位于 `app/build/outputs/apk/debug/app-debug.apk`；Release 构建未配置签名。单元测试、Lint 和设备测试命令见 [测试说明](TESTING.md)。
+Windows 使用 `gradlew.bat`。首次构建需要下载依赖，有完整缓存后可加 `--offline`。Debug APK 位于 `app/build/outputs/apk/debug/app-debug.apk`；未提供签名环境变量时，普通 Release 构建生成未签名 APK；正式发布使用下述签名流程。单元测试、Lint 和设备测试命令见 [测试说明](TESTING.md)。
 
 ## Windows 辅助脚本
 
@@ -32,9 +32,36 @@ Windows 使用 `gradlew.bat`。首次构建需要下载依赖，有完整缓存�
 .\scripts\build.ps1
 ```
 
-`android-env.ps1` 优先选择仓库内 `.toolchains/android-studio/jbr` 与 `.toolchains/android-sdk`；找不到时，分别查找 `C:\Program Files\Android\Android Studio\jbr` 和 `%LOCALAPPDATA%\Android\Sdk`。脚本只修改当前 PowerShell 进程。若使用其他安装位置，请直接配置环境变量后调用 Gradle Wrapper。
+`android-env.ps1` 优先使用有效的 `JAVA_HOME`、`ANDROID_HOME` / `ANDROID_SDK_ROOT`，其次选择仓库内 `.toolchains/android-studio/jbr` 与 `.toolchains/android-sdk`；Windows 找不到时再查找 `C:\Program Files\Android\Android Studio\jbr` 和 `%LOCALAPPDATA%\Android\Sdk`。脚本只修改当前 PowerShell 进程。该环境脚本与完整 E2E 也支持 CI 中的 Linux PowerShell。
 
 `build.ps1` 执行 JVM 测试、AndroidTest 编译、Debug Lint 和打包；`-Release` 额外构建未签名 Release。`open-android-studio.ps1` 可打开项目。`.toolchains/`、`.gradle/`、`.idea/` 和 `local.properties` 均已忽略，不应提交。
+
+## 正式签名与版本更新
+
+首次在 Windows 上创建长期签名密钥，然后构建并验证正式包：
+
+```powershell
+.\scripts\create-release-key.ps1
+.\scripts\build-release.ps1
+```
+
+创建脚本生成有效期 30 年的 RSA 3072 密钥，默认放在用户目录 `.android/volustep-signing/`，通过 Windows ACL 限制为当前用户访问。目录已存在时拒绝覆盖。**请把 `.p12` 与 `password.txt` 一起备份到加密存储**；密码不会输出到终端，不要提交或公开这些文件。自有密钥可通过四个 `VOLUSTEP_*` 环境变量直接配置 Gradle。
+
+正式安装包为 `app/build/outputs/apk/release/app-release.apk`，启用 R8、资源压缩和正式 APK 签名，附带 `.sha256` 校验文件。脚本运行单元测试、Release Lint 和 `apksigner verify`，缺少完整密钥配置则失败。普通 CI 保留不持有密钥的未签名构建。签名构建禁用 configuration cache，避免密码进入配置缓存。
+
+每次更新在 `app/build.gradle.kts` 同时提高 `versionCode` 并更新 `versionName`。正式版始终使用同一密钥和 applicationId；既有 `.debug` 测试版与正式版是两个应用，可以并存，设置不会自动迁移。
+
+## GitHub Release
+
+仓库所有者登录 GitHub CLI 后，在本机运行一次：
+
+```powershell
+.\scripts\configure-release-secrets.ps1 -Repository SPCDTS/VoluStep
+```
+
+脚本把私钥和密码加密配置为该仓库的 Actions Secrets：`VOLUSTEP_KEYSTORE_BASE64`、`VOLUSTEP_STORE_PASSWORD`、`VOLUSTEP_KEY_ALIAS`、`VOLUSTEP_KEY_PASSWORD`。只有同意将发布凭据保存在该仓库时才执行。
+
+推送与 `versionName` 一致的 `v版本号` 标签后，[发布工作流](../.github/workflows/release.yml) 先执行完整 CI 和模拟器测试，再签名并验证 APK，生成带 SHA-256 的 **Release 草稿**。检查草稿中的正式包和说明后发布。已有同名 Release 时工作流失败，不覆盖已发布安装包。混淆映射单独作为 Actions 构建产物保留，供崩溃分析使用。
 
 ## 模拟器
 

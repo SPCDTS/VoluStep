@@ -3,6 +3,19 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+val releaseStorePath = providers.environmentVariable("VOLUSTEP_KEYSTORE").orNull
+val releaseStorePassword = providers.environmentVariable("VOLUSTEP_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("VOLUSTEP_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("VOLUSTEP_KEY_PASSWORD").orNull
+val signingValues = listOf(releaseStorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword)
+val hasReleaseSigning = signingValues.all { !it.isNullOrBlank() }
+check(signingValues.all { it.isNullOrBlank() } || hasReleaseSigning) {
+    "Release signing requires all four VOLUSTEP signing environment variables."
+}
+check(providers.gradleProperty("requireReleaseSigning").orNull != "true" || hasReleaseSigning) {
+    "Release signing is required. Run scripts/build-release.ps1 or configure GitHub release secrets."
+}
+
 android {
     namespace = "dev.spcdts.volumemapper"
     compileSdk = 37
@@ -11,11 +24,25 @@ android {
         applicationId = "dev.spcdts.volumemapper"
         minSdk = 28
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(checkNotNull(releaseStorePath))
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = false // minSdk 28 支持 APK Signature Scheme v2。
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
     }
 
     buildTypes {
@@ -24,6 +51,7 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

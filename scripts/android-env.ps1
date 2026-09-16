@@ -2,38 +2,23 @@
 param()
 
 $script:ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$localSdk = Join-Path $script:ProjectRoot '.toolchains\android-sdk'
-$portableJbr = Join-Path $script:ProjectRoot '.toolchains\android-studio\jbr'
-$installedJbr = 'C:\Program Files\Android\Android Studio\jbr'
-$userSdk = Join-Path $env:LOCALAPPDATA 'Android\Sdk'
-
-$selectedJbr = if (Test-Path (Join-Path $portableJbr 'bin\java.exe')) {
-    $portableJbr
-} elseif (Test-Path (Join-Path $installedJbr 'bin\java.exe')) {
-    $installedJbr
-} else {
-    throw '未找到 Android Studio JBR。请先完成 README 中的环境安装。'
+$isWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+$javaName = if ($isWindowsHost) { 'java.exe' } else { 'java' }
+$javaCandidates = @($env:JAVA_HOME, (Join-Path $script:ProjectRoot '.toolchains/android-studio/jbr'))
+$sdkCandidates = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, (Join-Path $script:ProjectRoot '.toolchains/android-sdk'))
+if ($isWindowsHost) {
+    $javaCandidates += 'C:/Program Files/Android/Android Studio/jbr'
+    if ($env:LOCALAPPDATA) { $sdkCandidates += Join-Path $env:LOCALAPPDATA 'Android/Sdk' }
 }
-
-$selectedSdk = if (Test-Path (Join-Path $localSdk 'platform-tools')) {
-    $localSdk
-} elseif (Test-Path (Join-Path $userSdk 'platform-tools')) {
-    $userSdk
-} else {
-    throw '未找到 Android SDK Platform Tools。请先完成 README 中的环境安装。'
-}
-
+$selectedJbr = $javaCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "bin/$javaName")) } | Select-Object -First 1
+$selectedSdk = $sdkCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ 'platform-tools')) } | Select-Object -First 1
+if (-not $selectedJbr) { throw '未找到 Java，请配置 JAVA_HOME 或安装仓库工具链。' }
+if (-not $selectedSdk) { throw '未找到 Android SDK，请配置 ANDROID_HOME 或安装仓库工具链。' }
 $env:JAVA_HOME = $selectedJbr
 $env:ANDROID_HOME = $selectedSdk
 $env:ANDROID_SDK_ROOT = $selectedSdk
-$androidPaths = @(
-    (Join-Path $selectedJbr 'bin'),
-    (Join-Path $selectedSdk 'platform-tools'),
-    (Join-Path $selectedSdk 'emulator'),
-    (Join-Path $selectedSdk 'cmdline-tools\latest\bin')
-)
-$env:Path = (($androidPaths + $env:Path.Split([IO.Path]::PathSeparator)) |
-    Select-Object -Unique) -join [IO.Path]::PathSeparator
-
+$androidPaths = @('platform-tools','emulator','cmdline-tools/latest/bin') | ForEach-Object { Join-Path $selectedSdk $_ }
+$androidPaths = @((Join-Path $selectedJbr 'bin')) + $androidPaths
+$env:Path = (($androidPaths + $env:Path.Split([IO.Path]::PathSeparator)) | Select-Object -Unique) -join [IO.Path]::PathSeparator
 Write-Host "JAVA_HOME=$env:JAVA_HOME"
 Write-Host "ANDROID_HOME=$env:ANDROID_HOME"

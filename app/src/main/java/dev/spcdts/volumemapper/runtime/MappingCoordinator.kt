@@ -5,7 +5,7 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.annotation.MainThread
 import dev.spcdts.volumemapper.R
-import dev.spcdts.volumemapper.audio.AudioManagerVolumeBackend
+import dev.spcdts.volumemapper.audio.VolumeBackend
 import dev.spcdts.volumemapper.core.BoundStepVolumeMap
 import dev.spcdts.volumemapper.core.RouteVolumeRange
 import dev.spcdts.volumemapper.core.RouteVolumeSnapshot
@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -28,175 +29,10 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.selects.select
-
-internal const val COORDINATOR_TICK_INTERVAL_MILLIS = 20L
-
-// The fastest configured hold advances every 60 ms. A 20 ms clock aligns with that grid and limits
-// scheduler jitter without increasing AudioManager writes: the reducer requests only changed slots.
-internal const val COORDINATOR_MIN_WRITE_INTERVAL_MILLIS = COORDINATOR_TICK_INTERVAL_MILLIS
-
-/**
- * Actor-owned FIFO that separates write-attempt throttling from post-write verification time.
- * A Binder call may finish well after its attempt began; using completion time for both concerns
- * shifts the gate into the next ticker slot and can make a newer target replace an older one.
- */
-internal class CoordinatorWriteQueue<T>(
-    private val minimumIntervalMillis: Long = COORDINATOR_MIN_WRITE_INTERVAL_MILLIS,
-) {
-    private val pending = ArrayDeque<T>()
-    private var lastAttemptStartedAtMillis = Long.MIN_VALUE
-
-    init {
-        require(minimumIntervalMillis >= 0L) { "minimumIntervalMillis must not be negative" }
-    }
-
-    val hasPending: Boolean
-        get() = pending.isNotEmpty()
-
-    fun canStartAttempt(nowMillis: Long): Boolean =
-        lastAttemptStartedAtMillis == Long.MIN_VALUE ||
-            nowMillis - lastAttemptStartedAtMillis >= minimumIntervalMillis
-
-    fun recordAttemptStarted(nowMillis: Long) {
-        lastAttemptStartedAtMillis = nowMillis
-    }
-
-    fun enqueue(value: T) {
-        pending.addLast(value)
-    }
-
-    fun takeNextIfReady(nowMillis: Long): T? {
-        if (pending.isEmpty() || !canStartAttempt(nowMillis)) return null
-        return pending.removeFirst()
-    }
-
-    fun clearPending() {
-        pending.clear()
-    }
-
-    fun reset() {
-        pending.clear()
-        lastAttemptStartedAtMillis = Long.MIN_VALUE
-    }
-}
-
-internal sealed interface CoordinatorMailboxMessage<out C, out T> {
-    data class Control<C>(val value: C) : CoordinatorMailboxMessage<C, Nothing>
-    data class LatestTick<T>(val value: T) : CoordinatorMailboxMessage<Nothing, T>
-}
-
-/** Gives control/release commands priority while retaining only the latest absolute-time tick. */
-internal suspend fun <C : Any, T : Any> receiveNextCoordinatorMessage(
-    controls: Channel<C>,
-    ticks: Channel<T>,
-): CoordinatorMailboxMessage<C, T> {
-    controls.tryReceive().getOrNull()?.let { ready ->
-        return CoordinatorMailboxMessage.Control(ready)
-    }
-    return select {
-        controls.onReceive { CoordinatorMailboxMessage.Control(it) }
-        ticks.onReceive { CoordinatorMailboxMessage.LatestTick(it) }
-    }
-}
-
-data class ControllerRuntimeState(
-    val isArmed: Boolean = false,
-    val isForegroundServiceRunning: Boolean = false,
-    val isAccessibilityConnected: Boolean = false,
-    val isFailOpen: Boolean = false,
-    val isVolumeFixed: Boolean = false,
-    val isMediaContextSafe: Boolean = false,
-    val snapshot: RouteVolumeSnapshot? = null,
-    val logicalPosition: Double? = null,
-    val expectedIndex: Int? = null,
-    val consecutiveWriteFailures: Int = 0,
-    val statusMessage: LocalizedText = localizedText(R.string.runtime_mapping_disabled),
-    val lastUpdatedAtMillis: Long = 0L,
-) {
-    val canInterceptKeys: Boolean
-        get() = isArmed &&
-            isForegroundServiceRunning &&
-            isAccessibilityConnected &&
-            !isFailOpen &&
-            !isVolumeFixed &&
-            isMediaContextSafe &&
-            snapshot != null
-}
-
-/** 基于已接收快照后的完整状态决定文案，避免读取复制前的 [canInterceptKeys]。 */
-internal fun ControllerRuntimeState.withAcceptedSnapshot(
-    snapshot: RouteVolumeSnapshot,
-    isVolumeFixed: Boolean,
-    isMediaContextSafe: Boolean,
-): ControllerRuntimeState {
-    val acceptedState = copy(
-        snapshot = snapshot,
-        isVolumeFixed = isVolumeFixed,
-        isMediaContextSafe = isMediaContextSafe,
-        expectedIndex = snapshot.currentIndex,
-    )
-    return acceptedState.copy(
-        statusMessage = when {
-            acceptedState.isVolumeFixed -> localizedText(R.string.runtime_fixed_volume)
-            !acceptedState.isMediaContextSafe -> localizedText(R.string.runtime_unsafe_media_context)
-            acceptedState.isFailOpen -> acceptedState.statusMessage
-            acceptedState.canInterceptKeys -> localizedText(R.string.runtime_ready)
-            else -> acceptedState.statusMessage
-        },
-    )
-}
-
-/** 唯一标识一次物理按键手势；repeat 和 UP 必须携带与初始 DOWN 相同的 downTime。 */
-internal data class KeyToken(
-    val deviceId: Int,
-    val keyCode: Int,
-    val downTimeMillis: Long,
-)
-
-internal fun shouldProcessCoordinatorTick(owner: KeyToken?, gestureToken: KeyToken): Boolean =
-    owner == gestureToken
-
-/** Pure continuity decision kept outside the actor so route/readback edge cases are unit-testable. */
-internal fun canKeepMappingPosition(
-    mappingState: VolumeMappingState?,
-    mappingTargetIndex: Int?,
-    previousExpectedIndex: Int?,
-    previousSnapshot: RouteVolumeSnapshot?,
-    observedSnapshot: RouteVolumeSnapshot,
-): Boolean =
-    mappingState != null &&
-        mappingState.activePress == null &&
-        mappingTargetIndex == observedSnapshot.currentIndex &&
-        previousExpectedIndex == observedSnapshot.currentIndex &&
-        previousSnapshot?.route?.stableId == observedSnapshot.route.stableId &&
-        previousSnapshot.range.hasSameIndexBounds(observedSnapshot.range)
-
-internal fun isEffectivelyFixedVolume(
-    backendReportsFixed: Boolean,
-    range: RouteVolumeRange,
-): Boolean = backendReportsFixed || range.minIndex == range.maxIndex
-
-internal enum class FixedVolumeSnapshotFailureDisposition {
-    WAIT_FOR_FINAL,
-    REJECT,
-    RETRY_AFTER_TRANSITION,
-}
-
-internal fun fixedVolumeSnapshotFailureDisposition(
-    isFinal: Boolean,
-    isStampCurrent: Boolean,
-): FixedVolumeSnapshotFailureDisposition = when {
-    !isFinal -> FixedVolumeSnapshotFailureDisposition.WAIT_FOR_FINAL
-    isStampCurrent -> FixedVolumeSnapshotFailureDisposition.REJECT
-    else -> FixedVolumeSnapshotFailureDisposition.RETRY_AFTER_TRANSITION
-}
-
-private fun RouteVolumeRange.hasSameIndexBounds(other: RouteVolumeRange): Boolean =
-    minIndex == other.minIndex && maxIndex == other.maxIndex
 
 /**
  * 串行化按键、路由、写入和回读的 actor。
@@ -205,12 +41,20 @@ private fun RouteVolumeRange.hasSameIndexBounds(other: RouteVolumeRange): Boolea
  * repeat 只刷新 heartbeat；所有 AudioManager I/O 都在 actor 中执行，并在 I/O 前后复核 epoch。
  */
 class MappingCoordinator(
-    private val backend: AudioManagerVolumeBackend,
-    private val settingsRepository: SettingsRepository,
+    private val backend: VolumeBackend,
+    private val settingsFlow: StateFlow<VolumeMapperSettings>,
     parentScope: CoroutineScope,
 ) {
+    constructor(
+        backend: VolumeBackend,
+        settingsRepository: SettingsRepository,
+        parentScope: CoroutineScope,
+    ) : this(backend, settingsRepository.settings, parentScope)
+
+    val keyDeliveryMonitor = KeyDeliveryMonitor()
+
     private val scope = CoroutineScope(
-        parentScope.coroutineContext + SupervisorJob() + Dispatchers.Default,
+        parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]) + Dispatchers.Default,
     )
     private val commands = Channel<Command>(COMMAND_BUFFER_CAPACITY)
     private val ticks = Channel<Command.Tick>(Channel.CONFLATED)
@@ -230,7 +74,7 @@ class MappingCoordinator(
     private val verificationJob = AtomicReference<Job?>(null)
     private val fixedVolumeVerificationJob = AtomicReference<Job?>(null)
     private val fixedVolumeRequestSequence = AtomicLong(0L)
-    private val observedSettings = AtomicReference(settingsRepository.settings.value)
+    private val observedSettings = AtomicReference(settingsFlow.value)
 
     private val _runtime = MutableStateFlow(ControllerRuntimeState())
     val runtime: StateFlow<ControllerRuntimeState> = _runtime
@@ -256,7 +100,7 @@ class MappingCoordinator(
     init {
         scope.launch { actorLoop() }
         scope.launch {
-            settingsRepository.settings.collect { newSettings ->
+            settingsFlow.collect { newSettings ->
                 // Do not blindly drop the collector's first emission: DataStore may finish loading
                 // between the constructor's value read and subscription. Comparing against the
                 // last observed value skips only a genuinely identical initial snapshot.
@@ -266,7 +110,12 @@ class MappingCoordinator(
             }
         }
         scope.launch {
-            backend.environmentChanges().collect {
+            backend.environmentChanges().retryWhen { cause, _ ->
+                if (cause is CancellationException) throw cause
+                enqueueGuaranteed(Command.BackendFailed(cause))
+                delay(1_000L)
+                true
+            }.collect {
                 // The backend emits for route/topology/mode changes. Treat every event as a new
                 // route epoch: conservative invalidation is safer than writing against ambiguity.
                 val stamp = beginControlTransition(routeChanged = true)
@@ -383,6 +232,9 @@ class MappingCoordinator(
      */
     fun handleAccessibilityKey(event: KeyEvent): Boolean {
         val direction = event.keyCode.toDirection() ?: return false
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            keyDeliveryMonitor.recordDown(SystemClock.uptimeMillis(), event.eventTime)
+        }
         val token = KeyToken(event.deviceId, event.keyCode, event.downTime)
 
         val action = event.action
@@ -494,15 +346,42 @@ class MappingCoordinator(
 
     private suspend fun actorLoop() {
         while (scope.isActive) {
-            when (val message = receiveNextCoordinatorMessage(commands, ticks)) {
-                is CoordinatorMailboxMessage.Control -> dispatchCommand(message.value)
-                is CoordinatorMailboxMessage.LatestTick -> handleTick(message.value)
+            try {
+                when (val message = receiveNextCoordinatorMessage(commands, ticks)) {
+                    is CoordinatorMailboxMessage.Control -> dispatchCommand(message.value)
+                    is CoordinatorMailboxMessage.LatestTick -> handleTick(message.value)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                handleUnexpectedBackendFailure(failure)
             }
         }
     }
 
+    /** 系统调用异常不得杀死 actor 后继续吞键；保留命令循环以支持显式重试。 */
+    private fun handleUnexpectedBackendFailure(failure: Throwable) {
+        val stamp = beginControlTransition()
+        actorControlEpoch = stamp.controlEpoch
+        cancelActorWork(resetMapping = true)
+        cancelFixedVolumeVerification()
+        val message = localizedText(R.string.runtime_backend_failed)
+        _fixedVolumeRequestState.update { state ->
+            if (state is FixedVolumeRequestState.Applying) {
+                FixedVolumeRequestState.Rejected(state.requestId, state.requestedIndex, message)
+            } else state
+        }
+        // 此路径禁止读取 backend 属性：异常本身可能来自属性的系统调用。
+        _runtime.update {
+            it.copy(isFailOpen = true, statusMessage = message, logicalPosition = null)
+        }
+        eligible.set(false)
+        android.util.Log.e("VoluStepController", "Audio backend failed; keys returned to system", failure)
+    }
+
     private fun dispatchCommand(command: Command) {
         when (command) {
+            is Command.BackendFailed -> handleUnexpectedBackendFailure(command.cause)
             is Command.Arm -> handleArm(command)
             is Command.Disarm -> handleDisarm(command)
             is Command.Retry -> handleRetry(command)
@@ -1941,6 +1820,7 @@ class MappingCoordinator(
     )
 
     private sealed interface Command {
+        data class BackendFailed(val cause: Throwable) : Command
         data class Arm(val stamp: EpochStamp) : Command
         data class Disarm(val reason: LocalizedText, val stamp: EpochStamp) : Command
         data class Retry(val stamp: EpochStamp) : Command
@@ -2011,26 +1891,4 @@ class MappingCoordinator(
 
         fun maxLong(left: Long, right: Long): Long = maxOf(left, right)
     }
-}
-
-sealed interface FixedVolumeRequestState {
-    data object Idle : FixedVolumeRequestState
-
-    data class Applying(
-        val requestId: Long,
-        val requestedIndex: Int,
-    ) : FixedVolumeRequestState
-
-    data class Applied(
-        val requestId: Long,
-        val requestedIndex: Int,
-        val observedIndex: Int,
-    ) : FixedVolumeRequestState
-
-    data class Rejected(
-        val requestId: Long,
-        val requestedIndex: Int,
-        val message: LocalizedText,
-        val observedIndex: Int? = null,
-    ) : FixedVolumeRequestState
 }
