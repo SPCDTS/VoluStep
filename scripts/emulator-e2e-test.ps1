@@ -338,49 +338,6 @@ function Invoke-UiTapText {
     )
 }
 
-function Invoke-UiScrollForward {
-    $displayInfo = [string]::Join(
-        [Environment]::NewLine,
-        [string[]](Invoke-Adb shell wm size)
-    )
-    $match = [regex]::Match($displayInfo, 'Override size:\s*(\d+)x(\d+)')
-    if (-not $match.Success) {
-        $match = [regex]::Match($displayInfo, 'Physical size:\s*(\d+)x(\d+)')
-    }
-    if (-not $match.Success) {
-        throw "无法解析模拟器显示尺寸：$displayInfo"
-    }
-    $width = [int]$match.Groups[1].Value
-    $height = [int]$match.Groups[2].Value
-    $x = [int]($width / 2)
-    $startY = [int]($height * 0.72)
-    $endY = [int]($height * 0.32)
-    Invoke-Adb shell input swipe $x $startY $x $endY 400 | Out-Null
-    Start-Sleep -Milliseconds 300
-}
-
-function Get-UiTapPointByTextWithScroll {
-    param(
-        [string]$Text,
-        [int]$MaximumSwipes = 4,
-        [switch]$AllowNonClickable
-    )
-
-    for ($attempt = 0; $attempt -le $MaximumSwipes; $attempt++) {
-        try {
-            return Get-UiTapPointByText `
-                -Text $Text `
-                -TimeoutSeconds 2 `
-                -AllowNonClickable:$AllowNonClickable
-        } catch {
-            if ($attempt -eq $MaximumSwipes) {
-                throw "滚动 $MaximumSwipes 次后仍未找到界面文本：${Text}"
-            }
-            Invoke-UiScrollForward
-        }
-    }
-}
-
 function Send-EmulatorVolumeKey {
     param(
         [ValidateSet('UP', 'DOWN')][string]$Direction,
@@ -618,12 +575,14 @@ try {
         -Output $instrumentOutput `
         -Key 'e2eHoldUpIndex')
 
-    Invoke-Adb shell am start '-W' '-n' $activityComponent | Out-Null
+    Invoke-Adb shell am start '-W' '--activity-new-task' '--activity-clear-task' '-n' $activityComponent | Out-Null
 
     # 先在目标服务尚未启用时取得主开关坐标，避免 uiautomator dump 注册的
     # UiAutomation 与真实 AccessibilityService 反复断连/重绑。服务 bound 后再点击缓存坐标。
-    $startButtonPoint = Get-UiTapPointByTextWithScroll `
+    # 主开关位于列表首项。等待冷启动首帧，不在尚未加载时滚动离开页首。
+    $startButtonPoint = Get-UiTapPointByText `
         -Text $masterSwitchDescription `
+        -TimeoutSeconds 20 `
         -AllowNonClickable
 
     $serviceEntries = @($originalServices.Split(':') | Where-Object { $_ -and $_ -ne 'null' })

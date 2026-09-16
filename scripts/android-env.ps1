@@ -19,6 +19,6 @@ $env:ANDROID_HOME = $selectedSdk
 $env:ANDROID_SDK_ROOT = $selectedSdk
 $androidPaths = @('platform-tools','emulator','cmdline-tools/latest/bin') | ForEach-Object { Join-Path $selectedSdk $_ }
 $androidPaths = @((Join-Path $selectedJbr 'bin')) + $androidPaths
-$env:Path = (($androidPaths + $env:Path.Split([IO.Path]::PathSeparator)) | Select-Object -Unique) -join [IO.Path]::PathSeparator
+$env:PATH = (($androidPaths + ([string]$env:PATH).Split([IO.Path]::PathSeparator)) | Select-Object -Unique) -join [IO.Path]::PathSeparator
 Write-Host "JAVA_HOME=$env:JAVA_HOME"
 Write-Host "ANDROID_HOME=$env:ANDROID_HOME"
