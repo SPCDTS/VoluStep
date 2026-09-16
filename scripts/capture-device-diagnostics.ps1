@@ -1,12 +1,15 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Serial
+    [string]$Serial,
+    [ValidateSet('dev.spcdts.volumemapper', 'dev.spcdts.volumemapper.debug')]
+    [string]$PackageName = 'dev.spcdts.volumemapper'
 )
 
 . (Join-Path $PSScriptRoot 'android-env.ps1')
 
-$adb = Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe'
+$adbName = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { 'adb.exe' } else { 'adb' }
+$adb = Join-Path $env:ANDROID_HOME "platform-tools/$adbName"
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $outputDirectory = Join-Path $script:ProjectRoot "artifacts\device-$timestamp"
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
@@ -20,7 +23,9 @@ function Save-AdbOutput([string]$FileName, [string[]]$Arguments) {
 Save-AdbOutput 'device.txt' @('shell', 'getprop')
 Save-AdbOutput 'audio.txt' @('shell', 'dumpsys', 'audio')
 Save-AdbOutput 'accessibility.txt' @('shell', 'dumpsys', 'accessibility')
-Save-AdbOutput 'package.txt' @('shell', 'dumpsys', 'package', 'dev.spcdts.volumemapper.debug')
+Save-AdbOutput 'package.txt' @('shell', 'dumpsys', 'package', $PackageName)
+Save-AdbOutput 'power.txt' @('shell', 'dumpsys', 'power')
+Save-AdbOutput 'key-delivery.txt' @('shell', 'dumpsys', 'activity', 'service', "$PackageName/dev.spcdts.volumemapper.runtime.VolumeKeyAccessibilityService")
 Save-AdbOutput 'logcat.txt' @('logcat', '-d', '-v', 'threadtime')
 
 Write-Host "诊断已保存到 $outputDirectory"

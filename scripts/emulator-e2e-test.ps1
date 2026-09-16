@@ -451,6 +451,14 @@ function Get-AppServicesDump {
     )
 }
 
+function Get-KeyDeliveryCounters {
+    $dump = [string]::Join("`n", [string[]](Invoke-Adb shell dumpsys activity service $accessibilityComponent))
+    $received = [regex]::Match($dump, 'receivedDowns=(\d+)')
+    $expired = [regex]::Match($dump, 'expiredDowns=(\d+)')
+    if (-not $received.Success -or -not $expired.Success) { throw '无法读取按键分发诊断。' }
+    return [pscustomobject]@{ Received = [long]$received.Groups[1].Value; Expired = [long]$expired.Groups[1].Value }
+}
+
 function Test-AccessibilityServiceBound {
     $dump = Get-AppServicesDump
     return $dump.IndexOf('VolumeKeyAccessibilityService', [StringComparison]::Ordinal) -ge 0 -and
@@ -713,14 +721,47 @@ try {
         (Get-MediaVolume).Current -eq $expectedMappedUp
     }
     Set-MediaVolume -Index $initialIndex
+    $beforeScreenOffCounters = Get-KeyDeliveryCounters
+    $beforeScreenOffAudio = Get-AudioServiceDump
+    $screenSystemPattern = 'adjustSuggestedStreamVolume\([^\r\n]*from android/[^\r\n]*uid:1000'
+    $screenAppPattern = 'setStreamVolume\(stream:STREAM_MUSIC[^\r\n]*from dev\.spcdts\.volumemapper\.debug'
     Invoke-Adb shell input keyevent KEYCODE_SLEEP | Out-Null
     Wait-ForCondition -FailureMessage '模拟器没有进入熄屏状态。' -Condition {
         ([string]::Join("`n", [string[]](Invoke-Adb shell dumpsys power))) -match 'mWakefulness=Asleep'
     }
     Send-EmulatorVolumeKey -Direction UP
-    Wait-ForCondition -FailureMessage '媒体播放、熄屏期间短按没有到达映射目标。' -Condition {
-        (Get-MediaVolume).Current -eq $expectedMappedUp
+    Wait-ForCondition -FailureMessage '熄屏按键既没有被映射处理，也没有被系统处理。' -Condition {
+        (Get-MediaVolume).Current -ne $initialIndex
     }
+    Start-Sleep -Milliseconds 750
+    $screenOffCounters = Get-KeyDeliveryCounters
+    $screenOffObserved = (Get-MediaVolume).Current
+    $screenOffMapped = $screenOffCounters.Received -gt $beforeScreenOffCounters.Received -and
+        $screenOffCounters.Expired -eq $beforeScreenOffCounters.Expired
+    if ($screenOffMapped) {
+        if ($screenOffObserved -ne $expectedMappedUp) { throw '已及时分发的熄屏按键没有到达映射目标。' }
+        $screenOffResult = 'mapped'
+    } else {
+        # 某些镜像的虚拟侧键会唤醒屏幕，并在系统策略层直接调音量而不经过无障碍。
+        # 这是能力探测结果；必须同时证明系统接管、应用没有重复写入，随后强制验证恢复。
+        $afterScreenOffAudio = Get-AudioServiceDump
+        $systemBefore = Get-LatestAudioEventMarker -Dump $beforeScreenOffAudio -EventPattern $screenSystemPattern
+        $systemAfter = Get-LatestAudioEventMarker -Dump $afterScreenOffAudio -EventPattern $screenSystemPattern
+        $appBefore = Get-LatestAudioEventMarker -Dump $beforeScreenOffAudio -EventPattern $screenAppPattern
+        $appAfter = Get-LatestAudioEventMarker -Dump $afterScreenOffAudio -EventPattern $screenAppPattern
+        if (-not (Test-AudioEventAdvanced -Before $systemBefore -After $systemAfter)) {
+            throw '熄屏按键未及时分发，且缺少系统接管证据。'
+        }
+        if (Test-AudioEventAdvanced -Before $appBefore -After $appAfter) {
+            throw '熄屏按键未及时分发，但应用发生了重复写入。'
+        }
+        $screenOffResult = 'system-handled-without-timely-callback'
+        Write-Host '熄屏能力：系统直接接管首键，未及时分发到应用；继续验证唤醒与重连恢复。'
+    }
+    $capabilityDirectory = Join-Path $script:ProjectRoot 'artifacts/ci'
+    New-Item -ItemType Directory -Force -Path $capabilityDirectory | Out-Null
+    $capabilities = @{ api = [int]([string](Invoke-Adb shell getprop ro.build.version.sdk)).Trim(); screenOffMapping = $screenOffMapped; screenOffResult = $screenOffResult; observedIndex = $screenOffObserved } | ConvertTo-Json
+    [IO.File]::WriteAllText((Join-Path $capabilityDirectory 'screen-off-capability.json'), $capabilities, [Text.UTF8Encoding]::new($false))
     Invoke-Adb shell input keyevent KEYCODE_WAKEUP | Out-Null
     Invoke-Adb shell wm dismiss-keyguard | Out-Null
     Start-Sleep -Milliseconds 750
@@ -750,7 +791,8 @@ try {
     }
 
     Write-Host "[6/7] 回到应用并通过主开关停止映射"
-    Invoke-Adb shell am start '-W' '-n' $activityComponent | Out-Null
+    # 清除测试播放 Activity，保证返回主界面并释放媒体播放。
+    Invoke-Adb shell am start '-W' '--activity-clear-top' '-n' $activityComponent | Out-Null
     Start-Sleep -Milliseconds 750
     Invoke-UiTapPoint -Point $startButtonPoint
     Wait-ForCondition -FailureMessage '应用主开关停止后前台控制器仍在运行。' -Condition {
@@ -794,7 +836,7 @@ try {
     $nativeMediaIndex = (Get-MediaVolume).Current
     $nativeRingIndex = (Get-StreamVolume -Stream 2).Current
 
-    Write-Host "E2E PASS：后台短按映射 $initialIndex -> $mappedUpIndex -> $mappedDownIndex，持续按住 360 ms -> $heldUpIndex；停止后由系统 AudioService 接管，media $initialIndex -> $nativeMediaIndex，ring $ringInitial -> $nativeRingIndex。"
+    Write-Host "E2E PASS：后台短按 $initialIndex -> $mappedUpIndex -> $mappedDownIndex，长按 -> $heldUpIndex；熄屏能力 $screenOffResult；唤醒与重连恢复；停止后系统接管 media $initialIndex -> $nativeMediaIndex，ring $ringInitial -> $nativeRingIndex。"
 } catch {
     $primaryFailure = $_
     $diagnosticDirectory = Join-Path $script:ProjectRoot 'artifacts/ci'
@@ -805,6 +847,10 @@ try {
     }
     $diagnostic = (& $adb -s $Serial shell dumpsys activity service $accessibilityComponent 2>&1) -join "`n"
     [IO.File]::WriteAllText((Join-Path $diagnosticDirectory 'e2e-key-delivery.txt'), $diagnostic, [Text.UTF8Encoding]::new($false))
+    $diagnostic = (& $adb -s $Serial shell dumpsys activity activities 2>&1) -join "`n"
+    [IO.File]::WriteAllText((Join-Path $diagnosticDirectory 'e2e-activities.txt'), $diagnostic, [Text.UTF8Encoding]::new($false))
+    & $adb -s $Serial shell screencap -p /sdcard/volustep-e2e-failure.png | Out-Null
+    & $adb -s $Serial pull /sdcard/volustep-e2e-failure.png (Join-Path $diagnosticDirectory 'e2e-failure.png') | Out-Null
 } finally {
     Invoke-CleanupStep -Description '唤醒测试屏幕' -Action {
         Invoke-Adb shell input keyevent KEYCODE_WAKEUP | Out-Null

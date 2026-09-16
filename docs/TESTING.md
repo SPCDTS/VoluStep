@@ -51,9 +51,11 @@ CI 使用 `python scripts/run-device-tests.py --serial emulator-5554` 安装并�
 .\scripts\emulator-e2e-test.ps1 -Serial emulator-5554 -AppLocale zh-CN
 ```
 
-脚本默认先构建并安装应用和测试 APK；已有最新产物时可加 `-SkipBuild`。它验证披露、无障碍服务、前台控制器、通知行为、后台短按与长按、媒体播放期间熄屏与唤醒、无障碍解绑重连，以及停止后由系统恢复接管。播放夹具仅存在于 Debug 构建中，循环静音 PCM，不进入正式包。
+脚本默认先构建并安装应用和测试 APK；已有最新产物时可加 `-SkipBuild`。它验证披露、无障碍服务、前台控制器、通知行为、后台短按与长按、媒体播放期间的熄屏分发能力、唤醒恢复、无障碍解绑重连，以及停止后由系统恢复接管。播放夹具仅存在于 Debug 构建中，循环静音 PCM，不进入正式包。
 
 **仅在可丢弃的 `emulator-*` 上运行。** 脚本会在开始和结束时清空应用与测试包数据，测试前设置无法恢复；无障碍配置、媒体/铃声音量、通知面板和临时 adbd root 状态会在 `finally` 中恢复，清理失败会使测试失败。
+
+熄屏首键可能在系统策略层直接调节音量而不分发到无障碍。脚本以服务接收计数与 AudioService 写入日志区分映射和系统接管，并强制检查没有重复写入、唤醒与重连可恢复；能力结果保存在 rtifacts/ci/screen-off-capability.json。screenOffMapping=false 不表示熄屏映射通过。
 
 脚本从 Linux evdev 注入按键，以经过 Accessibility input filter。`adb shell input keyevent` 和 UiAutomation 注入不能替代这一阶段，因为它们绕过该过滤链路。`emulator-smoke-test.ps1` 仅用于快速安装和启动，不替代完整 E2E。
 
@@ -74,5 +76,7 @@ HyperOS 的既有测试中，UiAutomator 层级采集曾触发无障碍服务重
 ```powershell
 .\scripts\capture-device-diagnostics.ps1 -Serial SERIAL
 ```
+
+诊断默认针对正式包；检查测试版时增加 -PackageName dev.spcdts.volumemapper.debug。包含只读按键计数与电源状态，不采集音量键以外的按键内容。
 
 诊断输出保存在被 Git 忽略的 `artifacts/`。分享前检查设备标识和其他应用信息；兼容性背景见 [设备与耳机兼容性](OEM_COMPATIBILITY.md)。
